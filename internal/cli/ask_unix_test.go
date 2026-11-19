@@ -81,7 +81,7 @@ func TestAskContinuePicksTheLatestSessionOfThisDirectory(t *testing.T) {
 	s.ok("", "ask", "older")
 	older := s.only().ID
 	s.ok("", "ask", "--agent", "hermes", "newer")
-	// cmd のセッションは ask で続けられないので、最新でも選ばない。
+	// Skip cmd sessions even if they are the most recent: ask cannot continue them.
 	s.ok("", "run", "--agent", "cmd", "--", "true")
 
 	r := s.ok("", "ask", "--continue", "again")
@@ -210,7 +210,7 @@ func TestAskRefusesASessionThatIsAlreadyOpenOrCannotAnswer(t *testing.T) {
 	}
 }
 
-// 既存のセッションへの ask が起動前に失敗しても、セッションは元のまま残る。
+// An ask that fails before launch must leave an existing session unchanged.
 func TestAskLeavesAnExistingSessionUntouchedWhenItCannotStart(t *testing.T) {
 	fakeBin(t, "claude")
 	s := newSandbox(t)
@@ -234,7 +234,7 @@ func TestAskCleansUpWhenTheAgentCannotStart(t *testing.T) {
 	s.ok("", "ask", "first")
 	before := s.only()
 
-	// claude を起動できないファイルに置き換える。PATH の解決は通り、起動で失敗する。
+	// Replace claude with a file that resolves on PATH but fails to execute.
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("not a program\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

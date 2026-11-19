@@ -7,13 +7,13 @@ import (
 	"syscall"
 )
 
-// ProcessAlive は pid のプロセスが存在するかを返す。
+// ProcessAlive reports whether the process with the given PID exists.
 func ProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	// シグナル 0 は配送せず、宛先の存在と権限だけを確かめる。
+	// Signal 0 checks existence and permissions without delivering a signal.
 	err := syscall.Kill(pid, 0)
-	// EPERM は「存在するが他ユーザのプロセス」。
+	// EPERM means the process exists but belongs to another user.
 	return err == nil || errors.Is(err, syscall.EPERM)
 }

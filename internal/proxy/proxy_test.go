@@ -14,7 +14,7 @@ type runOutcome struct {
 	err error
 }
 
-// session は fake の端末と子で Run を1回動かすための道具立て。
+// session provides a fake terminal and child for a single call to Run.
 type session struct {
 	t       *testing.T
 	term    *memTerminal
@@ -41,7 +41,7 @@ func startSessionCtx(t *testing.T, ctx context.Context, tty bool, configure func
 		Argv:     []string{"agent", "--flag"},
 		Terminal: s.term,
 		Spawner:  s.spawner,
-		// 実シグナルを拾わないよう、既定で空のチャネルを渡す。
+		// Use an empty channel by default to avoid catching real signals.
 		Signals: make(chan os.Signal),
 	}
 	if configure != nil {
@@ -158,8 +158,8 @@ func TestTTYInputEOFDoesNotSendEOT(t *testing.T) {
 	s.wait()
 }
 
-// 非 TTY の入力が改行で終わっていなければ、EOT の前に改行を1つ補う。
-// canonical mode の EOF は行頭でしか効かないので、補わないと子の read が終わらない。
+// Append a newline before EOT if non-TTY input lacks one. In canonical mode, EOT signals EOF only
+// at the start of a line; otherwise the child's read would not finish.
 func TestNonTTYEOFCompletesTheLastLineBeforeEOT(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -356,8 +356,8 @@ func TestRawModeFailureDoesNotSpawn(t *testing.T) {
 	}
 }
 
-// Result.Started は、子を起動できたかどうかを呼び出し側に伝える。
-// 起動前の失敗（raw mode、PTY、空の argv）では false のまま返る。
+// Result.Started tells callers whether the child started. Failures before startup (raw mode, PTY
+// allocation or empty argv) leave it false.
 func TestResultStartedTellsWhetherTheChildRan(t *testing.T) {
 	t.Run("raw mode failure", func(t *testing.T) {
 		term := newMemTerminal(true)
@@ -390,7 +390,7 @@ func TestResultStartedTellsWhetherTheChildRan(t *testing.T) {
 			t.Errorf("res = %+v, err = %v; want Started true with exit code 3", out.res, out.err)
 		}
 	})
-	// 子は動いたが端末への書き込みに失敗した場合も、起動はしている。
+	// A terminal write failure after startup still counts as a successful start.
 	t.Run("child ran but the relay failed", func(t *testing.T) {
 		s := startSession(t, false, nil)
 		s.term.mu.Lock()
@@ -454,12 +454,12 @@ func TestTerminalWriteFailureKillsChild(t *testing.T) {
 	}
 }
 
-// 子が終了した直後に届いた出力も取りこぼさない。
+// Do not lose output that arrives just after the child exits.
 func TestOutputAfterExitIsDrained(t *testing.T) {
 	var record syncBuffer
 	s := startSession(t, false, func(o *Options) { o.Record = &record })
 	s.child.emit(t, "before ")
-	s.child.exit(0, false) // Wait は返るが、出力はまだ閉じていない
+	s.child.exit(0, false) // Wait returns, but output is still open.
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		s.child.outW.Write([]byte("after"))
@@ -478,7 +478,7 @@ func TestOutputAfterExitIsDrained(t *testing.T) {
 	}
 }
 
-// 孫プロセスが PTY を握ったままで EOF が来なくても、Run は返る。
+// Run returns even if a grandchild keeps the PTY open and no EOF arrives.
 func TestRunReturnsWhenOutputNeverCloses(t *testing.T) {
 	var record syncBuffer
 	s := startSession(t, false, func(o *Options) {
@@ -504,8 +504,8 @@ func TestRunReturnsWhenOutputNeverCloses(t *testing.T) {
 	}
 }
 
-// Run が返った後は、出力のゴルーチンが残っていても記録先と端末に書かない
-// （呼び出し側は Run の直後に記録先を閉じてよい）。
+// After Run returns, a surviving output goroutine must not write to the recording or terminal. The
+// caller can close the recording immediately.
 func TestNoWritesAfterRunReturns(t *testing.T) {
 	var record syncBuffer
 	s := startSession(t, false, func(o *Options) {
@@ -513,7 +513,7 @@ func TestNoWritesAfterRunReturns(t *testing.T) {
 		o.DrainIdle = 20 * time.Millisecond
 	})
 	s.child.mu.Lock()
-	s.child.ignoreClose = true // Close しても Read が解けず、読み手が生き残る
+	s.child.ignoreClose = true // Close does not unblock Read, so the reader survives.
 	s.child.mu.Unlock()
 
 	s.child.emit(t, "before")
@@ -522,7 +522,7 @@ func TestNoWritesAfterRunReturns(t *testing.T) {
 		t.Fatalf("Run: %v", out.err)
 	}
 
-	// 生き残った読み手が "late" を受け取るまで emit はブロックする。
+	// emit blocks until the surviving reader receives "late".
 	s.child.emit(t, "late")
 	s.child.emit(t, "later")
 	if got := record.String(); got != "before" {
@@ -533,7 +533,7 @@ func TestNoWritesAfterRunReturns(t *testing.T) {
 	}
 }
 
-// 起動前に届いていたシグナルも、子が起動したら転送する。
+// Forward signals received before startup once the child is running.
 func TestSignalQueuedBeforeSpawnIsForwarded(t *testing.T) {
 	signals := make(chan os.Signal, 1)
 	signals <- os.Interrupt
@@ -546,7 +546,7 @@ func TestSignalQueuedBeforeSpawnIsForwarded(t *testing.T) {
 	s.wait()
 }
 
-// サイズを読んでから監視を始めるまでの間のリサイズを取りこぼさない。
+// Catch a resize between the initial size query and registration of the watcher.
 func TestResizeDuringStartupIsNotLost(t *testing.T) {
 	term := newMemTerminal(true)
 	term.sizeOnWatch = &[2]int{120, 40}

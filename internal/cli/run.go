@@ -12,7 +12,7 @@ import (
 	"github.com/hauntedfail/geminus/internal/session"
 )
 
-// maxInputRecord は、非 TTY の入力のうち transcript に残す上限。
+// maxInputRecord limits the amount of non-TTY input saved to the transcript.
 const maxInputRecord = 64 << 10
 
 func runRun(inv Invocation) int {
@@ -53,7 +53,7 @@ func runRun(inv Invocation) int {
 	return relay(inv, active, launch)
 }
 
-// busyHint は、開かれているセッションのエラーに --force の案内を足す。
+// busyHint adds a --force hint to errors about sessions already in use.
 func busyHint(err error) error {
 	if errors.Is(err, errBusy) {
 		return fmt.Errorf("%w (use --force to open it anyway)", err)
@@ -61,7 +61,7 @@ func busyHint(err error) error {
 	return err
 }
 
-// runTarget は run の対象セッションを決める。--resume があれば既存、無ければ新規。
+// runTarget selects an existing session for --resume or a new one otherwise.
 func runTarget(store *session.Store, inv Invocation, cwd string) (target, error) {
 	opts := inv.Options.Run
 	if opts.Resume != "" {
@@ -76,7 +76,7 @@ func runTarget(store *session.Store, inv Invocation, cwd string) (target, error)
 	if err != nil {
 		return target{}, err
 	}
-	// セッションを作る前に、起動できないことが分かる場合は止める。
+	// Fail before creating a session if we already know the agent cannot start.
 	if adapter.Name() == agent.GenericName && len(inv.Args) == 0 {
 		return target{}, usagef("agent %q needs a command: %s run --agent %s -- <argv...>", name, programName, name)
 	}
@@ -86,20 +86,20 @@ func runTarget(store *session.Store, inv Invocation, cwd string) (target, error)
 		}
 	}
 	title := opts.Title
-	// --no-record では、プロンプトやコマンド行をタイトルとして session.json に残さない。
+	// With --no-record, do not save the prompt or command line as the title in session.json.
 	if title == "" && !opts.NoRecord {
 		title = defaultTitle(adapter, inv.Args)
 	}
 	return createTarget(store, adapter, title, cwd)
 }
 
-// runLaunch は子の起動に必要な内容。
+// runLaunch holds the inputs needed to start the child.
 type runLaunch struct {
 	start startParams
 	dir   string
 }
 
-// prepareRun は継続キーと argv を決め、バイナリがあることを確かめる。
+// prepareRun selects the session key, builds argv, and verifies that the executable exists.
 func prepareRun(t target, inv Invocation, cwd string) (runLaunch, error) {
 	opts := inv.Options.Run
 	plan, err := planKey(t, opts.Fresh)
@@ -130,7 +130,7 @@ func prepareRun(t target, inv Invocation, cwd string) (runLaunch, error) {
 	}, nil
 }
 
-// relay は子を PTY 上で動かし、終わったら結果を記録して終了コードを返す。
+// relay runs the child on a PTY, records the result, and returns the exit code.
 func relay(inv Invocation, active *activeSession, launch runLaunch) int {
 	const name = "run"
 	term := proxy.NewTerminal(inv.Env.Stdin, inv.Env.Stdout)
@@ -146,7 +146,7 @@ func relay(inv Invocation, active *activeSession, launch runLaunch) int {
 	if active.record {
 		popts.Record = active.log
 		if !interactive {
-			// パイプで渡された入力は画面に残らないので、transcript に残す。
+			// Record piped input in the transcript because it does not appear on screen.
 			tap = &inputTap{Terminal: term, log: active.log}
 			popts.Terminal = tap
 		}
@@ -159,7 +159,7 @@ func relay(inv Invocation, active *activeSession, launch runLaunch) int {
 		}
 	}
 	if err != nil && !res.Started {
-		// 子は一度も動いていない。終了コード 0 の実行として記録しない。
+		// The child never ran. Do not record a successful exit.
 		return fail(inv.Env, name, active.abort(err))
 	}
 	if res.RecordErr != nil {
@@ -169,7 +169,7 @@ func relay(inv Invocation, active *activeSession, launch runLaunch) int {
 		warn(inv.Env, name, fmt.Errorf("save session: %w", finishErr))
 	}
 	if err != nil {
-		// 子は動いたが、中継が壊れた（端末への書き込み失敗など）。
+		// The child ran, but the relay failed (for example, while writing to the terminal).
 		return fail(inv.Env, name, err)
 	}
 	if interactive || inv.Options.Verbose {
@@ -178,7 +178,7 @@ func relay(inv Invocation, active *activeSession, launch runLaunch) int {
 	return childExitCode(res.ExitCode)
 }
 
-// printRunSummary は、対話セッションの終わりに再開方法を stderr へ出す。
+// printRunSummary writes resume instructions to stderr after an interactive session ends.
 func printRunSummary(env Env, t target, code int) {
 	id := t.meta.ID
 	if !t.adapter.Capabilities().Resume {
@@ -188,10 +188,11 @@ func printRunSummary(env Env, t target, code int) {
 	fmt.Fprintf(env.Stderr, "%s: session %s ended (exit %d). Resume with: %s run --resume %s\n", programName, id, code, programName, id)
 }
 
-// inputTap は非 TTY の入力を中継しながら写しを取り、input イベントとして残す。
+// inputTap copies non-TTY input as it passes through the relay and records it as an input
+// event.
 //
-// 入力が終わった時点（EOF）で書く。子が先に終了した場合は、中継の後で flush を呼んで
-// それまでに読んだ分を書く。写しは maxInputRecord で打ち切る。
+// Write the event at EOF. If the child exits first, flush after the relay finishes to
+// record what has been read so far. Limit the copy to maxInputRecord.
 type inputTap struct {
 	proxy.Terminal
 	log *session.Log
@@ -209,7 +210,8 @@ func (t *inputTap) Read(p []byte) (int, error) {
 		t.capture(p[:n])
 	}
 	if err != nil {
-		// 記録の失敗で中継は止めない。結果は flush が覚えていて、中継の後の flush が返す。
+		// Do not interrupt the relay on a recording failure. flush remembers the result and returns
+		// it when called after the relay finishes.
 		_ = t.flush()
 	}
 	return n, err
@@ -229,8 +231,8 @@ func (t *inputTap) capture(p []byte) {
 	t.buf = append(t.buf, p...)
 }
 
-// flush は溜めた入力を input イベントとして書く。
-// 書くのは最初の1回だけで、2回目以降はそのときの結果を返す。
+// flush writes the buffered input as an input event once. Subsequent calls return the
+// original result.
 func (t *inputTap) flush() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

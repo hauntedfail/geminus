@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-// sessionFiles は読み取りで開く3つのファイル。
+// sessionFiles lists the three files opened for reading.
 var sessionFiles = []string{metaFileName, transcriptName, rawFileName}
 
-// readers は、セッションのファイルを読む公開 API を名前付きで並べる。
-// どれも、通常ファイルでないものを見つけたら ErrNotRegular を返すこと。
+// readers lists the public session-reading APIs by name. Each should return ErrNotRegular for a
+// nonregular file.
 func readers(store *Store, id string) map[string]func() error {
 	return map[string]func() error{
 		"Load": func() error {
@@ -42,7 +42,7 @@ func readers(store *Store, id string) map[string]func() error {
 	}
 }
 
-// readerOf は file を読む API の名前を返す。
+// readerOf returns the name of the API that reads file.
 func readerOf(file string) []string {
 	switch file {
 	case metaFileName:
@@ -54,7 +54,8 @@ func readerOf(file string) []string {
 	}
 }
 
-// replaceWith は セッションの file を消し、plant に同じ名前で別のものを置かせる。
+// replaceWith removes file from the session and calls plant to put a replacement under the same
+// name.
 func replaceWith(t *testing.T, store *Store, id, file string, plant func(path string) error) {
 	t.Helper()
 	paths, err := store.Paths(id)
@@ -70,7 +71,7 @@ func replaceWith(t *testing.T, store *Store, id, file string, plant func(path st
 	}
 }
 
-// expectNotRegular は read が待たされずに ErrNotRegular を返すことを確かめる。
+// expectNotRegular checks that read returns ErrNotRegular without blocking.
 func expectNotRegular(t *testing.T, name string, read func() error) {
 	t.Helper()
 	done := make(chan error, 1)
@@ -98,8 +99,8 @@ func seedSessionFiles(t *testing.T, store *Store) Meta {
 	return meta
 }
 
-// session.json / transcript.jsonl / raw.log がシンボリックリンクにすり替わっていたら、
-// リンク先を読まずにエラーにする。リンク先が正しい形式のファイルでも読まない。
+// If a symlink replaces session.json, transcript.jsonl or raw.log, fail without reading the
+// target, even if the target contains valid data.
 func TestReadsRejectSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need privileges on Windows")
@@ -110,7 +111,7 @@ func TestReadsRejectSymlinks(t *testing.T) {
 			meta := seedSessionFiles(t, store)
 			paths, _ := store.Paths(meta.ID)
 
-			// リンク先は、辿れば問題なく読める内容にしておく。
+			// Use valid content so reading the target would otherwise succeed.
 			original, err := os.ReadFile(filepath.Join(paths.Dir, file))
 			if err != nil {
 				t.Fatal(err)
@@ -129,7 +130,7 @@ func TestReadsRejectSymlinks(t *testing.T) {
 	}
 }
 
-// ディレクトリは通常ファイルではない。OS を問わず確かめられる形。
+// A directory serves as a nonregular file on every supported OS.
 func TestReadsRejectDirectories(t *testing.T) {
 	for _, file := range sessionFiles {
 		t.Run(file, func(t *testing.T) {
@@ -145,7 +146,7 @@ func TestReadsRejectDirectories(t *testing.T) {
 	}
 }
 
-// セッションのディレクトリ自体がシンボリックリンクなら、その先のセッションを読まない。
+// If the session directory itself is a symlink, do not read the session it points to.
 func TestReadsRejectSymlinkedSessionDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need privileges on Windows")
@@ -154,7 +155,7 @@ func TestReadsRejectSymlinkedSessionDirectory(t *testing.T) {
 	meta := seedSessionFiles(t, store)
 	paths, _ := store.Paths(meta.ID)
 
-	// 別の場所へ移し、元の場所からリンクする。
+	// Move the directory elsewhere and link to it from the original path.
 	moved := filepath.Join(t.TempDir(), "moved")
 	if err := os.Rename(paths.Dir, moved); err != nil {
 		t.Fatal(err)
@@ -169,7 +170,7 @@ func TestReadsRejectSymlinkedSessionDirectory(t *testing.T) {
 	if _, err := store.Save(meta); !errors.Is(err, ErrNotRegular) {
 		t.Errorf("Save: err = %v, want ErrNotRegular", err)
 	}
-	// rm はリンクだけを消し、リンク先には触れない。
+	// rm removes only the link, not its target.
 	if err := store.Delete(meta.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -178,7 +179,7 @@ func TestReadsRejectSymlinkedSessionDirectory(t *testing.T) {
 	}
 }
 
-// List は読めないセッションを報告し、残りは返す。
+// List reports unreadable sessions and returns the rest.
 func TestListReportsSymlinkedMeta(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need privileges on Windows")

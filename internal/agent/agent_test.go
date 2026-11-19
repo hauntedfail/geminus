@@ -281,7 +281,7 @@ func TestNewKey(t *testing.T) {
 		if first.Value == second.Value {
 			t.Error("two keys share the same uuid")
 		}
-		// 生成したキーはそのまま起動に使える。
+		// The generated key is ready to use when launching a session.
 		argv, err := a.Interactive(Request{Key: first})
 		if err != nil || argv[1] != "--session-id" || argv[2] != first.Value {
 			t.Errorf("argv = %q, err = %v", argv, err)
@@ -395,7 +395,7 @@ func TestNames(t *testing.T) {
 	}
 }
 
-// fakeBinaries は dir に実行可能ファイルを置き、PATH をその dir だけにする。
+// fakeBinaries places executables in dir and makes it the only directory on PATH.
 func fakeBinaries(t *testing.T, names ...string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {

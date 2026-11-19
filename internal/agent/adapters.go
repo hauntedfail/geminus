@@ -7,13 +7,13 @@ import (
 	"regexp"
 )
 
-// claudeAdapter は Claude Code。
+// claudeAdapter runs Claude Code.
 //
-//	新規:        claude --session-id <uuid> [prompt]
-//	再開:        claude --resume <uuid> [prompt]
-//	ワンショット: claude -p (--session-id|--resume) <uuid> <prompt>
+//	New:      claude --session-id <uuid> [prompt]
+//	Resume:   claude --resume <uuid> [prompt]
+//	One-shot: claude -p (--session-id|--resume) <uuid> <prompt>
 //
-// --session-id は UUID 必須なので、geminus が UUIDv4 を生成して保存する。
+// Claude requires a UUID for --session-id, so geminus generates and stores a UUIDv4.
 type claudeAdapter struct{}
 
 func (claudeAdapter) Name() string   { return "claude" }
@@ -68,16 +68,17 @@ func (a claudeAdapter) Oneshot(req Request, prompt string) ([]string, error) {
 	return append(argv, prompt), nil
 }
 
-// hermesAdapter は Hermes Agent。
+// hermesAdapter runs Hermes Agent.
 //
-//	新規・再開:  hermes chat -c <name> --create-if-missing [-q <prompt>]
-//	ワンショット: hermes chat -c <name> --create-if-missing -q <prompt> --oneshot
+//	New or resume: hermes chat -c <name> --create-if-missing [-q <prompt>]
+//	One-shot:      hermes chat -c <name> --create-if-missing -q <prompt> --oneshot
 //
-// -c <name> --create-if-missing は「無ければ作る、あれば再開」なので、新規と再開で同じ argv になる。
-// 名前には geminus のセッション id をそのまま使う。
+// With --create-if-missing, Hermes creates or resumes the named session using the same
+// arguments. The name is the geminus session ID.
 type hermesAdapter struct{}
 
-// hermes のセッション名として渡す文字種。先頭を英数字に限り、フラグと解釈されないようにする。
+// Require an alphanumeric first character so Hermes cannot mistake the session name for a
+// flag.
 var hermesNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func (hermesAdapter) Name() string   { return "hermes" }
@@ -114,7 +115,7 @@ func (a hermesAdapter) Interactive(req Request) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	// TTY 上の -q は対話セッションの最初のターンとして送られる。
+	// On a TTY, -q supplies the first turn of the interactive session.
 	if prompt := joinPrompt(req.Args); prompt != "" {
 		if err := checkPromptArg(prompt); err != nil {
 			return nil, err
@@ -135,7 +136,8 @@ func (a hermesAdapter) Oneshot(req Request, prompt string) ([]string, error) {
 	return append(argv, "-q", prompt, "--oneshot"), nil
 }
 
-// genericAdapter は任意のコマンドをそのまま起動する。継続キーを持たず、再開もできない。
+// genericAdapter runs an arbitrary command as given. It has no session key and cannot
+// resume.
 type genericAdapter struct{}
 
 func (genericAdapter) Name() string   { return GenericName }
@@ -165,12 +167,12 @@ func (genericAdapter) Oneshot(Request, string) ([]string, error) {
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// IsUUID は s が 8-4-4-4-12 桁の16進表記かを返す。
+// IsUUID reports whether s consists of hexadecimal digits in 8-4-4-4-12 format.
 func IsUUID(s string) bool {
 	return uuidPattern.MatchString(s)
 }
 
-// NewUUID は乱数から UUIDv4（RFC 4122）を作る。
+// NewUUID generates a random UUIDv4 (RFC 4122).
 func NewUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

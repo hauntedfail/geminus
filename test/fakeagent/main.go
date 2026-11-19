@@ -1,20 +1,20 @@
-// Command fakeagent は E2E テスト用の偽エージェント。
+// Command fakeagent provides a stand-in agent for end-to-end tests.
 //
-// claude / hermes / 任意コマンドの代わりに geminus から起動され、決まった出力を返す。
+// geminus starts it in place of claude, hermes or a custom command to get predictable output.
 //
-//	fakeagent --version                         バージョンを出して終了する
-//	fakeagent -p ... <prompt>                   claude のワンショットを真似る
-//	fakeagent chat ... -q <prompt> --oneshot    hermes のワンショットを真似る
-//	fakeagent [args...]                         対話。標準入力を1行ずつエコーする
+//	fakeagent --version                         print the version and exit
+//	fakeagent -p ... <prompt>                   simulate a Claude one-shot invocation
+//	fakeagent chat ... -q <prompt> --oneshot    simulate a Hermes one-shot invocation
+//	fakeagent [args...]                         echo interactive input line by line
 //
-// 対話では ANSI 付きの見出し、受け取った引数、標準入力が端末かどうかを出してから、
-// 入力の各行を "echo:<行>" で返す。"quit" の行か EOF で終わる。
+// In interactive mode, print a colored banner, the arguments and whether stdin is a terminal.
+// Reply to each input line with "echo:<line>" until a line containing "quit" or EOF.
 //
-// 環境変数:
+// Environment variables:
 //
-//	FAKE_EXIT=<n>       終了コード（既定は 0）
-//	FAKE_RECORD=<path>  対話で受け取った行を、そのままこのファイルに書く。
-//	                    PTY のエコーが混ざる出力を読まずに、届いた入力を確かめるために使う。
+//	FAKE_EXIT=<n>       exit code (default: 0)
+//	FAKE_RECORD=<path>  write interactive input lines verbatim to this file so tests can
+//	                    check what arrived without parsing output mixed with PTY echo.
 package main
 
 import (
@@ -30,7 +30,7 @@ import (
 
 const (
 	versionLine = "fakeagent 0.0.1"
-	// banner は ANSI の色付き。記録と `log` の除去を確かめるために入れている。
+	// banner includes ANSI color so tests can verify both recording and escape stripping by `log`.
 	banner    = "\x1b[1;32mfakeagent\x1b[0m ready"
 	farewell  = "\x1b[2mbye\x1b[0m"
 	quitLine  = "quit"
@@ -78,7 +78,7 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	return code
 }
 
-// openRecord は受け取った行の書き込み先を開く。path が空なら捨てる。
+// openRecord opens the destination for received lines. An empty path discards them.
 func openRecord(path string) (io.Writer, func() error, error) {
 	if path == "" {
 		return io.Discard, func() error { return nil }, nil
@@ -90,7 +90,7 @@ func openRecord(path string) (io.Writer, func() error, error) {
 	return f, f.Close, nil
 }
 
-// exitCode は FAKE_EXIT の値を読む。空なら 0。
+// exitCode reads FAKE_EXIT, defaulting to zero when empty.
 func exitCode(value string) (int, error) {
 	if value == "" {
 		return 0, nil
@@ -102,14 +102,15 @@ func exitCode(value string) (int, error) {
 	return code, nil
 }
 
-// say は1行を1回の write で出す。PTY のエコーと行の途中で混ざらないようにするため。
+// say emits each line in a single write so PTY echo cannot interleave within it.
 func say(w io.Writer, line string) {
-	// 出力先が閉じていたら続ける意味が無いが、テスト用なのでエラーは終了コードに任せる。
+	// There is no point continuing if output is closed, but this test helper leaves error reporting to
+	// the exit code.
 	_, _ = io.WriteString(w, line+"\n")
 }
 
-// oneshotPrompt は args がワンショットの形なら、そのプロンプトを返す。
-// claude は `-p ... <prompt>`（最後の引数）、hermes は `-q <prompt> --oneshot`。
+// oneshotPrompt returns the prompt if args specifies a one-shot invocation. Claude uses `-p ...
+// <prompt>` (the final argument); Hermes uses `-q <prompt> --oneshot`.
 func oneshotPrompt(args []string) (string, bool) {
 	hasFlag := func(name string) bool {
 		for _, arg := range args {
@@ -134,8 +135,8 @@ func oneshotPrompt(args []string) (string, bool) {
 	}
 }
 
-// echoLines は r の各行を "echo:<行>" で w に返し、行そのものを received に書く。
-// quit の行か EOF で終わる。
+// echoLines replies to each line from r with "echo:<line>" on w and writes the line itself to
+// received. It stops on a line containing quit or at EOF.
 func echoLines(r io.Reader, w, received io.Writer) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)

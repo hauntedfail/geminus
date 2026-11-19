@@ -122,7 +122,7 @@ func TestStoredKey(t *testing.T) {
 	}
 }
 
-// キーが記録されていないセッションの再開は、新しいキーで始めて注記を残す。
+// When resuming a session without a stored key, start with a new key and record a note.
 func TestPlanKeyWithoutARecordedAgentSession(t *testing.T) {
 	claude, err := agent.Lookup("claude")
 	if err != nil {
@@ -226,7 +226,7 @@ func TestInputTapWithoutInputWritesNothing(t *testing.T) {
 	}
 }
 
-// 記録先が閉じていたら、flush はそのエラーを覚えて返す。
+// If the recording destination is closed, flush remembers and returns the error.
 func TestInputTapReportsALogFailure(t *testing.T) {
 	_, _, log := openTestLog(t)
 	tap := &inputTap{Terminal: proxy.NewTerminal(strings.NewReader("abc"), io.Discard), log: log}
@@ -327,7 +327,8 @@ func TestChildStdin(t *testing.T) {
 	}
 }
 
-// loadTarget で確かめた後に別のプロセスがセッションを開いていたら、begin は書き換えずに断る。
+// If another process opens the session after loadTarget checks it, begin must refuse
+// without changing it.
 func TestBeginRefusesASessionOpenedInTheMeantime(t *testing.T) {
 	s := newSandbox(t)
 	meta := s.seed("cmd", nil)
@@ -337,7 +338,8 @@ func TestBeginRefusesASessionOpenedInTheMeantime(t *testing.T) {
 		t.Fatalf("loadTarget: %v", err)
 	}
 
-	// 親プロセス（go test）は生きているので、別のプロセスが開いた状態になる。
+	// The parent process (go test) is alive, so its PID simulates another process holding the
+	// session open.
 	other := os.Getppid()
 	if _, err := store.Update(meta.ID, func(m session.Meta) session.Meta {
 		m.Status = session.StatusRunning

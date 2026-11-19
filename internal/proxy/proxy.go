@@ -1,7 +1,8 @@
-// Package proxy は子プロセスに PTY を与え、利用者の端末との間でバイト列をそのまま中継する。
+// Package proxy runs a child process on a PTY and relays bytes unchanged between it and the user's
+// terminal.
 //
-// 出力は解釈しない。端末（Terminal）と子プロセスの起動（Spawner）はインターフェースなので、
-// テストではメモリ上の実装に差し替えられる。
+// The proxy does not interpret output. Terminal and Spawner are interfaces so tests can substitute
+// in-memory implementations.
 package proxy
 
 import (
@@ -17,84 +18,83 @@ import (
 )
 
 var (
-	// ErrNoCommand は起動するコマンドが空であることを表す。
+	// ErrNoCommand means no command was specified.
 	ErrNoCommand = errors.New("proxy: no command given")
-	// ErrPTY は PTY を確保できなかったことを表す。パイプへのフォールバックはしない。
+	// ErrPTY means PTY allocation failed. There is no fallback to pipes.
 	ErrPTY = errors.New("proxy: cannot allocate a pty")
-	// ErrStart は PTY は確保できたが、コマンドを起動できなかったことを表す。
+	// ErrStart means the PTY was allocated but the command could not be started.
 	ErrStart = errors.New("proxy: cannot start the command")
 )
 
 const (
-	// 端末のサイズが取れないとき（パイプ実行など）に子へ渡すサイズ。
+	// Size to give the child when the terminal size is unavailable, for example when using pipes.
 	DefaultCols = 80
 	DefaultRows = 24
 
-	// eot は Ctrl-D。非 TTY の入力が EOF になったら、子の TTY に1回だけ送る（eofSequence）。
+	// eot is Ctrl-D. At EOF on non-TTY input, send it once to the child's TTY (see eofSequence).
 	eot = 0x04
 
 	outputBufSize = 32 << 10
 	inputBufSize  = 4 << 10
 
-	// 子の終了後、出力がこの時間だけ途絶えたら残りは無いと判断する。
+	// After the child exits, assume output is complete once it has been idle this long.
 	defaultDrainIdle = 100 * time.Millisecond
-	// 出力が途絶えなくても、子の終了後にこれ以上は待たない。
+	// Maximum time to wait after the child exits, even if output continues.
 	drainMax = 2 * time.Second
-	// PTY を閉じた後、出力のゴルーチンが止まるのを待つ時間。
+	// Time to wait for the output goroutine to stop after closing the PTY.
 	closeGrace = 250 * time.Millisecond
 )
 
-// Options は Run の入力。
+// Options configures Run.
 type Options struct {
-	// Argv は起動するコマンド。Argv[0] は PATH から探す。
+	// Argv specifies the command to run. Argv[0] is looked up on PATH.
 	Argv []string
-	// Dir は子の作業ディレクトリ。空なら現在のディレクトリ。
+	// Dir is the child's working directory. An empty string uses the current directory.
 	Dir string
-	// Env は子の環境変数。nil なら geminus の環境をそのまま継承する。
+	// Env is the child's environment. If nil, the child inherits the environment from geminus.
 	Env []string
-	// Terminal は利用者の端末。nil なら標準入出力。
+	// Terminal is the user's terminal. If nil, Run uses standard input and output.
 	Terminal Terminal
-	// Record は子の出力の写しを受け取る（raw.log）。nil なら記録しない。
-	// 書き込みに失敗したら記録だけを止め、中継は続ける。
+	// Record receives a copy of the child's output (raw.log). A nil writer disables recording. A write
+	// failure stops recording but not the relay.
 	Record io.Writer
-	// Spawner は子の起動方法。nil なら go-pty で PTY を確保する。
+	// Spawner starts the child. If nil, Run uses go-pty to allocate a PTY.
 	Spawner Spawner
-	// Signals は子へ転送するシグナルの供給元。nil なら OS のシグナル
-	// （Unix は SIGINT / SIGTERM / SIGHUP / SIGQUIT）を受ける。
-	// nil の場合、Run は raw mode に入る前から端末を復元するまでシグナルを受け続けるので、
-	// その間に届いたシグナルで geminus が終了して端末が raw のまま残ることは無い。
+	// Signals supplies signals to forward to the child. If nil, Run listens for OS signals (SIGINT,
+	// SIGTERM, SIGHUP and SIGQUIT on Unix) from before it enters raw mode until it restores the
+	// terminal. This prevents a signal from terminating geminus and leaving the terminal in raw mode.
 	Signals <-chan os.Signal
-	// Logf は中継を止めない程度の異常（記録やリサイズの失敗）を受け取る。nil なら捨てる。
+	// Logf reports nonfatal errors, such as recording or resize failures. If nil, these errors are
+	// discarded.
 	Logf func(format string, args ...any)
-	// DrainIdle は子の終了後に出力の途絶を待つ時間。0 なら既定値。
+	// DrainIdle is how long output must be idle after the child exits. Zero uses the default.
 	DrainIdle time.Duration
 }
 
-// Result は中継の結果。
+// Result describes the outcome of the relay.
 type Result struct {
-	// Started は子を起動できたことを表す。Run がエラーを返したとき、子が一度も動かなかった
-	// （raw mode に入れない、PTY を確保できない、コマンドを起動できない）のか、
-	// 動いた後で中継が壊れたのかを、呼び出し側が区別するために使う。
+	// Started reports whether the child started. If Run returns an error, callers can distinguish a
+	// setup failure (raw mode, PTY allocation or command startup) from a relay failure after startup.
 	Started bool
-	// ExitCode は子の終了コード。Unix でシグナルにより終了した場合は 128+シグナル番号。
+	// ExitCode is the child's exit code. On Unix, signal termination yields 128 plus the signal
+	// number.
 	ExitCode int
-	// OutputBytes は子から読んだバイト数。
+	// OutputBytes is the number of bytes read from the child.
 	OutputBytes int64
-	// RecordErr は Record への最初の書き込みエラー。中継自体は成功している。
+	// RecordErr is the first error writing to Record. A recording failure does not fail the relay.
 	RecordErr error
 }
 
-// Run は opts.Argv を PTY 上で起動し、子が終了するまで端末との間を中継する。
+// Run starts opts.Argv on a PTY and relays data between the child and the terminal until the child
+// exits.
 //
-// 入力が TTY なら raw mode に入り、戻る前に必ず復元する。
-// 入力が TTY でなければ raw mode に入らず、EOF で EOT を1回だけ子に送る
-// （入力が改行で終わっていなければ、先に改行を1つ補う）。
-// 子が終了コード 0 以外で終わってもエラーにはしない（Result.ExitCode を見る）。
-// ctx がキャンセルされたら子を kill する。
+// Run puts TTY input in raw mode and restores it before returning. For non-TTY input, it skips raw
+// mode and sends one EOT at EOF, adding a newline first if needed. A nonzero child exit code is
+// not an error; see Result.ExitCode. Canceling ctx kills the child.
 //
-// 端末の Read は中断できないので、入力を読むゴルーチンは Run が返った後も Read の中に残る。
-// 標準入力を渡した場合、Run の後に同じプロセスで標準入力を読むと最初の入力を取られる。
-// Run はプロセスの最後に1回だけ呼ぶこと。
+// Terminal reads cannot be interrupted, so the input goroutine may remain blocked in Read after
+// Run returns. If it reads standard input, it can consume the next input intended for another
+// reader in the same process. Call Run only once, at the end of the process.
 func Run(ctx context.Context, opts Options) (res Result, err error) {
 	if len(opts.Argv) == 0 || opts.Argv[0] == "" {
 		return Result{}, ErrNoCommand
@@ -112,8 +112,9 @@ func Run(ctx context.Context, opts Options) (res Result, err error) {
 		logf = func(string, ...any) {}
 	}
 
-	// シグナルは raw mode に入る前に受け始め、復元の後で手放す（defer は逆順に走る）。
-	// 受けていない間に SIGTERM などが届くと、既定動作で終了して端末が raw のまま残る。
+	// Start listening for signals before entering raw mode and stop after restoring the terminal
+	// (deferred calls run in reverse order). Otherwise a signal such as SIGTERM could terminate the
+	// process and leave the terminal in raw mode.
 	signals := opts.Signals
 	if signals == nil {
 		ch := make(chan os.Signal, 16)
@@ -151,7 +152,7 @@ func Run(ctx context.Context, opts Options) (res Result, err error) {
 	go r.copyOutput(outputDone)
 	go r.copyInput(isTTY)
 	stopResize := term.WatchResize(r.resize)
-	// Size を読んでから監視を始めるまでの間に変わっていたら、ここで追いつく。
+	// Catch any resize between the initial Size call and the start of monitoring.
 	if sizeErr == nil {
 		r.syncSize(cols, rows)
 	}
@@ -196,14 +197,14 @@ func Run(ctx context.Context, opts Options) (res Result, err error) {
 	return res, err
 }
 
-// relay は1回の中継の状態。
+// relay holds the state of a single relay operation.
 type relay struct {
 	term   Terminal
 	child  Child
 	record io.Writer
 	logf   func(format string, args ...any)
 
-	// mu は端末と記録先への書き込み、および下の状態を守る。
+	// mu protects writes to the terminal and recording, as well as the state below.
 	mu        sync.Mutex
 	stopped   bool
 	outBytes  int64
@@ -215,38 +216,40 @@ type relay struct {
 
 func (r *relay) touch() { r.lastOutput.Store(time.Now().UnixNano()) }
 
-// copyOutput は子の出力を端末と記録先へ流す。
+// copyOutput forwards the child's output to the terminal and the recording.
 func (r *relay) copyOutput(done chan<- struct{}) {
 	defer close(done)
 	buf := make([]byte, outputBufSize)
 	for {
 		n, err := r.child.Read(buf)
 		if n > 0 {
-			// 中継を止めた後も読み捨て続ける。読む側がいなくなると、子の書き込みや
-			// ConPTY の終了処理が詰まる。
+			// Keep reading and discarding output after forwarding stops. Without a reader, child writes or
+			// ConPTY shutdown can block.
 			r.deliver(buf[:n])
 		}
 		if err != nil {
-			// EOF（macOS）、EIO（Linux）、Close 済みのいずれも「出力はここまで」を意味する。
+			// EOF (macOS), EIO (Linux) and a closed PTY all mean there is no more output.
 			return
 		}
 	}
 }
 
-// deliver は p を端末へ書き、同じバイト列を記録先へ写す。中継を止めた後は何もしない。
+// deliver writes p to the terminal and copies the same bytes to the recording. It does nothing
+// once forwarding stops.
 func (r *relay) deliver(p []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopped {
 		return
 	}
-	// 書き込みの前後で時刻を更新し、遅い端末への書き込み中を「出力が途絶えた」と見なさない。
+	// Update the timestamp before and after writing so a slow terminal write does not count as idle
+	// time.
 	r.touch()
 	defer r.touch()
 	r.outBytes += int64(len(p))
 
 	if _, err := r.term.Write(p); err != nil {
-		// 利用者に見えないままエージェントを動かし続けない。
+		// Do not leave the agent running if the user cannot see its output.
 		r.termErr = err
 		r.stopped = true
 		go func() {
@@ -258,30 +261,30 @@ func (r *relay) deliver(p []byte) {
 	}
 	if r.record != nil && r.recordErr == nil {
 		if _, err := r.record.Write(p); err != nil {
-			// 記録の失敗で会話を止めない。以後は記録だけを止める。
+			// A recording failure should not interrupt the conversation. Disable only the recording.
 			r.recordErr = err
 			r.logf("proxy: recording stopped: %v", err)
 		}
 	}
 }
 
-// copyInput は端末の入力を子へ流す。
-// 標準入力の Read は中断できないので、Run はこのゴルーチンの終了を待たない。
+// copyInput forwards terminal input to the child. Run does not wait for this goroutine because
+// reads from standard input cannot be interrupted.
 func (r *relay) copyInput(isTTY bool) {
 	buf := make([]byte, inputBufSize)
-	// 入力が無いうちは行頭にいるので、改行済みとして扱う。
+	// Before the first input byte, we are already at the start of a line.
 	endsWithNewline := true
 	for {
 		n, err := r.term.Read(buf)
 		if n > 0 {
 			if _, werr := r.child.Write(buf[:n]); werr != nil {
-				return // 子が終了した
+				return // The child has exited.
 			}
 			endsWithNewline = buf[n-1] == '\n'
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) && !isTTY {
-				// パイプ入力の終わりを、子の TTY に EOF として伝える。失敗は子の終了を意味する。
+				// Signal EOF on the child's TTY when piped input ends. A failed write means the child has exited.
 				_, _ = r.child.Write(eofSequence(endsWithNewline))
 			}
 			return
@@ -289,11 +292,11 @@ func (r *relay) copyInput(isTTY bool) {
 	}
 }
 
-// eofSequence は非 TTY の入力が終わったときに子の TTY へ送るバイト列を返す。
+// eofSequence returns the bytes to send to the child's TTY when non-TTY input ends.
 //
-// canonical mode の EOT は行頭でだけ EOF になる。行の途中で送ると、溜まっている行を
-// 読み手に渡すだけで EOF にはならない（`printf abc | geminus run -- cat` が終わらない）。
-// 入力が改行で終わっていなければ、改行を1つ補ってから EOT を送る。
+// In canonical mode, EOT signals EOF only at the start of a line. Mid-line it merely releases the
+// buffered input, so `printf abc | geminus run -- cat` would hang. Add a newline before EOT if the
+// input lacks a trailing newline.
 func eofSequence(endsWithNewline bool) []byte {
 	if endsWithNewline {
 		return []byte{eot}
@@ -301,7 +304,7 @@ func eofSequence(endsWithNewline bool) []byte {
 	return []byte{'\n', eot}
 }
 
-// resize は端末の現在のサイズを子の PTY に反映する。
+// resize applies the current terminal size to the child's PTY.
 func (r *relay) resize() {
 	cols, rows, err := r.term.Size()
 	if err != nil {
@@ -313,15 +316,16 @@ func (r *relay) resize() {
 	}
 }
 
-// syncSize は端末のサイズが spawn 時の cols×rows から変わっていれば子に反映する。
+// syncSize updates the child if the terminal dimensions have changed since it was spawned with
+// cols by rows.
 func (r *relay) syncSize(cols, rows int) {
 	if nowCols, nowRows, err := r.term.Size(); err == nil && (nowCols != cols || nowRows != rows) {
 		r.resize()
 	}
 }
 
-// forwardSignals は src に届いたシグナルを子へ転送する。
-// 返す関数は転送を止め、転送中の呼び出しが終わるまで待つ。
+// forwardSignals forwards signals from src to the child. The returned function stops forwarding
+// and waits for any call in progress.
 func (r *relay) forwardSignals(src <-chan os.Signal) (stop func()) {
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -348,10 +352,10 @@ func (r *relay) forwardSignals(src <-chan os.Signal) (stop func()) {
 	}
 }
 
-// drain は子の終了後、残った出力が流れ切るのを待つ。
+// drain waits for outstanding output after the child exits.
 //
-// 通常は PTY の EOF で done が閉じてすぐ戻る。孫プロセスが PTY を握っている場合や
-// Windows の ConPTY では EOF が来ないので、出力が idle だけ途絶えた時点で戻る。
+// Normally PTY EOF closes done and the wait ends immediately. If a grandchild holds the PTY open
+// or Windows ConPTY never reports EOF, return after output has been quiet for idle.
 func (r *relay) drain(done <-chan struct{}, idle time.Duration) {
 	r.touch()
 	deadline := time.NewTimer(drainMax)
@@ -372,8 +376,8 @@ func (r *relay) drain(done <-chan struct{}, idle time.Duration) {
 	}
 }
 
-// finish は以後の書き込みを止め、結果をまとめる。
-// これ以降、出力のゴルーチンが残っていても端末と記録先には触れない。
+// finish stops further writes and collects the result. A surviving output goroutine can no longer
+// touch the terminal or recording.
 func (r *relay) finish(code int) (Result, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -7,10 +7,10 @@ import (
 	"github.com/hauntedfail/geminus/internal/session"
 )
 
-// runRm はセッションを消す。
+// runRm removes a session.
 //
-// --force が無ければ、存在しない id と、別のプロセスが開いているセッションはエラーにする。
-// --force はどちらも通す。session.json が壊れたセッションは、どちらの場合も消せる。
+// Without --force, a missing ID or a session held by another process is an error. --force
+// allows both. A session with corrupt metadata can be removed either way.
 func runRm(inv Invocation) int {
 	const name = "rm"
 	force := inv.Options.Rm.Force
@@ -24,7 +24,8 @@ func runRm(inv Invocation) int {
 	}
 
 	if !force {
-		// 読めないメタは実行中かどうかを判断できない。消す以外に片付ける方法が無いので通す。
+		// Unreadable metadata cannot tell us whether the session is running. Allow deletion because
+		// there is no other way to clean it up.
 		if meta, loadErr := store.Load(id); loadErr == nil && meta.Active() {
 			return fail(inv.Env, name, fmt.Errorf("session %s is open in process %d (use --force to delete it anyway)", id, meta.PID))
 		}

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Linux のコンテナで go vet と go test を走らせる。
-# macOS / Windows の開発機から、Linux の PTY 経路（EIO での終端など）を確かめるために使う。
+# Run go vet and go test in a Linux container.
+# Check Linux PTY behavior (such as termination with EIO) from macOS or Windows.
 #
 #   bash scripts/test-linux.sh
-#   bash scripts/test-linux.sh -run TestRun -v      # 引数は go test にそのまま渡す
-#   GO_IMAGE=golang:1.27 bash scripts/test-linux.sh  # イメージを変える
+#   bash scripts/test-linux.sh -run TestRun -v      # Pass arguments straight to go test
+#   GO_IMAGE=golang:1.27 bash scripts/test-linux.sh  # Use a different image
 #
-# docker が要る。モジュールはホストのキャッシュから読む（GOPROXY=off）ので、
-# 先にホストで一度 go build ./... を通しておく。
+# Requires Docker. Modules come from the host cache (GOPROXY=off),
+# so run go build ./... successfully on the host first.
 set -euo pipefail
 
 readonly IMAGE="${GO_IMAGE:-golang:1.27}"
@@ -15,8 +15,8 @@ readonly IMAGE="${GO_IMAGE:-golang:1.27}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 modcache="$(go env GOMODCACHE)"
 
-# ソースとモジュールキャッシュは読み取り専用で渡し、コンテナからホストを書き換えさせない。
-# root では権限のテスト（0600 / 読めないファイル）の意味が変わるので、一般利用者で実行する。
+# Mount the source and module cache read-only so the container can't modify them.
+# Run as a non-root user so permission tests (0600 modes and unreadable files) are meaningful.
 docker run --rm \
 	-u 1000:1000 \
 	-e HOME=/tmp/home \

@@ -1,7 +1,7 @@
-// Package e2e は、ビルドした geminus をサブプロセスとして動かす結合テスト。
+// Package e2e tests the built geminus binary by running it as a subprocess.
 //
-// 相手のエージェントには test/fakeagent を使う。PATH に claude / hermes の名前で置けば、
-// 実物の代わりに起動される。各テストは専用の GEMINUS_HOME を使う。
+// Place test/fakeagent on PATH as claude or hermes to run it instead of the real agent. Each test
+// uses its own GEMINUS_HOME.
 package e2e
 
 import (
@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-// commandTimeout は geminus の1回の実行を待つ上限。ハングをテストの失敗として見せる。
+// commandTimeout bounds a single geminus invocation so a hang becomes a test failure.
 const commandTimeout = 30 * time.Second
 
 var (
@@ -60,7 +60,7 @@ func exeName(name string) string {
 	return name
 }
 
-// build はリポジトリのルートで pkg をビルドする（このテストは test/ で動く）。
+// build builds pkg from the repository root (these tests run in test/).
 func build(out, pkg string) error {
 	cmd := exec.Command("go", "build", "-o", out, pkg)
 	cmd.Dir = ".."
@@ -70,20 +70,20 @@ func build(out, pkg string) error {
 	return nil
 }
 
-// outcome は geminus の1回の実行結果。
+// outcome holds the result of one geminus invocation.
 type outcome struct {
 	code   int
 	stdout string
 	stderr string
 }
 
-// harness は1つのテストが使う状態ディレクトリと環境。
+// harness holds the state directory and environment for a single test.
 type harness struct {
 	t    *testing.T
 	home string
-	// dir は geminus を動かす作業ディレクトリ。
+	// dir is the working directory for geminus.
 	dir string
-	// env は追加の環境変数（"KEY=value"）。
+	// env holds additional environment entries ("KEY=value").
 	env []string
 }
 
@@ -92,7 +92,7 @@ func newHarness(t *testing.T) *harness {
 	return &harness{t: t, home: filepath.Join(t.TempDir(), "home"), dir: t.TempDir()}
 }
 
-// withAgents は fakeagent を names の名前で置いたディレクトリを PATH の先頭に足す。
+// withAgents prepends a directory to PATH containing fakeagent under each of the given names.
 func (h *harness) withAgents(names ...string) *harness {
 	h.t.Helper()
 	bin := h.t.TempDir()
@@ -109,7 +109,8 @@ func (h *harness) withAgents(names ...string) *harness {
 	return h
 }
 
-// environ は子に渡す環境を作る。利用者の GEMINUS_HOME や FAKE_* を持ち込まない。
+// environ builds the child's environment without inheriting the user's GEMINUS_HOME or FAKE_*
+// variables.
 func (h *harness) environ(extra ...string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
@@ -127,12 +128,12 @@ func (h *harness) command(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, geminusBin, args...)
 	cmd.Dir = h.dir
 	cmd.Env = h.environ()
-	// 孫プロセスが出力を握ったままでも、時間切れの後で待ち続けない。
+	// Do not wait past the timeout even if a grandchild still holds the output pipe open.
 	cmd.WaitDelay = 2 * time.Second
 	return cmd
 }
 
-// run は stdin を標準入力（パイプ）として geminus を実行する。空なら入力は即 EOF になる。
+// run starts geminus with stdin piped to its standard input. Empty input produces immediate EOF.
 func (h *harness) run(stdin string, args ...string) outcome {
 	h.t.Helper()
 	return h.runEnv(nil, stdin, args...)
@@ -154,7 +155,7 @@ func (h *harness) runEnv(extraEnv []string, stdin string, args ...string) outcom
 		h.t.Fatalf("geminus %s did not finish within %v\nstdout: %q\nstderr: %q", strings.Join(args, " "), commandTimeout, stdout.String(), stderr.String())
 	}
 	out := outcome{code: exitStatus(h.t, err), stdout: stdout.String(), stderr: stderr.String()}
-	// どのコマンドも、どんな入力でも panic で落ちてはいけない。
+	// No command should panic, regardless of its input.
 	if strings.Contains(out.stderr, "panic:") || strings.Contains(out.stderr, "goroutine ") {
 		h.t.Fatalf("geminus %s panicked:\n%s", strings.Join(args, " "), out.stderr)
 	}
@@ -174,7 +175,7 @@ func exitStatus(t *testing.T, err error) int {
 	return -1
 }
 
-// ok は終了コード 0 を要求する。
+// ok requires an exit code of zero.
 func (h *harness) ok(stdin string, args ...string) outcome {
 	h.t.Helper()
 	out := h.run(stdin, args...)
@@ -184,7 +185,7 @@ func (h *harness) ok(stdin string, args ...string) outcome {
 	return out
 }
 
-// sessionInfo は ls / show の JSON のうち、テストが見る項目。
+// sessionInfo contains the fields these tests inspect in ls and show JSON output.
 type sessionInfo struct {
 	ID           string `json:"id"`
 	Title        string `json:"title"`
@@ -203,7 +204,7 @@ type sessionInfo struct {
 	} `json:"agent_session"`
 }
 
-// event は `log --json` の1イベント。
+// event represents one event from `log --json`.
 type event struct {
 	Seq    int64    `json:"seq"`
 	Type   string   `json:"type"`
@@ -222,7 +223,7 @@ func decode[T any](t *testing.T, what, data string) T {
 	if err := dec.Decode(&v); err != nil {
 		t.Fatalf("%s is not valid JSON: %v\n%s", what, err, data)
 	}
-	// --json は JSON を1個だけ出す。
+	// --json must emit exactly one JSON value.
 	if _, err := dec.Token(); err != io.EOF {
 		t.Fatalf("%s has trailing data after the JSON value:\n%s", what, data)
 	}
@@ -234,7 +235,7 @@ func (h *harness) list() []sessionInfo {
 	return decode[[]sessionInfo](h.t, "ls --json", h.ok("", "ls", "--json", "--all").stdout)
 }
 
-// only はセッションがちょうど1つあることを確かめて返す。
+// only verifies that there is exactly one session and returns it.
 func (h *harness) only() sessionInfo {
 	h.t.Helper()
 	sessions := h.list()
@@ -267,8 +268,8 @@ func (h *harness) readFile(path string) string {
 	return string(data)
 }
 
-// needPTY は PTY 越しに偽エージェントを動かすテストを、Unix 以外で飛ばす。
-// Windows の ConPTY はコンパイルできることまでを保証の範囲にしている（plan.md 9）。
+// needPTY skips tests that run a fake agent through a PTY on non-Unix systems. For Windows ConPTY,
+// only compilation is guaranteed (plan.md section 9).
 func needPTY(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -276,11 +277,13 @@ func needPTY(t *testing.T) {
 	}
 }
 
-// agentLine は偽エージェントが出す行。PTY が返す入力のエコーは、エージェントの行の前に
-// 同じ行として混ざることがある（"^D" や入力の一部）ので、行頭には固定しない。
+// agentLine matches a line from the fake agent. Do not anchor it to the start of the line: PTY
+// input echo (such as "^D" or part of the input) may appear on the same line before the agent's
+// output.
 var agentLine = regexp.MustCompile(`(argv:[^\r\n]*|tty:(?:true|false)|fakeagent ready|echo:[^\r\n]*|reply:[^\r\n]*|bye)\r?(?:\n|$)`)
 
-// agentLines は text（ANSI 除去済み）から、偽エージェントが出した行だけを順に取り出す。
+// agentLines extracts the fake agent's lines in order from text with ANSI sequences already
+// removed.
 func agentLines(text string) []string {
 	var lines []string
 	for _, match := range agentLine.FindAllStringSubmatch(text, -1) {
@@ -289,7 +292,7 @@ func agentLines(text string) []string {
 	return lines
 }
 
-// checkOffsets は output イベントが raw.log を先頭から隙間なく覆っていることを確かめる。
+// checkOffsets verifies that output events cover raw.log from the beginning without gaps.
 func checkOffsets(t *testing.T, events []event, rawLen int) {
 	t.Helper()
 	var next int64
@@ -326,7 +329,7 @@ func TestRunRelaysTheAgentAndRecordsIt(t *testing.T) {
 	if out.stderr != "" {
 		t.Errorf("stderr = %q, want empty", out.stderr)
 	}
-	// ANSI シーケンスは手を加えずに届く。改行は PTY が CRLF にする。
+	// ANSI sequences arrive unchanged; the PTY converts newlines to CRLF.
 	if !strings.Contains(out.stdout, "\x1b[1;32mfakeagent\x1b[0m ready\r\n") {
 		t.Errorf("stdout = %q, want the banner with its escape sequences", out.stdout)
 	}
@@ -341,7 +344,8 @@ func TestRunRelaysTheAgentAndRecordsIt(t *testing.T) {
 		t.Errorf("log still has control characters: %q", text)
 	}
 
-	// ls / show / log は同じセッションを指し、記録は端末に出たバイト列と一致する。
+	// ls, show and log refer to the same session, and the recording matches the bytes sent to the
+	// terminal.
 	shown := h.show(session.ID)
 	if shown.ID != session.ID || shown.Agent != "cmd" || shown.Status != "exited" || shown.Active {
 		t.Errorf("show = %+v", shown)
@@ -400,7 +404,8 @@ func TestRunPropagatesTheExitCode(t *testing.T) {
 	}
 }
 
-// パイプの入力は、改行で終わっていなくても、空でも、多くても、欠けずに届いて run が終わる。
+// Piped input must arrive intact and run must exit, even for empty input, large input or input
+// without a final newline.
 func TestRunWithNonTTYInput(t *testing.T) {
 	needPTY(t)
 	var many strings.Builder
@@ -410,7 +415,7 @@ func TestRunWithNonTTYInput(t *testing.T) {
 	tests := []struct {
 		name  string
 		stdin string
-		// want はエージェントが受け取る行（改行で終わる）。
+		// want is the newline-terminated line the agent should receive.
 		want string
 	}{
 		{"no trailing newline", "abc", "abc\n"},
@@ -504,7 +509,8 @@ func TestResumeAppendsToTheSameSession(t *testing.T) {
 		t.Errorf("first argv line = %q", got)
 	}
 
-	// 別のディレクトリから再開しても、セッションを作ったディレクトリで同じ会話を続ける。
+	// Resuming from another directory continues the same conversation in the directory where the
+	// session was created.
 	elsewhere := *h
 	elsewhere.dir = t.TempDir()
 	resumed := elsewhere.ok("", "run", "--resume", session.ID)
@@ -652,7 +658,7 @@ func TestBrokenSessionFilesDoNotBreakTheCommands(t *testing.T) {
 		t.Errorf("ls --json = %+v, want only the readable session", listed)
 	}
 
-	// transcript の末尾が切れていても、読めた分と raw.log は出せる。
+	// Even with a truncated transcript tail, the readable events and raw.log remain available.
 	torn := h.run("", "log", good, "--json")
 	if events := decode[[]event](t, "log --json", torn.stdout); torn.code != 1 || len(events) != 1 {
 		t.Errorf("log --json with a torn transcript: exit %d, %d events; want 1 and the readable event", torn.code, len(events))
@@ -744,7 +750,7 @@ func TestAgentsDoctorAndUsage(t *testing.T) {
 	}
 }
 
-// --home は GEMINUS_HOME より優先される。
+// --home takes precedence over GEMINUS_HOME.
 func TestHomeFlagOverridesTheEnvironment(t *testing.T) {
 	needPTY(t)
 	h := newHarness(t)

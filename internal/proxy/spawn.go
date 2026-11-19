@@ -13,41 +13,41 @@ import (
 	gopty "github.com/aymanbagabas/go-pty"
 )
 
-// Spec は起動する子プロセスの指定。
+// Spec describes the child process to start.
 type Spec struct {
 	Argv []string
 	Dir  string
-	// Env が nil なら親の環境を継承する。
+	// A nil Env inherits the parent's environment.
 	Env []string
-	// Cols と Rows は PTY の初期サイズ。
+	// Cols and Rows specify the initial PTY size.
 	Cols, Rows int
 }
 
-// Child は PTY 上で動いている子プロセス。
+// Child is a process running on a PTY.
 type Child interface {
-	// Read は子の出力（PTY の master 側）を読む。
+	// Read reads child output from the master side of the PTY.
 	io.Reader
-	// Write は子の入力へ書く。
+	// Write writes to the child's input.
 	io.Writer
-	// Resize は PTY のサイズを変える。
+	// Resize changes the PTY dimensions.
 	Resize(cols, rows int) error
-	// Wait は子の終了を待ち、終了コードを返す。1回だけ呼ぶ。
+	// Wait waits for the child to exit and returns its exit code. Call it only once.
 	Wait() (exitCode int, err error)
-	// Signal は子のプロセスグループへシグナルを送る。
+	// Signal sends a signal to the child's process group.
 	Signal(sig os.Signal) error
-	// Kill は子を強制終了する。
+	// Kill forcibly terminates the child.
 	Kill() error
-	// Close は PTY を解放する。ブロック中の Read は解ける。何度呼んでもよい。
+	// Close releases the PTY and unblocks any pending Read. It is safe to call more than once.
 	Close() error
 }
 
-// Spawner は子プロセスを PTY 上で起動する。
+// Spawner starts a child process on a PTY.
 type Spawner interface {
 	Spawn(spec Spec) (Child, error)
 }
 
-// PTYSpawner は go-pty（Unix PTY / Windows ConPTY）で起動する Spawner を返す。
-// PTY を確保できないときは ErrPTY を返し、パイプでは起動しない。
+// PTYSpawner returns a Spawner that uses go-pty (Unix PTY or Windows ConPTY). If allocation fails,
+// it returns ErrPTY rather than falling back to pipes.
 func PTYSpawner() Spawner { return ptySpawner{} }
 
 type ptySpawner struct{}
@@ -80,8 +80,8 @@ func (ptySpawner) Spawn(spec Spec) (Child, error) {
 	return &ptyChild{pty: pty, cmd: cmd}, nil
 }
 
-// CheckPTY は PTY を1つ確保してすぐ解放し、この環境で PTY を使えるかを確かめる。
-// 子プロセスは起動しない（`geminus doctor` 用）。確保できなければ ErrPTY を返す。
+// CheckPTY allocates and immediately releases a PTY to check availability for `geminus doctor`. It
+// does not start a child and returns ErrPTY if allocation fails.
 func CheckPTY() error {
 	pty, err := gopty.New()
 	if err != nil {
@@ -93,10 +93,9 @@ func CheckPTY() error {
 	return nil
 }
 
-// resolveCommand は名前だけのコマンドを PATH から探す。
-// Windows の go-pty は PATH を探さないので、どの OS でも先に解決しておく。
-// パス区切りを含む名前はそのまま返す。相対パスは子の作業ディレクトリ（Spec.Dir）から
-// 解決されるので、geminus の作業ディレクトリで確かめると食い違う。
+// resolveCommand looks up bare command names on PATH. Windows go-pty does not search PATH, so
+// resolve names up front on all platforms. Leave names containing path separators alone: relative
+// paths are resolved against Spec.Dir, which may differ from the working directory of geminus.
 func resolveCommand(name string) (string, error) {
 	if filepath.Base(name) != name {
 		return name, nil
@@ -125,26 +124,27 @@ func (c *ptyChild) Wait() (int, error) {
 	if state == nil {
 		return -1, err
 	}
-	// 0 以外の終了は *exec.ExitError になるが、終了コードとして返すのでエラーにしない。
-	// （Windows の go-pty v0.2.2 は ExitError を返さないので、ProcessState から読む。）
+	// A nonzero exit yields an *exec.ExitError. Report the exit code rather than treating it as an
+	// error. On Windows, go-pty v0.2.2 does not return an ExitError, so read ProcessState.
 	c.releaseSlave()
 	return exitCode(state), nil
 }
 
-// releaseSlave は親が持つ slave 側を閉じる。
+// releaseSlave closes the parent's copy of the slave end.
 //
-// 子の実行中は親も slave を開いたままにし、子が最後に書いた出力が捨てられないようにする。
-// 子の終了後に閉じると、master の Read が残りを読み切った後で EOF（Linux は EIO）になる。
+// Keep the slave open in the parent while the child runs to avoid losing its final output. Closing
+// it after the child exits lets the master drain the remaining bytes before Read returns EOF (EIO
+// on Linux).
 func (c *ptyChild) releaseSlave() {
 	if unix, ok := c.pty.(gopty.UnixPty); ok {
-		// 二重に閉じても害は無く、エラーにも使い道が無い。
+		// Closing twice is harmless; there is nothing useful to do with the error.
 		_ = unix.Slave().Close()
 	}
 }
 
 func (c *ptyChild) Signal(sig os.Signal) error {
 	if c.exited.Load() {
-		return nil // 回収済みの PID に送らない
+		return nil // Never signal a reaped PID.
 	}
 	return signalChild(c.cmd.Process, c.pty, sig)
 }
@@ -162,7 +162,7 @@ func (c *ptyChild) Kill() error {
 func (c *ptyChild) Close() error {
 	c.closeOnce.Do(func() {
 		if unix, ok := c.pty.(gopty.UnixPty); ok {
-			// slave は Wait で閉じている場合があるので、ここでは両方を個別に閉じる。
+			// Wait may already have closed the slave, so close each end separately.
 			c.releaseSlave()
 			c.closeErr = ignoreClosed(unix.Master().Close())
 			return

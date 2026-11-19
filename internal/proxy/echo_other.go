@@ -2,7 +2,7 @@
 
 package proxy
 
-// echoEnabled は termios の無い OS（Windows など）では読めない。
+// echoEnabled cannot read echo settings on systems without termios, such as Windows.
 func echoEnabled(int) (bool, error) {
 	return false, ErrEchoUnsupported
 }

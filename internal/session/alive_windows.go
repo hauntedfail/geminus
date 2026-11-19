@@ -12,14 +12,15 @@ const (
 	stillActive                    = 259
 )
 
-// ProcessAlive は pid のプロセスが存在するかを返す。
+// ProcessAlive reports whether the process with the given PID exists.
 func ProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	handle, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
 	if err != nil {
-		// 権限が無くて開けないのは「存在するが他ユーザや昇格したプロセス」。Unix の EPERM と同じ扱いにする。
+		// Access denied means the process exists but belongs to another user or runs elevated. Treat it
+		// like EPERM on Unix.
 		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 	}
 	defer syscall.CloseHandle(handle)

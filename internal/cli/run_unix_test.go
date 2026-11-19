@@ -149,8 +149,8 @@ func TestRunRedactsSecretsInTheTranscript(t *testing.T) {
 	}
 }
 
-// 1つの引数に埋まった秘密（引用符付きの代入、ヘッダ）が、session.json と transcript.jsonl の
-// どこにも残らないこと。ファイルを直接読んで確かめる。
+// Read session.json and transcript.jsonl directly to verify that neither contains secrets
+// embedded in a single argument, such as quoted assignments or headers.
 func TestRunKeepsEmbeddedSecretsOutOfTheSessionFiles(t *testing.T) {
 	scripts := map[string]string{
 		"double quoted assignment": `: API_KEY="s3cr3t"`,
@@ -378,7 +378,7 @@ func TestRunResumeErrors(t *testing.T) {
 
 func TestRunRefusesASessionThatIsAlreadyOpen(t *testing.T) {
 	s := newSandbox(t)
-	// このテストプロセス自身の PID を入れて、生きたプロセスが開いている状態を作る。
+	// Use the test process's PID to simulate a session held by a live process.
 	meta := s.seed("cmd", func(m session.Meta) session.Meta {
 		m.Status = session.StatusRunning
 		m.PID = os.Getpid()
@@ -399,12 +399,12 @@ func TestRunRefusesASessionThatIsAlreadyOpen(t *testing.T) {
 	}
 }
 
-// PID が残っていても、そのプロセスがいなければ開ける（クラッシュ後の再開）。
+// A session can be resumed after a crash if the recorded PID no longer exists.
 func TestRunOpensAStaleSession(t *testing.T) {
 	s := newSandbox(t)
 	meta := s.seed("cmd", func(m session.Meta) session.Meta {
 		m.Status = session.StatusRunning
-		m.PID = 0x7ffffffe // 存在しない PID
+		m.PID = 0x7ffffffe // Nonexistent PID
 		return m
 	})
 	s.ok("", "run", "--resume", meta.ID, "--", "true")
@@ -479,8 +479,8 @@ func TestRunVerbosePrintsTheSessionID(t *testing.T) {
 	}
 }
 
-// brokenProgram は、実行ビットはあるが起動できないファイルを作る（exec format error）。
-// PATH の解決は通るので、子の起動そのものが失敗する経路を通せる。
+// brokenProgram creates an executable file that fails to launch with an exec format error.
+// PATH lookup succeeds, so the test exercises the child launch failure itself.
 func brokenProgram(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -519,7 +519,7 @@ func TestRunRestoresAnExistingSessionWhenTheChildCannotStart(t *testing.T) {
 	if after.ExitCode == nil || *after.ExitCode != 3 {
 		t.Errorf("exit_code = %v, want the previous run's 3 (not a recorded exit 0)", after.ExitCode)
 	}
-	// transcript には、起動しようとして失敗したことが残る。
+	// The transcript must record the failed launch attempt.
 	events := s.events(before.ID)
 	last := events[len(events)-1]
 	if last.Type != session.EventNote || !strings.Contains(last.Text, "did not start") {

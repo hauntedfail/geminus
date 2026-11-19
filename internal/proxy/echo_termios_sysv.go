@@ -4,5 +4,5 @@ package proxy
 
 import "golang.org/x/sys/unix"
 
-// termios を読む ioctl。Linux などは TCGETS（golang.org/x/term と同じ使い分け）。
+// Linux and similar systems read termios with TCGETS, the same ioctl used by golang.org/x/term.
 const ioctlReadTermios = unix.TCGETS

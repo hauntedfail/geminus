@@ -1,4 +1,4 @@
-// Package cli は geminus のサブコマンドを解釈し、終了コードを決める。
+// Package cli parses geminus subcommands and determines their exit codes.
 package cli
 
 import (
@@ -8,31 +8,31 @@ import (
 	"io"
 )
 
-// 終了コード。これ以外の値は子プロセスの終了コードをそのまま返す（run / ask）。
+// Exit codes used by geminus itself. run and ask pass through the child's exit code.
 const (
-	ExitOK    = 0 // 正常終了
-	ExitError = 1 // geminus 自体のエラー（I/O、PTY 確保失敗など）
-	ExitUsage = 2 // 使い方のエラー
+	ExitOK    = 0 // Success
+	ExitError = 1 // Internal geminus error, such as I/O or PTY allocation failure
+	ExitUsage = 2 // Usage error
 )
 
 const programName = "geminus"
 
-// Env はコマンドが使う入出力。テストではバッファに差し替える。
+// Env holds the command's I/O streams. Tests can substitute buffers.
 type Env struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 }
 
-// Invocation は1回のコマンド実行に渡す、解釈済みの入力。
+// Invocation holds the parsed inputs for one command execution.
 type Invocation struct {
 	Env     Env
 	Options Options
-	// Args はフラグを除いた位置引数。
+	// Args contains the positional arguments after flag parsing.
 	Args []string
 }
 
-// Run は args（プログラム名を除く）を解釈して実行し、終了コードを返す。
+// Run parses and executes args (excluding the program name) and returns the exit code.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	env := Env{Stdin: stdin, Stdout: stdout, Stderr: stderr}
 
@@ -90,8 +90,8 @@ func runHelp(env Env, args []string) int {
 	}
 }
 
-// usageError は使い方のエラーを stderr に出し、ExitUsage を返す。
-// command が空ならトップレベルのエラーとして扱う。
+// usageError prints a usage error to stderr and returns ExitUsage. An empty command denotes
+// a top-level error.
 func usageError(env Env, command, msg string) int {
 	if command == "" {
 		fmt.Fprintf(env.Stderr, "%s: %s\nRun '%s --help' for usage.\n", programName, msg, programName)
@@ -101,7 +101,7 @@ func usageError(env Env, command, msg string) int {
 	return ExitUsage
 }
 
-// fail は geminus 自体のエラーを stderr に出し、ExitError を返す。
+// fail prints an internal geminus error to stderr and returns ExitError.
 func fail(env Env, command string, err error) int {
 	fmt.Fprintf(env.Stderr, "%s %s: %v\n", programName, command, err)
 	return ExitError

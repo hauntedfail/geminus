@@ -12,20 +12,20 @@ import (
 )
 
 const (
-	// lsLimit は --all が無いときに ls が出す件数。
+	// lsLimit is the maximum number of sessions ls displays without --all.
 	lsLimit = 20
-	// timeLayout は一覧と show で使う時刻の書式（ローカル時刻）。
+	// timeLayout formats local times in ls and show.
 	timeLayout = "2006-01-02 15:04:05"
-	// statusStale は、running のまま中継していたプロセスがいなくなったセッションの表示。
+	// statusStale labels a session still marked running after its relay process has exited.
 	statusStale = "stale"
 )
 
-// sessionView は ls / show の JSON 出力。session.json の内容に、今の状態を足したもの。
+// sessionView adds current state to session.json metadata for ls and show JSON output.
 type sessionView struct {
 	session.Meta
-	// Active は、中継しているプロセスが今も生きているかを表す。
+	// Active reports whether the relay process is still alive.
 	Active bool `json:"active"`
-	// Dir はセッションのファイルがあるディレクトリ。show だけが入れる。
+	// Dir holds the session files' directory. Only show sets it.
 	Dir string `json:"dir,omitempty"`
 }
 
@@ -33,7 +33,8 @@ func viewOf(meta session.Meta) sessionView {
 	return sessionView{Meta: meta, Active: meta.Active()}
 }
 
-// displayStatus は人が読む状態を返す。running は、プロセスが生きている場合だけそう表示する。
+// displayStatus returns the human-readable status, showing running only while the process
+// is alive.
 func displayStatus(meta session.Meta) string {
 	if meta.Status == session.StatusRunning && !meta.Active() {
 		return statusStale
@@ -51,7 +52,7 @@ func runLs(inv Invocation) int {
 		return fail(inv.Env, name, err)
 	}
 
-	// 読めないセッションがあっても、読めた分は出す。
+	// Display readable sessions even if others could not be read.
 	metas, listErr := store.List()
 	hidden := 0
 	if !inv.Options.Ls.All && len(metas) > lsLimit {
@@ -100,7 +101,7 @@ func exitText(meta session.Meta) string {
 	return strconv.Itoa(*meta.ExitCode)
 }
 
-// orDash は s を端末に出せる形にして返す。空なら "-"。
+// orDash returns terminal-safe text, or "-" if s is empty.
 func orDash(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return "-"

@@ -14,16 +14,16 @@ import (
 )
 
 const (
-	// versionTimeout は `<agent> --version` を待つ時間。
+	// versionTimeout limits how long to wait for `<agent> --version`.
 	versionTimeout = 5 * time.Second
-	// maxVersionLen は表示するバージョン文字列の上限（文字数）。
+	// maxVersionLen limits the displayed version string in characters.
 	maxVersionLen = 120
 )
 
-// agentView は agents / doctor の出力。検出結果にバージョンを足したもの。
+// agentView adds version information to detection results for agents and doctor.
 type agentView struct {
 	agent.Detection
-	// Version は `<binary> --version` の最初の行。取れなければ空。
+	// Version is the first line of `<binary> --version`, or empty if unavailable.
 	Version string `json:"version,omitempty"`
 }
 
@@ -45,8 +45,8 @@ func runAgents(inv Invocation) int {
 	return ExitOK
 }
 
-// detectAgents は登録済みの全バックエンドを検出し、見つかったものはバージョンも調べる。
-// バージョンの問い合わせは並行に行う。
+// detectAgents checks all registered backends and probes the versions of those found in
+// parallel.
 func detectAgents() []agentView {
 	detections := agent.DetectAll()
 	views := make([]agentView, len(detections))
@@ -66,13 +66,13 @@ func detectAgents() []agentView {
 	return views
 }
 
-// probeVersion は `path --version` の最初の行を返す。失敗や時間切れは空を返す
-// （バージョンが分からなくても、バックエンドは使える）。
+// probeVersion returns the first line of `path --version`, or an empty string on error or
+// timeout. A backend can still be used if its version is unknown.
 func probeVersion(path string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), versionTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "--version")
-	// 孫プロセスが出力を握ったままでも、時間切れの後で待ち続けない。
+	// Don't keep waiting after the timeout if a grandchild still has the output pipe open.
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
@@ -90,7 +90,7 @@ func firstLine(s string) string {
 		if runes := []rune(line); len(runes) > maxVersionLen {
 			line = string(runes[:maxVersionLen])
 		}
-		// 他のプログラムの出力なので、端末に出せる形にしてから返す。
+		// Make external program output safe to display on a terminal.
 		return printable(line)
 	}
 	return ""

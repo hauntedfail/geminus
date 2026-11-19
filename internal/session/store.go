@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// EnvHome は状態ディレクトリを上書きする環境変数。
+// EnvHome names the environment variable that overrides the state directory.
 const EnvHome = "GEMINUS_HOME"
 
 const (
@@ -24,12 +24,12 @@ const (
 	transcriptName  = "transcript.jsonl"
 	rawFileName     = "raw.log"
 
-	// 同じ秒に作られた ID が衝突したときの再試行回数。
+	// Number of retries if IDs generated in the same second collide.
 	maxIDAttempts = 16
 )
 
-// ResolveHome は状態ディレクトリを決める。
-// 優先順は override（--home）、環境変数 GEMINUS_HOME、~/.geminus。
+// ResolveHome chooses the state directory: override (--home) takes precedence over GEMINUS_HOME,
+// which takes precedence over ~/.geminus.
 func ResolveHome(override string) (string, error) {
 	if override != "" {
 		return filepath.Abs(override)
@@ -44,14 +44,14 @@ func ResolveHome(override string) (string, error) {
 	return filepath.Join(userHome, ".geminus"), nil
 }
 
-// Store は1つの GEMINUS_HOME 配下のセッションを読み書きする。
+// Store reads and writes sessions under one GEMINUS_HOME.
 type Store struct {
 	home string
 	now  func() time.Time
 }
 
-// Open は home を状態ディレクトリとする Store を返す。
-// ディレクトリは最初の Create まで作らない（ls や doctor で副作用を出さないため）。
+// Open returns a Store rooted at home. It creates no directory until the first Create, so commands
+// such as ls and doctor have no side effects.
 func Open(home string) (*Store, error) {
 	if home == "" {
 		return nil, errors.New("session: home directory is empty")
@@ -63,12 +63,12 @@ func Open(home string) (*Store, error) {
 	return &Store{home: abs, now: time.Now}, nil
 }
 
-// Home は状態ディレクトリの絶対パスを返す。
+// Home returns the absolute path to the state directory.
 func (s *Store) Home() string { return s.home }
 
 func (s *Store) sessionsDir() string { return filepath.Join(s.home, sessionsDirName) }
 
-// Paths はセッションが使うファイルのパス。
+// Paths holds the paths to a session's files.
 type Paths struct {
 	Dir        string
 	Meta       string
@@ -76,7 +76,7 @@ type Paths struct {
 	Raw        string
 }
 
-// Paths は id のセッションが使うパスを返す。ファイルの有無は確かめない。
+// Paths returns the paths for session id without checking whether they exist.
 func (s *Store) Paths(id string) (Paths, error) {
 	if err := checkID(id); err != nil {
 		return Paths{}, err
@@ -90,16 +90,16 @@ func (s *Store) Paths(id string) (Paths, error) {
 	}, nil
 }
 
-// CreateParams は新しいセッションの初期値。
+// CreateParams holds the initial values for a new session.
 type CreateParams struct {
 	Title string
 	Agent string
-	// AgentSession は分かっていれば渡す。ID から作るキー（hermes）は Create の後で Update する。
+	// Set AgentSession if known. For keys derived from the ID (hermes), use Update after Create.
 	AgentSession *AgentSession
 	Cwd          string
 }
 
-// Create は新しいセッションのディレクトリと session.json を作る。
+// Create creates a session directory and its session.json.
 func (s *Store) Create(p CreateParams) (Meta, error) {
 	if err := s.ensureSessionsDir(); err != nil {
 		return Meta{}, err
@@ -122,7 +122,7 @@ func (s *Store) Create(p CreateParams) (Meta, error) {
 		Status:       StatusCreated,
 	}.clone()
 	if err := s.writeMeta(meta); err != nil {
-		// 中身の無いセッションを残さない。
+		// Do not leave an empty session behind.
 		if rmErr := os.RemoveAll(filepath.Join(s.sessionsDir(), id)); rmErr != nil {
 			return Meta{}, errors.Join(err, rmErr)
 		}
@@ -131,9 +131,8 @@ func (s *Store) Create(p CreateParams) (Meta, error) {
 	return meta, nil
 }
 
-// Load は id の session.json を読む。
-// セッションが無ければ ErrNotFound、読めない内容なら ErrCorrupt、
-// session.json が通常ファイルでなければ（シンボリックリンクなど）ErrNotRegular を返す。
+// Load reads session.json for session id. It returns ErrNotFound for a missing session, ErrCorrupt
+// for malformed content, or ErrNotRegular if session.json is a symlink or other nonregular file.
 func (s *Store) Load(id string) (Meta, error) {
 	paths, err := s.existingPaths(id)
 	if err != nil {
@@ -162,8 +161,8 @@ func (s *Store) Load(id string) (Meta, error) {
 	return meta, nil
 }
 
-// Save は meta を session.json に原子的に書き、updated_at を進めた値を返す。
-// 渡した meta は変更しない。削除済みのセッションは作り直さず ErrNotFound を返す。
+// Save writes meta to session.json atomically and returns a copy with an updated updated_at. It
+// leaves meta unchanged and returns ErrNotFound rather than recreating a deleted session.
 func (s *Store) Save(meta Meta) (Meta, error) {
 	if _, err := s.existingPaths(meta.ID); err != nil {
 		return Meta{}, err
@@ -174,7 +173,7 @@ func (s *Store) Save(meta Meta) (Meta, error) {
 	next.UpdatedAt = s.timestamp()
 	if err := s.writeMeta(next); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			// 確認と書き込みの間に別プロセスが消した。
+			// Another process deleted the session between the check and the write.
 			return Meta{}, fmt.Errorf("session %s: %w", meta.ID, ErrNotFound)
 		}
 		return Meta{}, err
@@ -182,8 +181,8 @@ func (s *Store) Save(meta Meta) (Meta, error) {
 	return next, nil
 }
 
-// Update は id のメタを読み、change の返す値を保存する。
-// change が ID を書き換えても元の ID で保存する。
+// Update reads the session metadata and saves the value returned by change. It uses the original
+// ID even if change modifies it.
 func (s *Store) Update(id string, change func(Meta) Meta) (Meta, error) {
 	current, err := s.Load(id)
 	if err != nil {
@@ -194,10 +193,10 @@ func (s *Store) Update(id string, change func(Meta) Meta) (Meta, error) {
 	return s.Save(next)
 }
 
-// List は全セッションを updated_at の降順（同時刻は ID の降順）で返す。
+// List returns all sessions by descending updated_at, breaking ties by descending ID.
 //
-// 読めないセッションがあっても残りは返し、読めなかった分を error にまとめる。
-// 呼び出し側は error が非 nil でも返ってきたスライスを使ってよい。
+// List returns readable sessions even when others fail, combining the failures into one error.
+// Callers can use the slice even when the error is non-nil.
 func (s *Store) List() ([]Meta, error) {
 	entries, err := os.ReadDir(s.sessionsDir())
 	if err != nil {
@@ -229,8 +228,8 @@ func (s *Store) List() ([]Meta, error) {
 	return metas, errors.Join(broken...)
 }
 
-// Delete は id のセッションをディレクトリごと消す。無ければ ErrNotFound を返す。
-// session.json が壊れていても消せる。
+// Delete removes the entire session directory, even if session.json is corrupt. It returns
+// ErrNotFound if the session does not exist.
 func (s *Store) Delete(id string) error {
 	paths, err := s.Paths(id)
 	if err != nil {
@@ -248,7 +247,8 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
-// timestamp は現在時刻から単調時計の読みを落とす。JSON を往復した値と一致させるため。
+// timestamp removes the monotonic clock reading from the current time so it compares equal after a
+// JSON round trip.
 func (s *Store) timestamp() time.Time {
 	return s.now().Round(0)
 }
@@ -265,12 +265,12 @@ func (s *Store) ensureSessionsDir() error {
 	return nil
 }
 
-// ensurePrivateDir は dir が無ければ 0700 で作る。
-// 既にあるディレクトリの権限は変えない（利用者が --home で渡した場所かもしれない）。
+// ensurePrivateDir creates dir with mode 0700 if it does not exist. Leave existing permissions
+// unchanged because the user may have supplied this location with --home.
 func ensurePrivateDir(dir string) error {
 	err := os.Mkdir(dir, dirPerm)
 	if err == nil {
-		// umask で削られた場合も 0700 に揃える。
+		// Use mode 0700 even if the umask removed some bits.
 		if err := os.Chmod(dir, dirPerm); err != nil {
 			return fmt.Errorf("chmod %s: %w", dir, err)
 		}
@@ -289,8 +289,8 @@ func ensurePrivateDir(dir string) error {
 	return nil
 }
 
-// makeSessionDir は未使用の ID を選び、そのディレクトリを作る。
-// os.Mkdir が既存を拒否するので、ID の予約とディレクトリ作成が1操作で済む。
+// makeSessionDir chooses an unused ID and creates its directory. Because os.Mkdir rejects existing
+// paths, directory creation also reserves the ID in one operation.
 func (s *Store) makeSessionDir(now time.Time) (string, error) {
 	for attempt := 0; attempt < maxIDAttempts; attempt++ {
 		id, err := NewID(now)
@@ -328,8 +328,8 @@ func (s *Store) writeMeta(meta Meta) error {
 	return nil
 }
 
-// writeFileAtomic は同じディレクトリの一時ファイルに書いてから rename で置き換える。
-// 読む側は古い内容か新しい内容のどちらかだけを見る。
+// writeFileAtomic writes to a temporary file in the same directory, then renames it into place.
+// Readers see either the old contents or the new contents.
 func writeFileAtomic(path string, data []byte) (err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -364,8 +364,8 @@ func removeIfExists(path string) error {
 	return nil
 }
 
-// replaceFile は rename で置き換える。Windows では、別プロセスが読んでいる間の
-// rename が共有違反で失敗するので、短く待って再試行する。
+// replaceFile replaces the file by renaming. On Windows a concurrent reader may cause a sharing
+// violation, so retry after a short delay.
 func replaceFile(from, to string) error {
 	attempts := 1
 	if runtime.GOOS == "windows" {

@@ -69,7 +69,7 @@ func TestANSIStripper(t *testing.T) {
 	}
 }
 
-// シーケンスが Write の境界で切れていても、結果は変わらない。
+// Splitting a sequence across writes must not change the result.
 func TestANSIStripperSplitAcrossWrites(t *testing.T) {
 	const in = "\x1b[1;32mgreen\x1b[0m\r\n\x1b]0;title\x07日本語\b!\u009b1m\u00e9\r\nend"
 	want := stripString(t, in)

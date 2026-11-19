@@ -6,42 +6,44 @@ import (
 	"unicode/utf8"
 )
 
-// maxPendingLine は、改行が来ないまま溜める1行の上限。超えた分は先に書き出す。
-// 全画面 TUI の出力は改行を含まないことがあり、溜め続けるとメモリを使い切る。
+// maxPendingLine limits how much of a line to buffer before flushing. Full-screen TUIs may
+// never emit a newline and would otherwise exhaust memory.
 const maxPendingLine = 64 << 10
 
 type ansiState int
 
 const (
 	ansiGround ansiState = iota
-	ansiEscape           // ESC の直後
+	ansiEscape           // Immediately after ESC
 	ansiEscapeIntermediate
-	ansiCSI          // ESC [ ... 終端バイトまで
-	ansiOSC          // ESC ] ... BEL か ST まで
-	ansiOSCEscape    // OSC の中の ESC（ST の1バイト目かもしれない）
-	ansiString       // DCS / SOS / PM / APC ... ST まで
-	ansiStringEscape // 文字列の中の ESC
+	ansiCSI          // ESC [ through the final byte
+	ansiOSC          // ESC ] through BEL or ST
+	ansiOSCEscape    // ESC within OSC, possibly the first byte of ST
+	ansiString       // DCS, SOS, PM, or APC through ST
+	ansiStringEscape // ESC within a control string
 )
 
-// ansiStripper は端末向けの出力から制御シーケンスを取り除き、読める文字だけを書く。
+// ansiStripper removes control sequences from terminal output and writes the readable text.
 //
-// 端末を再現はしない。色やカーソル移動のシーケンスを捨て、行の中だけで
-// バックスペースと行頭復帰（CR）を反映する。全画面 TUI の出力はきれいには並ばない。
-// シーケンスが Write の境界で切れていてもよい。最後に Close を呼ぶ。
+// This is not a terminal emulator. It discards colors and cursor movements and applies
+// backspace and carriage return only within the current line. Full-screen TUI output may
+// not line up. Sequences can span writes; call Close after the last write.
 //
-// 出力は UTF-8 として扱う。C1 制御文字（U+0080〜U+009F）と、文字の途中でない
-// 継続バイトは捨てる。端末によっては 8 ビットの制御シーケンスとして解釈されるため。
-// それ以外の符号化（Shift_JIS など）の出力は、そのまま見たければ --raw を使う。
+// Treat output as UTF-8. Drop C1 controls (U+0080 through U+009F) and stray continuation
+// bytes because terminals may interpret them as 8-bit control sequences. Use --raw to see
+// other encodings such as Shift_JIS unchanged.
 type ansiStripper struct {
 	w     io.Writer
 	state ansiState
-	// line は現在の行のうち、まだ書いていない部分。バックスペースと CR で書き換えるために溜める。
+	// line buffers the unwritten part of the current line so backspace and carriage return can
+	// modify it.
 	line []byte
-	// pendingCR は CR を見た直後であることを表す。次が LF なら改行、文字なら行を書き直す。
+	// pendingCR marks a carriage return. A following LF ends the line; new text overwrites it.
 	pendingCR bool
-	// heldC2 は 0xC2 を見た直後であることを表す。次のバイトで C1 制御文字かどうかが決まる。
+	// heldC2 marks a pending 0xC2 byte. The next byte determines whether it encodes a C1
+	// control.
 	heldC2 bool
-	// contLeft は、今の UTF-8 文字であと何バイトの継続バイトを待っているか。
+	// contLeft counts the continuation bytes still expected for the current UTF-8 character.
 	contLeft int
 	err      error
 }
@@ -50,7 +52,8 @@ func newANSIStripper(w io.Writer) *ansiStripper {
 	return &ansiStripper{w: w}
 }
 
-// Write は p を処理する。書き込み先がエラーを返したら、以後は何も書かずそのエラーを返す。
+// Write processes p. After a write error it returns that error without writing anything
+// further.
 func (s *ansiStripper) Write(p []byte) (int, error) {
 	for _, b := range p {
 		if s.err != nil {
@@ -64,7 +67,7 @@ func (s *ansiStripper) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Close は溜めていた行を書き出す。
+// Close flushes the buffered line.
 func (s *ansiStripper) Close() error {
 	s.flushLine()
 	return s.err
@@ -94,7 +97,8 @@ func (s *ansiStripper) step(b byte) {
 			s.state = ansiStringEscape
 		}
 	case ansiOSCEscape, ansiStringEscape:
-		// ESC \ は ST（文字列の終端）。それ以外は新しいエスケープシーケンスの始まり。
+		// ESC followed by a backslash is ST (string terminator). Otherwise a new escape sequence
+		// begins.
 		if b == '\\' {
 			s.state = ansiGround
 			return
@@ -109,7 +113,7 @@ func (s *ansiStripper) ground(b byte) {
 		s.highByte(b)
 		return
 	}
-	// ASCII が来たら、途中だった UTF-8 文字（壊れている）は打ち切る。
+	// An ASCII byte ends any incomplete (invalid) UTF-8 character.
 	s.heldC2 = false
 	s.contLeft = 0
 	switch {
@@ -126,28 +130,28 @@ func (s *ansiStripper) ground(b byte) {
 	case b == '\t' || (b >= 0x20 && b != 0x7f):
 		s.put(b)
 	}
-	// それ以外の制御文字（BEL、NUL、DEL など）は捨てる。
+	// Discard other controls, including BEL, NUL, and DEL.
 }
 
-// highByte は 0x80 以上のバイト（UTF-8 の2バイト目以降か、先頭バイト）を処理する。
+// highByte handles bytes at or above 0x80, either UTF-8 lead or continuation bytes.
 func (s *ansiStripper) highByte(b byte) {
 	continuation := b&0xc0 == 0x80
 	switch {
 	case s.heldC2:
 		s.heldC2 = false
 		if !continuation {
-			// 0xC2 の後に継続バイトが来なかった。0xC2 は捨てて、このバイトから読み直す。
+			// No continuation byte followed 0xC2. Drop it and process the current byte again.
 			s.highByte(b)
 			return
 		}
 		if b <= 0x9f {
-			return // U+0080〜U+009F: C1 制御文字
+			return // U+0080 through U+009F: C1 controls
 		}
 		s.put(0xc2)
 		s.put(b)
 	case continuation:
 		if s.contLeft == 0 {
-			return // 文字の途中でない継続バイト。8 ビットの C1 制御文字かもしれない。
+			return // A stray continuation byte might be an 8-bit C1 control.
 		}
 		s.contLeft--
 		s.put(b)
@@ -160,7 +164,7 @@ func (s *ansiStripper) highByte(b byte) {
 	}
 }
 
-// continuationBytes は、UTF-8 の先頭バイト lead に続く継続バイトの数を返す。
+// continuationBytes returns the number of continuation bytes expected after lead.
 func continuationBytes(lead byte) int {
 	switch {
 	case lead >= 0xc3 && lead <= 0xdf:
@@ -174,10 +178,10 @@ func continuationBytes(lead byte) int {
 	}
 }
 
-// put は表示する1バイトを現在の行に足す。
+// put appends one display byte to the current line.
 func (s *ansiStripper) put(b byte) {
 	if s.pendingCR {
-		// 行頭に戻ってからの出力は、それまでの行を上書きする（進捗表示など）。
+		// Output after a carriage return overwrites the line, as in a progress indicator.
 		s.pendingCR = false
 		s.line = s.line[:0]
 	}
@@ -198,13 +202,13 @@ func (s *ansiStripper) escape(b byte) {
 	case b >= 0x20 && b <= 0x2f:
 		s.state = ansiEscapeIntermediate
 	case b == 0x1b:
-		// ESC が続いた。後ろの ESC から読み直す。
+		// Consecutive ESC bytes: restart at the second ESC.
 	case b < 0x20:
-		// シーケンスの途中に入った制御文字（改行など）は、端末と同じく実行する。
+		// Apply controls such as newline within a sequence as a terminal would.
 		s.state = ansiGround
 		s.ground(b)
 	default:
-		// ESC 7 や ESC = のような2バイトのシーケンス。
+		// Two-byte sequences such as ESC 7 or ESC =.
 		s.state = ansiGround
 	}
 }
@@ -212,11 +216,11 @@ func (s *ansiStripper) escape(b byte) {
 func (s *ansiStripper) csi(b byte) {
 	switch {
 	case b >= 0x20 && b <= 0x3f:
-		// パラメータと中間バイト。
+		// Parameter and intermediate bytes.
 	case b == 0x1b:
 		s.state = ansiEscape
 	case b < 0x20:
-		// 壊れたシーケンス。制御文字として扱い直す。
+		// Malformed sequence: reprocess the byte as a control.
 		s.state = ansiGround
 		s.ground(b)
 	default:
@@ -224,7 +228,8 @@ func (s *ansiStripper) csi(b byte) {
 	}
 }
 
-// eraseLastRune は現在の行の最後の1文字を消す。既に書き出した分は消せない。
+// eraseLastRune removes the last character from the current line. It cannot erase text
+// already flushed.
 func (s *ansiStripper) eraseLastRune() {
 	if len(s.line) == 0 {
 		return
@@ -241,13 +246,13 @@ func (s *ansiStripper) flushLine() {
 	s.line = s.line[:0]
 }
 
-// tailWriter は書き込まれた内容の最後の n 行だけを覚え、Close で w に書く。
-// 改行で終わっていない最後の行も1行と数える。
+// tailWriter keeps the last n lines and writes them to w on Close. A final unterminated
+// line counts as one line.
 type tailWriter struct {
 	w       io.Writer
 	n       int
-	lines   [][]byte // 改行で終わった行。古い順
-	partial []byte   // まだ改行が来ていない行
+	lines   [][]byte // Complete lines, oldest first
+	partial []byte   // Line not yet terminated by a newline
 }
 
 func newTailWriter(w io.Writer, n int) *tailWriter {
@@ -272,13 +277,13 @@ func (t *tailWriter) Write(p []byte) (int, error) {
 func (t *tailWriter) push(line []byte) {
 	t.lines = append(t.lines, line)
 	if len(t.lines) > t.n {
-		// 先頭の要素を手放して、覚えている行数を n に保つ。
+		// Release the oldest entry to keep at most n lines.
 		t.lines[0] = nil
 		t.lines = t.lines[1:]
 	}
 }
 
-// Close は覚えている行を w に書く。
+// Close writes the retained lines to w.
 func (t *tailWriter) Close() error {
 	if len(t.partial) > 0 {
 		t.push(t.partial)

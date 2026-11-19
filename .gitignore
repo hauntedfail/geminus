@@ -1,14 +1,14 @@
-# ビルド成果物
+# Build artifacts
 /geminus
 /geminus.exe
 /dist/
 
-# テスト・プロファイル
+# Test and profiling output
 *.test
 *.out
 coverage.*
 
-# エディタ・OS
+# Editor and OS files
 .DS_Store
 .idea/
 .vscode/

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// transcript.jsonl のイベント種別。
+// Event types used in transcript.jsonl.
 const (
 	EventStart  = "session.start"
 	EventOutput = "output"
@@ -20,10 +20,10 @@ const (
 	EventExit   = "session.exit"
 )
 
-// Event は transcript.jsonl の1行。
+// Event represents one line of transcript.jsonl.
 //
-// Offset / Bytes / Code は 0 に意味があるのでポインタで持つ。
-// output イベントの Offset と Bytes は raw.log の範囲 [Offset, Offset+Bytes) を指す。
+// Offset, Bytes and Code are pointers because zero is meaningful. For an output event, Offset and
+// Bytes identify the range [Offset, Offset+Bytes) in raw.log.
 type Event struct {
 	Seq    int64     `json:"seq"`
 	TS     time.Time `json:"ts"`
@@ -36,23 +36,23 @@ type Event struct {
 	Code   *int      `json:"code,omitempty"`
 }
 
-// StartEvent はエージェントの起動を表す。
-// argv の秘密は呼び出し側で伏せてから渡す（agent.RedactArgv）。
+// StartEvent records agent startup. Callers must redact secrets from argv first
+// (agent.RedactArgv).
 func StartEvent(agent string, argv []string) Event {
 	return Event{Type: EventStart, Agent: agent, Argv: append([]string(nil), argv...)}
 }
 
-// InputEvent は利用者の入力を表す（ask と非 TTY のみ）。
+// InputEvent records user input (ask and non-TTY input only).
 func InputEvent(text string) Event {
 	return Event{Type: EventInput, Text: text}
 }
 
-// NoteEvent は geminus 自身の注記を表す。
+// NoteEvent records a note from geminus itself.
 func NoteEvent(text string) Event {
 	return Event{Type: EventNote, Text: text}
 }
 
-// ExitEvent は子プロセスの終了を表す。
+// ExitEvent records the child's exit.
 func ExitEvent(code int) Event {
 	return Event{Type: EventExit, Code: &code}
 }
@@ -61,13 +61,12 @@ func outputEvent(offset, size int64, ts time.Time) Event {
 	return Event{Type: EventOutput, TS: ts, Offset: &offset, Bytes: &size}
 }
 
-// ReadEvents は id の transcript.jsonl を先頭から読む。
+// ReadEvents reads the session's transcript.jsonl from the beginning.
 //
-// transcript.jsonl が通常ファイルでなければ（シンボリックリンク、FIFO など）読まずに
-// ErrNotRegular を返す。
-// 壊れた行は飛ばして残りを返し、飛ばした行を ErrCorrupt を含む error にまとめる。
-// 呼び出し側は error が非 nil でも返ってきたイベントを使ってよい。
-// transcript がまだ無いセッションは空を返す。
+// If transcript.jsonl is not a regular file (for example, a symlink or FIFO), ReadEvents returns
+// ErrNotRegular without reading it. It skips corrupt lines and reports them together in an error
+// wrapping ErrCorrupt. Callers can use the returned events even when the error is non-nil. A
+// session without a transcript yields no events.
 func (s *Store) ReadEvents(id string) ([]Event, error) {
 	paths, err := s.existingPaths(id)
 	if err != nil {
@@ -98,8 +97,8 @@ func (s *Store) ReadEvents(id string) ([]Event, error) {
 	return events, errors.Join(broken...)
 }
 
-// existingPaths は Paths に加えて、セッションのディレクトリが実ディレクトリとして
-// あることを確かめる。シンボリックリンクなら、その先を読み書きしないよう ErrNotRegular を返す。
+// existingPaths also checks that the session directory returned by Paths exists and is a real
+// directory. It returns ErrNotRegular for a symlink to avoid reading or writing through it.
 func (s *Store) existingPaths(id string) (Paths, error) {
 	paths, err := s.Paths(id)
 	if err != nil {
@@ -114,8 +113,8 @@ func (s *Store) existingPaths(id string) (Paths, error) {
 	return paths, nil
 }
 
-// scanLines は r の空でない行ごとに visit を呼ぶ。
-// terminated は行が改行で終わっていたかを表す。行の長さに上限は無い。
+// scanLines calls visit for each nonempty line in r. The terminated flag reports whether the line
+// ended in a newline. Line length is unbounded.
 func scanLines(r io.Reader, visit func(lineNo int, line []byte, terminated bool)) error {
 	reader := bufio.NewReader(r)
 	for lineNo := 1; ; lineNo++ {
@@ -133,10 +132,10 @@ func scanLines(r io.Reader, visit func(lineNo int, line []byte, terminated bool)
 	}
 }
 
-// transcriptState は追記を再開するために必要な、既存 transcript の状態。
+// transcriptState holds the information needed to resume appending to an existing transcript.
 type transcriptState struct {
 	lastSeq int64
-	// tornTail は最後の行が改行で終わっていないことを表す（書き込み途中のクラッシュ）。
+	// tornTail means the last line lacks a newline, as after a crash during a write.
 	tornTail bool
 }
 
@@ -156,7 +155,7 @@ func readTranscriptState(path string) (transcriptState, error) {
 		var head struct {
 			Seq int64 `json:"seq"`
 		}
-		// 読めない行は seq の計算から外す。行自体は ReadEvents が報告する。
+		// Ignore unreadable lines when calculating seq. ReadEvents reports the lines themselves.
 		if json.Unmarshal(line, &head) == nil && head.Seq > state.lastSeq {
 			state.lastSeq = head.Seq
 		}

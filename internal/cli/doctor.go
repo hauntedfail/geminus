@@ -18,41 +18,43 @@ import (
 	"github.com/hauntedfail/geminus/internal/version"
 )
 
-// 診断1件の結果。fail が1つでもあれば doctor は ExitError を返す。
+// Diagnostic outcomes. A single failure makes doctor return ExitError.
 const (
 	checkOK   = "ok"
 	checkWarn = "warn"
 	checkFail = "fail"
 )
 
-// sessionsDirName は状態ディレクトリの下でセッションを置くディレクトリ名（internal/session と同じ）。
+// sessionsDirName names the sessions subdirectory under the state directory and must match
+// internal/session.
 const sessionsDirName = "sessions"
 
-// check は診断1件。
+// check represents one diagnostic check.
 type check struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Detail string `json:"detail"`
 }
 
-// echoFix は echo が切れたままの端末を直すコマンド。doctor は案内するだけで実行しない。
+// echoFix is the command to restore terminal echo. doctor suggests it but never runs it.
 const echoFix = "stty sane"
 
-// terminalState は doctor を実行した端末の状態。
+// terminalState describes the terminal on which doctor is running.
 type terminalState struct {
-	// TTY は標準入力が端末かどうか。
+	// TTY reports whether stdin is a terminal.
 	TTY bool `json:"tty"`
-	// Cols と Rows は端末のサイズ。取れなければ 0。
+	// Cols and Rows give the terminal dimensions, or zero if unavailable.
 	Cols int `json:"cols"`
 	Rows int `json:"rows"`
-	// Echo は端末が入力を echo する設定かどうか。EchoSupported が false なら意味を持たない。
+	// Echo reports whether the terminal echoes input. It is meaningful only if EchoSupported is
+	// true.
 	Echo bool `json:"echo"`
-	// EchoSupported は Echo を読めたかどうか。
-	// Windows と、標準入出力のどれも端末でない場合は false。
+	// EchoSupported reports whether the echo setting could be read. It is false on Windows or
+	// if none of the standard streams is a terminal.
 	EchoSupported bool `json:"echo_supported"`
 }
 
-// doctorReport は `doctor --json` の出力。
+// doctorReport is the output of `doctor --json`.
 type doctorReport struct {
 	OK       bool          `json:"ok"`
 	Terminal terminalState `json:"terminal"`
@@ -101,8 +103,8 @@ func writeChecks(w io.Writer, checks []check) error {
 	return tw.Flush()
 }
 
-// checkHome は状態ディレクトリと config.json を調べる。ディレクトリは作らない。
-// 既にあるディレクトリには、書けることを確かめるための一時ファイルを作ってすぐ消す。
+// checkHome inspects the state directory and config.json without creating directories. It
+// briefly creates a temporary file in an existing directory to verify write access.
 func checkHome(inv Invocation) []check {
 	const name = "home"
 	home, err := session.ResolveHome(inv.Options.Home)
@@ -121,8 +123,8 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// checkStateDir は dir が自分だけの書けるディレクトリかを調べる。
-// まだ無いディレクトリは、最初の run で作るので正常とする。
+// checkStateDir checks that dir is writable only by its owner. A missing directory is fine:
+// the first run creates it.
 func checkStateDir(name, dir string) check {
 	info, err := os.Stat(dir)
 	switch {
@@ -137,7 +139,7 @@ func checkStateDir(name, dir string) check {
 		return check{Name: name, Status: checkFail, Detail: fmt.Sprintf("%s is not writable: %v", dir, err)}
 	}
 	mode := info.Mode().Perm()
-	// Windows の権限ビットは ACL を表さないので、見ても意味が無い。
+	// Windows permission bits do not reflect ACLs, so skip this check there.
 	if runtime.GOOS != "windows" && mode&0o077 != 0 {
 		detail := fmt.Sprintf("%s has mode %04o; others can read it. Sessions may hold secrets: chmod 700", dir, mode)
 		return check{Name: name, Status: checkWarn, Detail: detail}
@@ -145,7 +147,7 @@ func checkStateDir(name, dir string) check {
 	return check{Name: name, Status: checkOK, Detail: fmt.Sprintf("%s (mode %04o)", dir, mode)}
 }
 
-// probeWritable は dir に一時ファイルを作って消し、書けることを確かめる。
+// probeWritable checks write access by creating and removing a temporary file in dir.
 func probeWritable(dir string) error {
 	f, err := os.CreateTemp(dir, ".doctor-*")
 	if err != nil {
@@ -177,15 +179,17 @@ func checkPTY() check {
 	return check{Name: name, Status: checkOK, Detail: "a pty can be allocated"}
 }
 
-// inspectTerminal は標準入出力から端末の状態を読む。読むだけで、設定は変えない。
+// inspectTerminal reads terminal state from the standard streams without changing any
+// settings.
 func inspectTerminal(env Env) terminalState {
 	state := terminalState{TTY: isTTY(env.Stdin)}
-	// 0x0 を返す端末もある（サイズ未設定の PTY）。中継は既定のサイズを使うので、不明として扱う。
+	// A PTY with no configured size can report 0x0. Treat it as unknown; the relay uses its
+	// default size.
 	if cols, rows, err := proxy.NewTerminal(env.Stdin, env.Stdout).Size(); err == nil && cols > 0 && rows > 0 {
 		state.Cols, state.Rows = cols, rows
 	}
-	// echo は端末そのものの設定なので、端末を指している口のどれから読んでも同じ。
-	// `doctor < file` や `doctor | cat` でも読めるよう、順に試す。
+	// Echo belongs to the terminal, not the stream. Try each stream so `doctor < file` and
+	// `doctor | cat` can still read it.
 	for _, stream := range []any{env.Stdin, env.Stdout, env.Stderr} {
 		f, ok := stream.(*os.File)
 		if !ok {
@@ -199,8 +203,8 @@ func inspectTerminal(env Env) terminalState {
 	return state
 }
 
-// checkTerminal は標準入出力が端末かどうかとサイズを報告する。
-// 端末でなくても run は動くので、失敗にはしない。
+// checkTerminal reports terminal availability and size. A missing terminal is not a failure
+// because run works without one.
 func checkTerminal(env Env, state terminalState) check {
 	const name = "terminal"
 	detail := fmt.Sprintf("stdin: %s, stdout: %s", ttyText(env.Stdin), ttyText(env.Stdout))
@@ -212,10 +216,11 @@ func checkTerminal(env Env, state terminalState) check {
 	return check{Name: name, Status: checkOK, Detail: detail}
 }
 
-// checkEcho は端末の echo が切れたままになっていないかを報告する。
+// checkEcho reports whether terminal echo has been left off.
 //
-// geminus は中継の間だけ端末を raw mode にする。復元せずに落ちると echo が切れたまま残り、
-// 打った文字が見えなくなる。doctor は直さず、直し方を1行で案内する。
+// geminus uses raw mode only while relaying. A crash before restoration can leave echo off,
+// hiding typed characters. doctor prints a one-line remedy rather than changing the
+// setting.
 func checkEcho(state terminalState) check {
 	const name = "terminal echo"
 	switch {
@@ -243,8 +248,8 @@ func ttyText(stream any) string {
 	return "not a tty"
 }
 
-// checkAgents はバックエンドの検出結果を並べる。
-// claude も hermes も無くても cmd は使えるので、未検出は警告にとどめる。
+// checkAgents lists backend detection results. Missing Claude and Hermes warrant only a
+// warning because cmd still works.
 func checkAgents() []check {
 	var checks []check
 	for _, v := range detectAgents() {

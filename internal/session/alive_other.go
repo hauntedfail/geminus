@@ -2,8 +2,8 @@
 
 package session
 
-// ProcessAlive は pid のプロセスが存在するかを返す。
-// この OS では確かめる手段が無いので、常に false を返す（起動を妨げない側に倒す）。
+// ProcessAlive reports whether pid exists. This OS cannot check, so return false rather than
+// prevent startup.
 func ProcessAlive(pid int) bool {
 	return false
 }

@@ -13,11 +13,11 @@ import (
 	"github.com/hauntedfail/geminus/internal/session"
 )
 
-// outsideSecret は、セッションの外に置いた「読まれてはいけない」ファイルの中身。
+// outsideSecret is the content of a file outside the session that must never be read.
 const outsideSecret = "OUTSIDE-FILE-CONTENT"
 
-// plantSymlink は セッションの file を、外のファイルを指すシンボリックリンクに置き換える。
-// content は、辿れば問題なく読めてしまう内容にしておく。
+// plantSymlink replaces file in the session with a symlink to an external file. Use content
+// that would be readable if the link were followed.
 func plantSymlink(t *testing.T, s *sandbox, id, file, content string) {
 	t.Helper()
 	target := filepath.Join(t.TempDir(), "outside")
@@ -33,7 +33,7 @@ func plantSymlink(t *testing.T, s *sandbox, id, file, content string) {
 	}
 }
 
-// runWithin は、止まらずに終わることを確かめながらコマンドを実行する。
+// runWithin runs the command and checks that it does not hang.
 func runWithin(t *testing.T, s *sandbox, args ...string) result {
 	t.Helper()
 	done := make(chan result, 1)
@@ -57,7 +57,7 @@ func expectRefused(t *testing.T, r result) {
 	}
 }
 
-// log / show は、シンボリックリンクにすり替わったファイルの先を表示しない。
+// log and show must not display the target of a substituted symlink.
 func TestLogAndShowDoNotFollowSymlinks(t *testing.T) {
 	t.Run("raw.log", func(t *testing.T) {
 		s := newSandbox(t)
@@ -83,17 +83,17 @@ func TestLogAndShowDoNotFollowSymlinks(t *testing.T) {
 		expectRefused(t, runWithin(t, s, "show", id))
 		expectRefused(t, runWithin(t, s, "show", id, "--json"))
 
-		// ls は残りを出し、読めなかったセッションを stderr で知らせる。
+		// ls displays the remaining sessions and reports the unreadable session on stderr.
 		r := runWithin(t, s, "ls", "--all")
 		if strings.Contains(r.stdout, outsideSecret) || !strings.Contains(r.stderr, "not a regular file") {
 			t.Errorf("ls: stdout = %q, stderr = %q", r.stdout, r.stderr)
 		}
-		// すり替えられたセッションも rm で消せる。
+		// rm can still remove a session containing a substituted symlink.
 		s.ok("", "rm", id)
 	})
 }
 
-// FIFO は開くだけで書き手を待つ。log が止まらずにエラーで終わること。
+// Opening a FIFO can block waiting for a writer. log must return an error without hanging.
 func TestLogDoesNotBlockOnAFIFO(t *testing.T) {
 	for _, tt := range []struct {
 		file string
@@ -118,7 +118,8 @@ func TestLogDoesNotBlockOnAFIFO(t *testing.T) {
 	}
 }
 
-// run --resume は、すり替えられた session.json を読まず、リンク先にも書かない。
+// run --resume must neither read a substituted session.json symlink nor write to its
+// target.
 func TestResumeRefusesASymlinkedSession(t *testing.T) {
 	needShell(t)
 	s := newSandbox(t)

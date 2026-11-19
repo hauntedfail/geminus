@@ -6,19 +6,21 @@ import (
 	"strings"
 )
 
-// Globals は全コマンド共通のフラグ。コマンド名の前後どちらに書いてもよい。
+// Globals holds flags shared by all commands. They may appear before or after the command
+// name.
 type Globals struct {
-	// Home は GEMINUS_HOME を上書きする。空なら環境変数、無ければ ~/.geminus。
+	// Home overrides GEMINUS_HOME. If empty, use the environment variable, falling back to
+	// ~/.geminus.
 	Home string
-	// Agent はバックエンド名。空なら config、無ければ claude。
+	// Agent selects the backend. If empty, use the configuration, falling back to claude.
 	Agent string
-	// JSON は機械可読な出力を選ぶ。
+	// JSON selects machine-readable output.
 	JSON bool
-	// Verbose は診断を stderr に出す。
+	// Verbose enables diagnostics on stderr.
 	Verbose bool
 }
 
-// RunOptions は `geminus run` のフラグ。
+// RunOptions holds the flags for `geminus run`.
 type RunOptions struct {
 	Title    string
 	Resume   string
@@ -27,29 +29,29 @@ type RunOptions struct {
 	Force    bool
 }
 
-// AskOptions は `geminus ask` のフラグ。
+// AskOptions holds the flags for `geminus ask`.
 type AskOptions struct {
 	Session  string
 	Continue bool
 }
 
-// LsOptions は `geminus ls` のフラグ。
+// LsOptions holds the flags for `geminus ls`.
 type LsOptions struct {
 	All bool
 }
 
-// LogOptions は `geminus log` のフラグ。
+// LogOptions holds the flags for `geminus log`.
 type LogOptions struct {
 	Raw  bool
 	Tail int
 }
 
-// RmOptions は `geminus rm` のフラグ。
+// RmOptions holds the flags for `geminus rm`.
 type RmOptions struct {
 	Force bool
 }
 
-// Options は解釈済みのフラグ全体。
+// Options holds all parsed flags.
 type Options struct {
 	Globals
 	Run RunOptions
@@ -61,8 +63,8 @@ type Options struct {
 
 var globalFlagNames = map[string]bool{"home": true, "agent": true, "json": true, "v": true}
 
-// bindGlobals は共通フラグを登録する。既定値に現在値を渡すので、
-// コマンド名より前で指定された値はコマンド側の再解釈でも残る。
+// bindGlobals registers common flags with their current values as defaults so parsing the
+// subcommand preserves flags set before its name.
 func bindGlobals(fs *flag.FlagSet, o *Options) {
 	fs.StringVar(&o.Home, "home", o.Home, "keep state in `DIR` (default: $GEMINUS_HOME, else ~/.geminus)")
 	fs.StringVar(&o.Agent, "agent", o.Agent, "use backend `NAME` (default: config, else claude)")
@@ -72,7 +74,7 @@ func bindGlobals(fs *flag.FlagSet, o *Options) {
 
 func newQuietFlagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	// エラー文と使い方は cli.Run が自分で出す。
+	// cli.Run prints its own error messages and usage.
 	fs.SetOutput(io.Discard)
 	fs.Usage = func() {}
 	return fs
@@ -93,10 +95,10 @@ func newFlagSet(cmd command, o *Options) *flag.FlagSet {
 	return fs
 }
 
-// parseArgs はフラグを解釈し、位置引数を返す。
-// interspersed が true なら `show <id> --json` のように位置引数の後ろのフラグも解釈する。
-// false なら最初の位置引数で解釈を止める（run / ask のプロンプトをそのまま通すため）。
-// どちらも `--` 以降はすべて位置引数になる。
+// parseArgs parses flags and returns positional arguments. In interspersed mode it accepts
+// flags after positional arguments, as in `show <id> --json`. Otherwise it stops at the
+// first positional argument to pass run and ask prompts through unchanged. In both modes,
+// everything after `--` is positional.
 func parseArgs(fs *flag.FlagSet, args []string, interspersed bool) ([]string, error) {
 	if !interspersed {
 		if err := fs.Parse(args); err != nil {
@@ -131,8 +133,8 @@ func looksLikeFlag(arg string) bool {
 	return len(arg) >= 2 && arg[0] == '-'
 }
 
-// flagTakesNextArg は arg が次の引数を値として消費する形かを返す。
-// 未定義のフラグは false を返し、fs.Parse にエラーを出させる。
+// flagTakesNextArg reports whether arg consumes the next argument as its value. Unknown
+// flags return false so fs.Parse can report the error.
 func flagTakesNextArg(fs *flag.FlagSet, arg string) bool {
 	name := strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-")
 	if strings.Contains(name, "=") {

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// syncBuffer は複数のゴルーチンから書ける bytes.Buffer。
+// syncBuffer is a bytes.Buffer safe for concurrent writes.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -28,7 +28,7 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// memTerminal はメモリ上の端末。入力は pipe、出力はバッファ。
+// memTerminal is an in-memory terminal with a pipe for input and a buffer for output.
 type memTerminal struct {
 	inR *io.PipeReader
 	inW *io.PipeWriter
@@ -44,8 +44,8 @@ type memTerminal struct {
 	restores   int
 	notify     func()
 	watchStops int
-	// sizeOnWatch が設定されていれば、WatchResize の登録時にサイズをこの値へ変える
-	// （サイズを読んでから監視を始めるまでの間のリサイズを再現する）。
+	// If sizeOnWatch is set, change the size when WatchResize registers to simulate a resize between
+	// the size query and the start of monitoring.
 	sizeOnWatch *[2]int
 }
 
@@ -104,7 +104,7 @@ func (m *memTerminal) WatchResize(notify func()) func() {
 	}
 }
 
-// resize は端末のサイズを変え、監視中なら通知する。
+// resize changes the terminal size and notifies the watcher, if any.
 func (m *memTerminal) resize(cols, rows int) {
 	m.mu.Lock()
 	m.cols, m.rows = cols, rows
@@ -128,7 +128,7 @@ func (m *memTerminal) counts() (raw, restores, watchStops int) {
 	return m.rawCount, m.restores, m.watchStops
 }
 
-// fakeChild はメモリ上の子プロセス。テストが出力と終了を操作する。
+// fakeChild is an in-memory child whose output and exit are controlled by the test.
 type fakeChild struct {
 	outR *io.PipeReader
 	outW *io.PipeWriter
@@ -145,8 +145,8 @@ type fakeChild struct {
 	killed   int
 	closed   int
 	writeErr error
-	// ignoreClose が true なら Close しても Read が解けない
-	// （ブロッキング fd の master のように、閉じた後も読み手が残る状況）。
+	// If ignoreClose is true, Close does not unblock Read. This simulates a reader that survives
+	// close, as with a blocking PTY master descriptor.
 	ignoreClose bool
 }
 
@@ -203,11 +203,11 @@ func (c *fakeChild) Close() error {
 	if ignore {
 		return nil
 	}
-	// 実物と同じく、Close でブロック中の Read を解く。
+	// As on a real PTY, Close unblocks a pending Read.
 	return c.outR.CloseWithError(os.ErrClosed)
 }
 
-// emit は子の出力を1回分流す。proxy が読むまでブロックする。
+// emit sends one chunk of child output and blocks until the proxy reads it.
 func (c *fakeChild) emit(t *testing.T, s string) {
 	t.Helper()
 	if _, err := c.outW.Write([]byte(s)); err != nil {
@@ -215,8 +215,8 @@ func (c *fakeChild) emit(t *testing.T, s string) {
 	}
 }
 
-// exit は子を code で終了させる。eof が true なら出力も閉じる（通常の終了）。
-// false は、孫プロセスが PTY を握ったままで EOF が来ない状況を表す。
+// exit terminates the child with code. If eof is true, it also closes output, as on normal exit.
+// Otherwise it simulates a grandchild holding the PTY open and preventing EOF.
 func (c *fakeChild) exit(code int, eof bool) {
 	c.exitOnce.Do(func() {
 		c.mu.Lock()
@@ -241,7 +241,7 @@ func (c *fakeChild) snapshot() (resizes [][2]int, signals []os.Signal, killed, c
 	return append([][2]int(nil), c.resizes...), append([]os.Signal(nil), c.signals...), c.killed, c.closed
 }
 
-// fakeSpawner は用意した fakeChild を返し、受け取った Spec を覚える。
+// fakeSpawner returns a prepared fakeChild and remembers the Spec it received.
 type fakeSpawner struct {
 	child *fakeChild
 	err   error
@@ -266,7 +266,7 @@ func (s *fakeSpawner) spawned() []Spec {
 	return append([]Spec(nil), s.specs...)
 }
 
-// failingWriter は最初の failAfter 回だけ成功し、その後は常に失敗する。
+// failingWriter succeeds on the first failAfter writes and fails on every subsequent write.
 type failingWriter struct {
 	mu        sync.Mutex
 	failAfter int
@@ -292,7 +292,7 @@ func (w *failingWriter) stats() (calls int, written string) {
 	return w.calls, w.written.String()
 }
 
-// waitFor は cond が真になるまで待つ。
+// waitFor waits until cond is true.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

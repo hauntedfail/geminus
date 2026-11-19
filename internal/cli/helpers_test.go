@@ -12,7 +12,7 @@ import (
 	"github.com/hauntedfail/geminus/internal/session"
 )
 
-// sandbox は1つのテストが使う状態ディレクトリ。
+// sandbox holds the state directory for one test.
 type sandbox struct {
 	t    *testing.T
 	home string
@@ -20,11 +20,11 @@ type sandbox struct {
 
 func newSandbox(t *testing.T) *sandbox {
 	t.Helper()
-	// 利用者の ~/.geminus や GEMINUS_HOME に触れないよう、必ず --home を渡す。
+	// Always pass --home to avoid touching the user's ~/.geminus or GEMINUS_HOME.
 	return &sandbox{t: t, home: filepath.Join(t.TempDir(), "home")}
 }
 
-// run は `geminus --home <sandbox> args...` を、stdin を入力として実行する。
+// run invokes `geminus --home <sandbox> args...` with stdin as input.
 func (s *sandbox) run(stdin string, args ...string) result {
 	s.t.Helper()
 	var out, errOut bytes.Buffer
@@ -32,7 +32,7 @@ func (s *sandbox) run(stdin string, args ...string) result {
 	return result{code: code, stdout: out.String(), stderr: errOut.String()}
 }
 
-// ok は終了コード 0 を要求する。
+// ok requires exit code zero.
 func (s *sandbox) ok(stdin string, args ...string) result {
 	s.t.Helper()
 	r := s.run(stdin, args...)
@@ -51,7 +51,7 @@ func (s *sandbox) store() *session.Store {
 	return store
 }
 
-// sessions は ls --json --all の結果を返す。
+// sessions returns the results of ls --json --all.
 func (s *sandbox) sessions() []sessionView {
 	s.t.Helper()
 	r := s.ok("", "ls", "--json", "--all")
@@ -62,7 +62,7 @@ func (s *sandbox) sessions() []sessionView {
 	return views
 }
 
-// only はセッションがちょうど1つあることを確かめて返す。
+// only requires exactly one session and returns it.
 func (s *sandbox) only() sessionView {
 	s.t.Helper()
 	views := s.sessions()
@@ -103,7 +103,7 @@ func (s *sandbox) rawLog(id string) string {
 	return string(data)
 }
 
-// seed は store の API でセッションを1つ作り、change で書き換える。
+// seed creates a session through the store API and applies change to it.
 func (s *sandbox) seed(agentName string, change func(session.Meta) session.Meta) session.Meta {
 	s.t.Helper()
 	store := s.store()
@@ -121,7 +121,7 @@ func (s *sandbox) seed(agentName string, change func(session.Meta) session.Meta)
 	return meta
 }
 
-// seedLog は seed したセッションに raw の出力を1つ記録する。
+// seedLog records one chunk of raw output in a seeded session.
 func (s *sandbox) seedLog(id, raw string) {
 	s.t.Helper()
 	log, err := s.store().OpenLog(id, session.LogOptions{Raw: true})
@@ -151,7 +151,7 @@ func mustGetwd(t *testing.T) string {
 	return dir
 }
 
-// chdir は作業ディレクトリを dir に変え、テストの終わりに戻す。
+// chdir switches to dir and restores the working directory after the test.
 func chdir(t *testing.T, dir string) {
 	t.Helper()
 	prev := mustGetwd(t)
@@ -165,7 +165,7 @@ func chdir(t *testing.T, dir string) {
 	})
 }
 
-// needShell は sh で書いた偽エージェントを使うテストを、sh の無い環境で飛ばす。
+// needShell skips tests that use shell-script agents when sh is unavailable.
 func needShell(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -173,8 +173,8 @@ func needShell(t *testing.T) {
 	}
 }
 
-// fakeAgentScript は claude / hermes の代わりに置く sh スクリプト。
-// 受け取った引数を1行で出し、FAKE_EXIT の値で終了する。
+// fakeAgentScript stands in for claude or hermes. It prints its arguments on one line and
+// exits with FAKE_EXIT.
 const fakeAgentScript = `#!/bin/sh
 if [ "$1" = "--version" ]; then
   echo "fake 1.2.3"
@@ -187,7 +187,7 @@ fi
 exit "${FAKE_EXIT:-0}"
 `
 
-// fakeBin は names の偽エージェントだけを置いたディレクトリを作り、PATH の先頭に足す。
+// fakeBin prepends a directory to PATH containing only the named fake agents.
 func fakeBin(t *testing.T, names ...string) string {
 	t.Helper()
 	needShell(t)
@@ -201,13 +201,13 @@ func fakeBin(t *testing.T, names ...string) string {
 	return dir
 }
 
-// emptyPath は PATH を空のディレクトリだけにして、どのエージェントも見つからなくする。
+// emptyPath sets PATH to a single empty directory so no agents can be found.
 func emptyPath(t *testing.T) {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())
 }
 
-// argvLine は偽エージェントが出した "argv:..." の行の中身を返す。
+// argvLine extracts the contents of the fake agent's "argv:..." line.
 func argvLine(t *testing.T, output string) string {
 	t.Helper()
 	for _, line := range strings.Split(output, "\n") {
@@ -237,7 +237,7 @@ func findEvent(events []session.Event, typ string) (session.Event, bool) {
 	return session.Event{}, false
 }
 
-// checkOffsets は output イベントが raw.log を隙間なく覆っていることを確かめる。
+// checkOffsets verifies that output events cover raw.log without gaps.
 func checkOffsets(t *testing.T, events []session.Event, rawLen int) {
 	t.Helper()
 	var next int64

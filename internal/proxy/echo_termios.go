@@ -4,7 +4,7 @@ package proxy
 
 import "golang.org/x/sys/unix"
 
-// echoEnabled は termios の ECHO を読む。
+// echoEnabled reads the termios ECHO flag.
 func echoEnabled(fd int) (bool, error) {
 	termios, err := unix.IoctlGetTermios(fd, ioctlReadTermios)
 	if err != nil {

@@ -12,7 +12,7 @@ import (
 	"golang.org/x/term"
 )
 
-// openSlave は実際の PTY を確保し、端末側（slave）を返す。
+// openSlave allocates a real PTY and returns its terminal (slave) end.
 func openSlave(t *testing.T) *os.File {
 	t.Helper()
 	pty, err := gopty.New()
@@ -27,7 +27,8 @@ func openSlave(t *testing.T) *os.File {
 	return unix.Slave()
 }
 
-// raw mode は echo を切る。復元すれば戻る。doctor はこの差を見て、復元漏れに気付く。
+// Raw mode disables echo; restoring the terminal re-enables it. The doctor command uses this
+// difference to detect a missed restore.
 func TestTerminalEchoFollowsRawMode(t *testing.T) {
 	slave := openSlave(t)
 

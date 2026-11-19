@@ -18,7 +18,7 @@ import (
 	"github.com/hauntedfail/geminus/internal/session"
 )
 
-// askResult は `ask --json` の出力。
+// askResult is the output of `ask --json`.
 type askResult struct {
 	Session  string `json:"session"`
 	Agent    string `json:"agent"`
@@ -71,8 +71,8 @@ func runAsk(inv Invocation) int {
 	return exchange(inv, active, launch, prompt)
 }
 
-// askTarget は ask の対象セッションを決める。
-// --session は指定の id、--continue はこのディレクトリで最後に更新されたもの、どちらも無ければ新規。
+// askTarget selects the session for ask. Use the ID from --session, the most recently
+// updated session in this directory for --continue, or a new session if neither is set.
 func askTarget(store *session.Store, inv Invocation, cwd, prompt string) (target, error) {
 	opts := inv.Options.Ask
 	id := opts.Session
@@ -99,7 +99,7 @@ func askTarget(store *session.Store, inv Invocation, cwd, prompt string) (target
 	if err != nil {
 		return target{}, err
 	}
-	// セッションを作る前に、起動できないことが分かる場合は止める。
+	// Fail before creating a session if we already know the agent cannot start.
 	if err := requireOneshot(adapter); err != nil {
 		return target{}, err
 	}
@@ -116,9 +116,8 @@ func requireOneshot(adapter agent.Adapter) error {
 	return nil
 }
 
-// latestAskable は --continue の対象を選ぶ。cwd で作られ、ワンショットに対応した
-// バックエンドのセッションのうち、最後に更新されたものの id を返す。
-// --agent があれば、そのバックエンドのセッションに限る。
+// latestAskable returns the most recently updated session created in cwd whose backend
+// supports one-shot requests. If --agent is set, consider only that backend.
 func latestAskable(store *session.Store, inv Invocation, cwd string) (string, error) {
 	metas, listErr := store.List()
 	if listErr != nil {
@@ -126,7 +125,7 @@ func latestAskable(store *session.Store, inv Invocation, cwd string) (string, er
 			logf("skipping unreadable sessions: %v", listErr)
 		}
 	}
-	// List は updated_at の降順で返す。
+	// List returns sessions in descending updated_at order.
 	for _, meta := range metas {
 		if inv.Options.Agent != "" && meta.Agent != inv.Options.Agent {
 			continue
@@ -142,10 +141,10 @@ func latestAskable(store *session.Store, inv Invocation, cwd string) (string, er
 	return "", fmt.Errorf("--continue: no session to continue in %s", cwd)
 }
 
-// askLaunch は子の起動に必要な内容。
+// askLaunch holds the inputs needed to start the child.
 type askLaunch struct {
 	start startParams
-	// exe は argv[0] を PATH で解決したパス。
+	// exe is argv[0] resolved against PATH.
 	exe string
 	dir string
 }
@@ -177,7 +176,8 @@ func prepareAsk(t target, cwd, prompt string) (askLaunch, error) {
 	}, nil
 }
 
-// exchange は子をパイプで動かして1往復し、結果を記録して終了コードを返す。
+// exchange runs one exchange with the child over pipes, records the result, and returns the
+// exit code.
 func exchange(inv Invocation, active *activeSession, launch askLaunch, prompt string) int {
 	const name = "ask"
 	if _, err := active.log.AppendEvent(session.InputEvent(prompt)); err != nil {
@@ -188,7 +188,7 @@ func exchange(inv Invocation, active *activeSession, launch askLaunch, prompt st
 	var captured bytes.Buffer
 	var visible io.Writer = inv.Env.Stdout
 	if inv.Options.JSON {
-		// --json では stdout に JSON 1個だけを出すので、返答は溜めておく。
+		// Buffer the reply so --json writes a single JSON value to stdout.
 		visible = &captured
 	}
 
@@ -197,7 +197,8 @@ func exchange(inv Invocation, active *activeSession, launch askLaunch, prompt st
 	cmd.Stdin = childStdin(inv.Env.Stdin)
 	cmd.Stdout = io.MultiWriter(visible, record)
 	cmd.Stderr = inv.Env.Stderr
-	// 起動の前から受ける。起動直後に届いたシグナルで geminus だけが先に終了しないようにする。
+	// Start listening before launch so a signal arriving just afterward cannot terminate
+	// geminus while leaving the child running.
 	signals := catchSignals()
 	if err := cmd.Start(); err != nil {
 		signal.Stop(signals)
@@ -227,9 +228,9 @@ func exchange(inv Invocation, active *activeSession, launch askLaunch, prompt st
 	return childExitCode(code)
 }
 
-// lenientWriter は書き込みの失敗を呼び出し側に返さない。
-// 記録の失敗で返答の表示（io.MultiWriter のもう片方）を止めないため。
-// 最初のエラーを覚え、以後は書かない。
+// lenientWriter saves the first write error and skips subsequent writes without returning
+// the error to its caller. A recording failure must not stop io.MultiWriter from displaying
+// the reply.
 type lenientWriter struct {
 	w io.Writer
 
@@ -252,11 +253,11 @@ func (l *lenientWriter) firstError() error {
 	return l.err
 }
 
-// childStdin は ask の子に渡す標準入力を返す。
+// childStdin returns the input stream to pass to the ask child.
 //
-// パイプやファイルはそのまま渡す（`cat notes.txt | geminus ask "要約して"`）。
-// 端末は渡さない。ask は1往復で終わる非対話の実行で、プロンプトは引数で渡している。
-// 端末を渡すと、標準入力を読もうとするエージェントが入力待ちで止まる。
+// Pass pipes and files through unchanged (`cat notes.txt | geminus ask "Summarize these notes"`). Do not
+// pass a terminal: ask is noninteractive and supplies its single prompt as an argument. An
+// agent reading from a terminal could block waiting for input.
 func childStdin(stdin io.Reader) io.Reader {
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		return nil
@@ -264,19 +265,18 @@ func childStdin(stdin io.Reader) io.Reader {
 	return stdin
 }
 
-// catchSignals は、子を待つ間に届いたシグナルで geminus が先に終了しないようにする。
-// 先に終了すると、終了コードとセッションの状態を記録できない。
-// 受けたシグナルは、forwardSignals が読み始めるまでチャネルに溜まる。
+// catchSignals keeps geminus alive while it waits for the child so it can record the exit
+// code and session state. The channel buffers signals until forwardSignals starts reading.
 func catchSignals() chan os.Signal {
 	ch := make(chan os.Signal, 8)
 	signal.Notify(ch, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
 	return ch
 }
 
-// forwardSignals は ch に届いたシグナルを処理する。返す関数は受け取りをやめる。
+// forwardSignals handles signals from ch. Call the returned function to stop listening.
 //
-// 端末の Ctrl-C と Ctrl-\ は、同じプロセスグループにいる子にも届くので転送しない。
-// SIGTERM と SIGHUP は geminus だけに届くことがあるので、子へ転送する。
+// Terminal Ctrl-C and Ctrl-\ already reach the child in the same process group. Forward
+// SIGTERM and SIGHUP because they may reach only geminus.
 func forwardSignals(ch chan os.Signal, child *os.Process) (stop func()) {
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -287,7 +287,7 @@ func forwardSignals(ch chan os.Signal, child *os.Process) (stop func()) {
 			select {
 			case sig := <-ch:
 				if sig == syscall.SIGTERM || sig == syscall.SIGHUP {
-					// 失敗は子が既に終了したことを意味する。Wait がその結果を返す。
+					// Failure means the child has already exited; Wait returns its status.
 					_ = child.Signal(sig)
 				}
 			case <-done:
@@ -302,8 +302,8 @@ func forwardSignals(ch chan os.Signal, child *os.Process) (stop func()) {
 	}
 }
 
-// processExitCode は終了コードを返す。Unix でシグナルにより終了した場合は 128+番号にする。
-// 状態が取れなければ -1。
+// processExitCode returns the exit code, or 128 plus the signal number on Unix for signal
+// termination. It returns -1 if the status is unavailable.
 func processExitCode(state *os.ProcessState) int {
 	if state == nil {
 		return -1

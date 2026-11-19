@@ -2,40 +2,40 @@
   "version": 1,
   "intent": "plan-only",
   "checkout_root": "/Users/vvx/projekt/go/geminus",
-  "outcome": "macOS / Linux / Windows の同一バイナリで `geminus run` が claude または hermes を PTY 越しにそのまま操作でき、`geminus run --resume <id>` で同じ会話を再開でき、`geminus ls` / `geminus log` でローカル記録を確認できる。デーモン・DB・ネットワークを必要としない。",
+  "outcome": "On macOS, Linux, and Windows, the single geminus binary lets users interact directly with claude or hermes over a PTY using `geminus run`, resume the same conversation with `geminus run --resume <id>`, and inspect local records with `geminus ls` / `geminus log`. No daemon, database, or network is required.",
   "non_goals": [
-    "デーモン、バックエンド、リレー、HTTP サーバ（geminised の領域）",
-    "別ターミナルからのライブ attach / 多重化",
-    "エージェント間通信、グループ fan-out、push 通知",
-    "会話履歴の要約・再注入（v0.2 の --replay 候補）",
-    "認証情報の管理・保存・転送",
-    "GUI / TUI ダッシュボード、リリースパイプライン（goreleaser 等）"
+    "Daemon, backend, relay, or HTTP server (the domain of geminised)",
+    "Live attach or multiplexing from another terminal",
+    "Inter-agent communication, group fan-out, or push notifications",
+    "Summarizing and reinjecting conversation history (a possible --replay feature for v0.2)",
+    "Managing, storing, or forwarding credentials",
+    "GUI / TUI dashboards or release pipelines (such as goreleaser)"
   ],
   "constraints": [
-    "Go 1.23 以上。module は github.com/hauntedfail/geminus",
-    "CGO_ENABLED=0 で darwin/linux/windows × amd64/arm64 をビルドできること",
-    "実行時にネットワーク・デーモン・DB を使わない。状態は GEMINUS_HOME 配下のファイルのみ",
-    "セッションディレクトリは 0700、ファイルは 0600",
-    "外部依存は github.com/aymanbagabas/go-pty と golang.org/x/term のみ",
-    "エージェントの認証情報を読まない・保存しない。子プロセスの環境をそのまま継承する",
-    "透過中継: エージェント出力を解釈・再構成しない（ask モードの捕捉を除く）",
-    "既存の他プロジェクトや他エージェントの状態を変更しない"
+    "Go 1.23 or later; module path: github.com/hauntedfail/geminus",
+    "Must build for darwin/linux/windows × amd64/arm64 with CGO_ENABLED=0",
+    "No network, daemon, or database at runtime. Store state only in files under GEMINUS_HOME.",
+    "Session directories use 0700; files use 0600.",
+    "The only external dependencies are github.com/aymanbagabas/go-pty and golang.org/x/term.",
+    "Do not read or store agent credentials. Let the child process inherit the environment unchanged.",
+    "Transparent relay: do not interpret or reconstruct agent output (except for capture in ask mode).",
+    "Do not change the state of other existing projects or agents."
   ],
   "evidence": [
-    "host: `go version` -> command not found。Go ツールチェーン未導入（実装開始の前提）",
-    "/Users/vvx/projekt/go/darksky_key/go.mod: 同階層の Go プロジェクトは cmd/ + internal/ 構成",
-    "claude 2.1.308 --help: `--session-id <uuid>`（UUID 必須）, `--resume [session]`, `-p/--print`, `--output-format`",
+    "host: `go version` -> command not found. The Go toolchain was not installed; it is a prerequisite for implementation.",
+    "/Users/vvx/projekt/go/darksky_key/go.mod: a sibling Go project uses the cmd/ + internal/ layout",
+    "claude 2.1.308 --help: `--session-id <uuid>` (UUID required), `--resume [session]`, `-p/--print`, `--output-format`",
     "hermes chat --help: `--resume SESSION_ID`, `-c/--continue [SESSION_NAME]`, `--create-if-missing`, `--format stream-json`, `-q/--oneshot`",
-    "github.com/aymanbagabas/go-pty v0.2.3: Unix PTY と Windows ConPTY を単一 API で提供（MIT）",
-    "plans/geminus/plan.md: 本書の設計判断と失敗モード"
+    "github.com/aymanbagabas/go-pty v0.2.3: a single API for Unix PTYs and Windows ConPTY (MIT)",
+    "plans/geminus/plan.md: design decisions and failure modes for this plan"
   ],
   "questions": [],
   "tasks": [
     {
       "id": "gmn-001",
-      "title": "足場: Go module と CLI 骨格",
-      "context": "新規リポジトリ /Users/vvx/projekt/go/geminus には plans/geminus/plan.md と plan.json しかない。ここに Go module と、サブコマンドを振り分ける最小の CLI 骨格を作る。main は internal/cli を呼ぶだけにし、以降のタスクが衝突しない形にする。",
-      "expected_behavior": "`geminus version` がバージョン文字列を出して 0 で終了する。`geminus --help` がサブコマンド一覧を、`geminus help run` が run のフラグを表示する。未知のサブコマンドは使い方エラーとして exit 2。`go build ./...` が CGO 無効で通る。",
+      "title": "Scaffolding: Go module and CLI skeleton",
+      "context": "The new repository at /Users/vvx/projekt/go/geminus contains only plans/geminus/plan.md and plan.json. Create a Go module and a minimal CLI that dispatches subcommands. Keep main limited to calling internal/cli so later tasks do not conflict.",
+      "expected_behavior": "`geminus version` prints a version string and exits with code 0. `geminus --help` lists subcommands; `geminus help run` shows the flags for run. An unknown subcommand is a usage error (exit 2). `go build ./...` succeeds with CGO disabled.",
       "status": "done",
       "depends_on": [],
       "allowed_paths": [
@@ -55,30 +55,30 @@
         "scripts/"
       ],
       "acceptance": [
-        "go.mod の module が github.com/hauntedfail/geminus、go ディレクティブが 1.23 以上",
-        "`geminus version` の出力に geminus とバージョンが含まれる",
-        "`geminus --help` が run/ask/ls/show/log/rm/agents/doctor/version を列挙する",
-        "未知サブコマンドで exit 2、--help で exit 0",
-        "この時点では外部依存を追加しない"
+        "In go.mod, the module is github.com/hauntedfail/geminus and the go directive is 1.23 or later.",
+        "The output of `geminus version` includes geminus and the version.",
+        "`geminus --help` lists run/ask/ls/show/log/rm/agents/doctor/version.",
+        "An unknown subcommand exits with code 2; --help exits with code 0.",
+        "Do not add external dependencies at this stage."
       ],
       "verification": [
         {
           "method": "cd /Users/vvx/projekt/go/geminus && CGO_ENABLED=0 go build ./...",
-          "expected": "exit 0、エラー出力なし"
+          "expected": "exit 0, no error output"
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go run ./cmd/geminus version",
-          "expected": "バージョン文字列を含む1行を出力し exit 0"
+          "expected": "Prints one line containing the version string and exits with code 0"
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && ./geminus bogus; echo $?",
-          "expected": "使い方のエラーを表示し 2"
+          "expected": "Displays a usage error; the reported exit code is 2"
         }
       ],
       "stop_conditions": [
-        "Go 1.23+ が導入されていない",
-        "module パスの変更を求められた",
-        "他プロジェクトのファイルと衝突した"
+        "Go 1.23+ is not installed.",
+        "A module path change is requested.",
+        "A file conflicts with another project's files."
       ],
       "owner": "implementation",
       "completion_evidence": [
@@ -89,9 +89,9 @@
     },
     {
       "id": "gmn-002",
-      "title": "セッションストア",
-      "context": "geminus の状態は GEMINUS_HOME/sessions/<id>/ に置く。session.json（メタ）、transcript.jsonl（追記イベント）、raw.log（生バイト）。メタは原子的に置換し、イベントは追記のみ。ディレクトリ 0700、ファイル 0600。",
-      "expected_behavior": "セッションの作成・読込・一覧・削除ができ、作成順ではなく更新時刻の降順で一覧される。メタ更新は一時ファイル + rename で行われ、途中状態が読まれない。壊れた JSON は panic せずエラーを返す。イベント追記は raw.log の現在オフセットを記録する。",
+      "title": "Session store",
+      "context": "Store geminus state in GEMINUS_HOME/sessions/<id>/: session.json for metadata, transcript.jsonl for appended events, and raw.log for raw bytes. Replace metadata atomically and only append events. Use 0700 for directories and 0600 for files.",
+      "expected_behavior": "Support creating, loading, listing, and deleting sessions. List by most recent update, not creation order. Update metadata via a temporary file and rename so readers never see a partial update. Return an error without panicking on corrupt JSON. Record the current raw.log offset when appending an event.",
       "status": "done",
       "depends_on": [
         "gmn-001"
@@ -108,18 +108,18 @@
         "test/"
       ],
       "acceptance": [
-        "Create が <id> ディレクトリと session.json を作り、権限が 0700 / 0600 になる",
-        "Load が保存内容を完全に復元する（往復で一致）",
-        "List が updated_at 降順で返す",
-        "Delete がディレクトリごと削除し、存在しない場合はエラーを返す",
-        "壊れた session.json に対して Load がエラーを返し panic しない",
-        "AppendEvent が raw.log の現在長を offset として記録する",
-        "同一プロセス内の連続追記で seq が単調増加する"
+        "Create creates the <id> directory and session.json with permissions 0700 and 0600, respectively.",
+        "Load restores the saved contents exactly (round-trip match).",
+        "List returns sessions in descending updated_at order.",
+        "Delete removes the entire directory and returns an error if it does not exist.",
+        "Load returns an error for a corrupt session.json without panicking.",
+        "AppendEvent records the current length of raw.log as the offset.",
+        "seq increases monotonically across successive appends within the same process."
       ],
       "verification": [
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go test ./internal/session/ -v",
-          "expected": "全テスト PASS、0 failures"
+          "expected": "All tests PASS, 0 failures"
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go vet ./internal/session/",
@@ -127,22 +127,22 @@
         }
       ],
       "stop_conditions": [
-        "保存形式（session.json のフィールド）の変更を求められた",
-        "権限要件が 0600 以外に変更された"
+        "A storage format change (session.json fields) is requested.",
+        "The file permission requirement changes from 0600."
       ],
       "owner": "implementation",
       "completion_evidence": [
         "go test ./internal/session 87.0% coverage, PASS",
-        "0700/0600 検証テスト PASS",
-        "壊れた session.json でエラー（panic なし）",
-        "symlink/FIFO を拒否（ErrNotRegular）"
+        "0700/0600 permission tests PASS",
+        "Corrupt session.json returned an error (no panic)",
+        "Rejected symlinks and FIFOs (ErrNotRegular)"
       ]
     },
     {
       "id": "gmn-003",
-      "title": "エージェントアダプタ",
-      "context": "claude / hermes / 任意コマンドを同じインターフェースで起動できるようにする。セッション継続キーの作り方がバックエンドごとに違うため、argv 組み立てをアダプタに閉じ込める。claude は UUID、hermes は名前、generic は resume 非対応。",
-      "expected_behavior": "アダプタは name / detect / capabilities / argv 生成を提供する。claude の新規は --session-id <uuid>、再開は --resume <uuid>、ワンショットは -p。hermes は chat -c <id> --create-if-missing、ワンショットは -q <prompt> --oneshot。generic の再開要求は ErrNoResume を返す。バイナリ不在は明確なエラーになる。",
+      "title": "Agent adapters",
+      "context": "Launch claude, hermes, or an arbitrary command through the same interface. Each backend handles session continuity differently, so keep argv construction inside the adapters. claude uses a UUID, hermes uses a name, and generic does not support resume.",
+      "expected_behavior": "Adapters provide name, detection, capabilities, and argv generation. For claude, use --session-id <uuid> for new sessions, --resume <uuid> for resumption, and -p for one-shot requests. For hermes, use chat -c <id> --create-if-missing and -q <prompt> --oneshot for one-shot requests. A generic resume request returns ErrNoResume. A missing binary produces a clear error.",
       "status": "done",
       "depends_on": [
         "gmn-001"
@@ -159,19 +159,19 @@
         "test/"
       ],
       "acceptance": [
-        "claude の新規 argv に --session-id と有効な UUID が含まれる",
-        "claude の再開 argv に --resume <同じ UUID> が含まれる",
-        "claude のワンショット argv に -p とプロンプトが含まれる",
-        "hermes の argv に chat -c <id> --create-if-missing が含まれる",
-        "hermes のワンショット argv に -q と --oneshot が含まれる",
-        "generic の再開要求が ErrNoResume を返す",
-        "未知のエージェント名でエラーになり、候補を列挙する",
-        "表駆動テストで全ケースが通る"
+        "New-session argv for claude includes --session-id and a valid UUID.",
+        "Resume argv for claude includes --resume <same UUID>.",
+        "One-shot argv for claude includes -p and the prompt.",
+        "hermes argv includes chat -c <id> --create-if-missing.",
+        "One-shot argv for hermes includes -q and --oneshot.",
+        "A generic resume request returns ErrNoResume.",
+        "An unknown agent name produces an error listing the available choices.",
+        "All table-driven test cases pass."
       ],
       "verification": [
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go test ./internal/agent/ -v",
-          "expected": "全テスト PASS"
+          "expected": "All tests PASS"
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go vet ./internal/agent/",
@@ -179,20 +179,20 @@
         }
       ],
       "stop_conditions": [
-        "hermes の -c 名前に使える文字種が実機で制限され、id 形式の変更が必要になった",
-        "claude の --session-id 仕様が変わった"
+        "On a real system, character restrictions on hermes -c names require changing the ID format.",
+        "The claude --session-id specification changes."
       ],
       "owner": "implementation",
       "completion_evidence": [
         "go test ./internal/agent 96.5% coverage, PASS",
-        "claude --session-id/--resume、hermes -c/--create-if-missing、generic ErrNoResume の表駆動テスト PASS"
+        "Table-driven tests PASS for claude --session-id/--resume, hermes -c/--create-if-missing, and generic ErrNoResume"
       ]
     },
     {
       "id": "gmn-004",
-      "title": "PTY プロキシ",
-      "context": "子プロセスに本物の TTY を与え、ユーザ端末との間を双方向中継する。Unix と Windows の差は go-pty が吸収するが、raw mode・リサイズ・シグナル・終了コードは自前で扱う。テストのために端末を差し替え可能なインターフェースにする。",
-      "expected_behavior": "TTY 上では raw mode に入り、終了時に必ず復元する。stdin→PTY と PTY→stdout が双方向に流れ、出力は記録先にも tee される。SIGWINCH で子のサイズが更新される。子の終了コードがそのまま返る。stdin が TTY でない場合は raw mode に入らず、EOF で EOT を1回送る。",
+      "title": "PTY proxy",
+      "context": "Give the child process a real TTY and relay data in both directions between it and the user's terminal. go-pty handles Unix/Windows differences; the proxy handles raw mode, resizing, signals, and exit codes. Provide a replaceable terminal interface for testing.",
+      "expected_behavior": "On a TTY, enter raw mode and always restore the terminal on exit. Relay stdin to the PTY and PTY output to stdout; tee output to the recording destination. On SIGWINCH, update the child's terminal size. Return the child's exit code unchanged. If stdin is not a TTY, skip raw mode and send EOT once at EOF.",
       "status": "done",
       "depends_on": [
         "gmn-001"
@@ -209,17 +209,17 @@
         "test/"
       ],
       "acceptance": [
-        "書き込みが子に届き、子の出力が呼び出し側に届く（メモリ実装の端末で検証）",
-        "子の exit code 7 が 7 として返る",
-        "リサイズ要求で端末の Resize が呼ばれる",
-        "非 TTY 入力では raw mode に入らない",
-        "中継したバイトが記録先に同一内容で書かれる",
-        "Windows 向けに GOOS=windows でコンパイルが通る"
+        "Writes reach the child, and child output reaches the caller (verified with an in-memory terminal).",
+        "A child exit code of 7 is returned as 7.",
+        "A resize request calls Resize on the terminal.",
+        "Non-TTY input does not enter raw mode.",
+        "The recording destination receives exactly the bytes relayed.",
+        "Compilation for Windows succeeds with GOOS=windows."
       ],
       "verification": [
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go test ./internal/proxy/ -v",
-          "expected": "全テスト PASS"
+          "expected": "All tests PASS"
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./internal/proxy/",
@@ -231,21 +231,21 @@
         }
       ],
       "stop_conditions": [
-        "go-pty が対象 OS でビルドできない",
-        "PTY 確保失敗時にパイプへフォールバックする要求が出た（設計と矛盾）"
+        "go-pty cannot build on a target OS.",
+        "A fallback to pipes on PTY allocation failure is requested (contradicts the design)."
       ],
       "owner": "implementation",
       "completion_evidence": [
         "go test ./internal/proxy 90.1% coverage, PASS",
-        "GOOS=windows/linux ビルド exit 0",
-        "実 PTY: read->GOT:hello, 終了コード伝播, 外側端末の ECHO 復元を確認"
+        "GOOS=windows/linux builds: exit 0",
+        "Real PTY: confirmed read->GOT:hello, exit code propagation, and restoration of ECHO on the outer terminal"
       ]
     },
     {
       "id": "gmn-005",
-      "title": "CLI 結線（run / ask / 管理コマンド）",
-      "context": "gmn-002/003/004 を組み合わせ、利用者が実際に叩くコマンドを完成させる。セッション解決、既定エージェント、GEMINUS_HOME、終了コード、--fresh、--no-record、--force をここで扱う。",
-      "expected_behavior": "`geminus run` が新規セッションを作りエージェントを起動する。`--resume <id>` で同じセッションを再開する。`ask` が1往復して終了する。`ls` / `show` / `log` / `rm` / `agents` / `doctor` が動作する。子の終了コードがそのまま返る。",
+      "title": "CLI integration (run / ask / management commands)",
+      "context": "Combine gmn-002/003/004 to complete the user-facing commands. Handle session resolution, the default agent, GEMINUS_HOME, exit codes, --fresh, --no-record, and --force here.",
+      "expected_behavior": "`geminus run` creates a new session and launches the agent. `--resume <id>` resumes the same session. `ask` completes one exchange and exits. `ls` / `show` / `log` / `rm` / `agents` / `doctor` work. Return the child's exit code unchanged.",
       "status": "done",
       "depends_on": [
         "gmn-002",
@@ -266,16 +266,16 @@
         "scripts/"
       ],
       "acceptance": [
-        "`geminus run --agent cmd -- sh -c 'printf hello'` 相当で hello が表示され exit 0",
-        "`geminus run --agent cmd -- sh -c 'exit 7'` が 7 で終了する",
-        "`geminus ask` がバックエンドのワンショット出力を表示し、transcript に input/output を残す",
-        "`geminus ls --json` が有効な JSON 配列を返す",
-        "`geminus log <id>` が ANSI エスケープを除去して表示する（--raw で生のまま）",
-        "`geminus rm <id>` がディレクトリを削除し、--force 無しで存在しない id はエラー",
-        "`geminus agents --json` が claude/hermes の検出結果と能力を返す",
-        "`geminus doctor` が PTY とバックエンドの状態を表示し、異常が無ければ exit 0",
-        "実行中セッションの二重起動を拒否し、--force で上書きできる",
-        "GEMINUS_HOME が全コマンドで尊重される"
+        "The equivalent of `geminus run --agent cmd -- sh -c 'printf hello'` displays hello and exits with code 0.",
+        "`geminus run --agent cmd -- sh -c 'exit 7'` exits with code 7.",
+        "`geminus ask` displays the backend's one-shot output and records input/output in the transcript.",
+        "`geminus ls --json` returns a valid JSON array.",
+        "`geminus log <id>` strips ANSI escapes for display (--raw preserves the raw output).",
+        "`geminus rm <id>` deletes the directory. Without --force, a nonexistent ID is an error.",
+        "`geminus agents --json` returns detection results and capabilities for claude/hermes.",
+        "`geminus doctor` displays PTY and backend status and exits with code 0 if no problems are found.",
+        "Refuse to launch a second instance of a running session unless --force overrides the check.",
+        "All commands respect GEMINUS_HOME."
       ],
       "verification": [
         {
@@ -284,30 +284,30 @@
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go test ./internal/cli/ -v",
-          "expected": "全テスト PASS"
+          "expected": "All tests PASS"
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && GEMINUS_HOME=$(mktemp -d) ./geminus agents --json",
-          "expected": "有効な JSON、exit 0"
+          "expected": "Valid JSON, exit 0"
         }
       ],
       "stop_conditions": [
-        "アダプタまたはストアの公開 API が不足し、担当外のパッケージ変更が必要になった",
-        "終了コード体系の変更を求められた"
+        "The public API of an adapter or the store is insufficient and requires changes to a package outside this task's scope.",
+        "A change to the exit code scheme is requested."
       ],
       "owner": "implementation",
       "completion_evidence": [
         "go test ./internal/cli 93.5% coverage, PASS",
-        "実 claude ask -> GEMINUS_OK / 同一セッション再質問で GEMINUS_OK（resume 成立）",
-        "実 hermes ask -> HERMES_GEMINUS_OK / resume 成立",
-        "ls/show/log/rm/agents/doctor を一時 GEMINUS_HOME で実行"
+        "Real claude ask -> GEMINUS_OK / asking again in the same session returned GEMINUS_OK (resume succeeded)",
+        "Real hermes ask -> HERMES_GEMINUS_OK / resume succeeded",
+        "Ran ls/show/log/rm/agents/doctor with a temporary GEMINUS_HOME"
       ]
     },
     {
       "id": "gmn-006",
-      "title": "E2E と耐性テスト",
-      "context": "単体テストでは PTY・子プロセス・ファイル系の結合不具合を拾えない。ビルドしたバイナリをサブプロセスとして実行し、fake agent を相手に実際の run / resume / ls / log / rm を検証する。",
-      "expected_behavior": "fake agent（標準入力のエコー、ANSI 出力、指定 exit code）を PTY 越しに動かし、出力・記録・終了コードが一致する。非 TTY 入力でも壊れない。壊れた session.json があっても一覧系コマンドが panic しない。",
+      "title": "E2E and resilience tests",
+      "context": "Unit tests cannot catch integration failures between the PTY, child processes, and filesystem. Run the built binary as a subprocess and exercise the actual run / resume / ls / log / rm commands with a fake agent.",
+      "expected_behavior": "Run a fake agent (stdin echo, ANSI output, configurable exit code) through a PTY. Output, recording, and exit code match expectations. Non-TTY input works. A corrupt session.json does not cause listing commands to panic.",
       "status": "done",
       "depends_on": [
         "gmn-005"
@@ -321,41 +321,41 @@
         "internal/"
       ],
       "acceptance": [
-        "E2E で run の出力が fake agent の期待出力と一致する",
-        "E2E で exit 7 が 7 として観測される",
-        "run 後に ls / show / log が同じ id を指す",
-        "raw.log と transcript の offset が整合する",
-        "非 TTY の stdin パイプで run がハングしない",
-        "壊れた session.json を置いても ls がエラーを返し panic しない",
-        "go test ./... が全体として通る"
+        "In the E2E test, run output matches the expected fake agent output.",
+        "The E2E test observes exit 7 as 7.",
+        "After run, ls / show / log refer to the same ID.",
+        "Transcript offsets agree with raw.log.",
+        "run does not hang with non-TTY piped stdin.",
+        "With a corrupt session.json present, ls returns an error without panicking.",
+        "The full go test ./... suite passes."
       ],
       "verification": [
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go test ./test/ -v",
-          "expected": "全テスト PASS"
+          "expected": "All tests PASS"
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && go test ./...",
-          "expected": "全パッケージ PASS"
+          "expected": "All packages PASS"
         }
       ],
       "stop_conditions": [
-        "テスト用の子プロセスが CI 環境で起動できない",
-        "fake agent の挙動が実エージェントと乖離しすぎて意味を失った"
+        "The test child process cannot launch in the CI environment.",
+        "The fake agent differs too much from a real agent for the test to remain meaningful."
       ],
       "owner": "implementation",
       "completion_evidence": [
         "go test ./... 579 tests PASS, FAIL 0 SKIP 0",
-        "-count=8 でフレークなし",
-        "非TTY パイプ入力でハングしない",
-        "壊れた session.json 耐性テスト PASS"
+        "No flaky failures observed with -count=8",
+        "Non-TTY piped input did not hang",
+        "Corrupt session.json resilience test PASS"
       ]
     },
     {
       "id": "gmn-007",
-      "title": "ドキュメントとクロスビルド",
-      "context": "配布可能性を担保する。README は実際のコマンドで書く。設計判断は docs/architecture.md に残す。scripts/crossbuild.sh で6ターゲットをビルドし、Windows の ConPTY 経路がコンパイルできることを継続的に確認する。",
-      "expected_behavior": "README のクイックスタートをそのまま実行すると動く。crossbuild.sh が dist/ に6バイナリを生成し、失敗時に非0で止まる。",
+      "title": "Documentation and cross-builds",
+      "context": "Ensure the program can be distributed. Use real commands in the README and record design decisions in docs/architecture.md. Build six targets with scripts/crossbuild.sh to keep checking that the Windows ConPTY path compiles.",
+      "expected_behavior": "The README quick start works as written. crossbuild.sh produces six binaries in dist/ and stops with a nonzero exit code on failure.",
       "status": "done",
       "depends_on": [
         "gmn-005"
@@ -372,17 +372,17 @@
         "test/"
       ],
       "acceptance": [
-        "README に install / run / resume / ask / ls / log / rm / doctor の実例がある",
-        "README のコマンドが実装済みのフラグと一致する",
-        "docs/architecture.md がレイヤ、セッションモデル、失敗モード、非目標を説明する",
-        "scripts/crossbuild.sh が darwin/linux/windows × amd64/arm64 をビルドする",
-        "いずれかのターゲットが失敗したら非0で終了する",
-        "生ログに秘密が入り得ることを README が明記する"
+        "The README includes working examples for install / run / resume / ask / ls / log / rm / doctor.",
+        "Commands in the README match the implemented flags.",
+        "docs/architecture.md explains the layers, session model, failure modes, and non-goals.",
+        "scripts/crossbuild.sh builds darwin/linux/windows × amd64/arm64.",
+        "Exit with a nonzero code if any target fails.",
+        "The README explicitly warns that raw logs may contain secrets."
       ],
       "verification": [
         {
           "method": "cd /Users/vvx/projekt/go/geminus && bash scripts/crossbuild.sh",
-          "expected": "6ターゲット成功、exit 0、dist/ に成果物"
+          "expected": "All six targets succeed, exit 0, artifacts in dist/"
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && ls dist/ | wc -l",
@@ -390,18 +390,18 @@
         },
         {
           "method": "cd /Users/vvx/projekt/go/geminus && grep -c 'geminus run' README.md",
-          "expected": "1以上"
+          "expected": "At least 1"
         }
       ],
       "stop_conditions": [
-        "クロスビルドにネットワーク依存が必要になった",
-        "README の記述と実装の不一致が解消できない"
+        "Cross-building requires a network dependency.",
+        "A discrepancy between the README and the implementation cannot be resolved."
       ],
       "owner": "implementation",
       "completion_evidence": [
-        "bash scripts/crossbuild.sh exit 0、dist/ に6ターゲット",
-        "README 記載コマンドを一時 GEMINUS_HOME で実行",
-        "docs/architecture.md 309行"
+        "bash scripts/crossbuild.sh exited with code 0; six targets in dist/",
+        "Ran the README commands with a temporary GEMINUS_HOME",
+        "docs/architecture.md: 309 lines"
       ],
       "verification_output_paths": [
         "dist/"

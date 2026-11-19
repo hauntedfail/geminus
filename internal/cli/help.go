@@ -48,7 +48,8 @@ func printCommandHelp(w io.Writer, cmd command) {
 	io.WriteString(w, b.String())
 }
 
-// flagRows は keep が true を返すフラグを「書式, 説明」の行にする。
+// flagRows formats each flag accepted by keep as a row containing its syntax and
+// description.
 func flagRows(fs *flag.FlagSet, keep func(name string) bool) [][2]string {
 	var rows [][2]string
 	fs.VisitAll(func(f *flag.Flag) {
@@ -69,7 +70,7 @@ func flagRows(fs *flag.FlagSet, keep func(name string) bool) [][2]string {
 	return rows
 }
 
-// writeRows は1列目の幅を揃えて書く。
+// writeRows aligns the first column.
 func writeRows(b *strings.Builder, rows [][2]string) {
 	width := 0
 	for _, row := range rows {

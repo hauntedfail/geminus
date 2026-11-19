@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// 引用符付きの値とヘッダ形式。フェーズ3 A-1 の再現ケースを含む。
+// Quoted values and headers, including the Phase 3 A-1 regression cases.
 func TestRedactArgvQuotedAndHeaderValues(t *testing.T) {
 	const r = Redacted
 	tests := []struct {
@@ -14,14 +14,14 @@ func TestRedactArgvQuotedAndHeaderValues(t *testing.T) {
 		in   []string
 		want []string
 	}{
-		// 再現ケース
+		// Regression cases.
 		{"double quoted assignment in a shell command", []string{"sh", "-c", `API_KEY="s3cr3t" cmd`}, []string{"sh", "-c", `API_KEY="` + r + `" cmd`}},
 		{"double quoted assignment after echo", []string{"sh", "-c", `echo API_KEY="s3cr3t"`}, []string{"sh", "-c", `echo API_KEY="` + r + `"`}},
 		{"single quoted assignment in a shell command", []string{"sh", "-c", `TOKEN='x' cmd`}, []string{"sh", "-c", `TOKEN='` + r + `' cmd`}},
 		{"single quoted assignment as a whole argument", []string{"env", `TOKEN='x'`, "cmd"}, []string{"env", "TOKEN=" + r, "cmd"}},
 		{"api key header", []string{"curl", "-H", "X-Api-Key: abc123", "https://example.com"}, []string{"curl", "-H", "X-Api-Key: " + r, "https://example.com"}},
 
-		// 代入の3形
+		// Three forms of assignment.
 		{"quoted value with spaces", []string{"sh", "-c", `DB_PASSWORD="my pass word" psql`}, []string{"sh", "-c", `DB_PASSWORD="` + r + `" psql`}},
 		{"single quoted value with spaces", []string{"sh", "-c", `DB_PASSWORD='my pass word' psql`}, []string{"sh", "-c", `DB_PASSWORD='` + r + `' psql`}},
 		{"escaped quote inside a double quoted value", []string{"sh", "-c", `TOKEN="a\"b c" run`}, []string{"sh", "-c", `TOKEN="` + r + `" run`}},
@@ -38,12 +38,12 @@ func TestRedactArgvQuotedAndHeaderValues(t *testing.T) {
 		{"leading assignment with a name only the flag list knows", []string{"sh", "-c", `MY_AUTH="abc def" MY_CREDENTIALS=x run`}, []string{"sh", "-c", `MY_AUTH="` + r + `" MY_CREDENTIALS=x run`}},
 		{"url query", []string{"curl", "https://example.com/?api_key=abc123"}, []string{"curl", "https://example.com/?api_key=" + r}},
 
-		// AWS 形式のキー名
+		// AWS-style key names.
 		{"aws secret access key", []string{"env", "AWS_SECRET_ACCESS_KEY=abc/def", "AWS_ACCESS_KEY_ID=AKIA", "aws"}, []string{"env", "AWS_SECRET_ACCESS_KEY=" + r, "AWS_ACCESS_KEY_ID=AKIA", "aws"}},
 		{"secret key flags", []string{"x", "--secret-key", "a", "--access-key=b"}, []string{"x", "--secret-key", r, "--access-key=" + r}},
 		{"aws key inside a shell command", []string{"sh", "-c", `AWS_SECRET_ACCESS_KEY="abc" aws s3 ls`}, []string{"sh", "-c", `AWS_SECRET_ACCESS_KEY="` + r + `" aws s3 ls`}},
 
-		// ヘッダ
+		// Headers.
 		{"api key header inside a shell command", []string{"sh", "-c", `curl -H 'X-Api-Key: abc123' https://example.com`}, []string{"sh", "-c", `curl -H 'X-Api-Key: ` + r + `' https://example.com`}},
 		{"double quoted header inside a shell command", []string{"sh", "-c", `curl -H "x-api-key: abc123" https://example.com`}, []string{"sh", "-c", `curl -H "x-api-key: ` + r + `" https://example.com`}},
 		{"header without a space", []string{"curl", "-H", "X-Auth-Token:abc123"}, []string{"curl", "-H", "X-Auth-Token:" + r}},
@@ -57,7 +57,7 @@ func TestRedactArgvQuotedAndHeaderValues(t *testing.T) {
 		{"json body", []string{"curl", "-d", `{"api_key": "abc123", "name": "bob"}`}, []string{"curl", "-d", `{"api_key": "` + r + `", "name": "bob"}`}},
 		{"json body with a compound name", []string{"curl", "-d", `{"client_secret":"abc 123","page":2}`}, []string{"curl", "-d", `{"client_secret":"` + r + `","page":2}`}},
 
-		// レビューで見つかった形
+		// Cases identified during review.
 		{"authorization with another scheme", []string{"curl", "-H", "Authorization: ApiKey abc123"}, []string{"curl", "-H", "Authorization: ApiKey " + r}},
 		{"authorization with an unknown scheme inside a shell command", []string{"sh", "-c", `curl -H 'Authorization: Custom abc123' https://example.com`}, []string{"sh", "-c", `curl -H 'Authorization: Custom ` + r + `' https://example.com`}},
 		{"bearer with a quoted token", []string{"claude", `send Authorization: Bearer "abc123" to the api`}, []string{"claude", `send Authorization: Bearer "` + r + `" to the api`}},
@@ -86,7 +86,7 @@ func TestRedactArgvQuotedAndHeaderValues(t *testing.T) {
 	}
 }
 
-// 普通の文章やコード片は変えない。
+// Leave ordinary prose and code fragments unchanged.
 func TestRedactArgvKeepsOrdinaryText(t *testing.T) {
 	texts := []string{
 		"the token is in the vault",
@@ -121,7 +121,7 @@ func TestRedactArgvKeepsOrdinaryText(t *testing.T) {
 	}
 }
 
-// どの形でも値そのものが残らないこと。伏せた後の見た目は問わない。
+// The value itself must never survive, regardless of how the replacement looks.
 func TestRedactArgvNeverLeaksTheValue(t *testing.T) {
 	const secret = "s3cr3tVALUE"
 	shapes := []string{

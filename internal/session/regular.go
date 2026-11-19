@@ -9,16 +9,16 @@ import (
 	"path/filepath"
 )
 
-// ErrNotRegular は、セッションのファイルが通常ファイルでない（シンボリックリンク、
-// 名前付きパイプ、デバイス、ディレクトリなど）か、セッションのディレクトリが
-// 実ディレクトリでないことを表す。そういうものは辿らず、読まず、書かない。
+// ErrNotRegular means a session file is not a regular file (for example, a symlink, FIFO, device
+// or directory), or the session directory is not a real directory. Do not follow, read or write
+// such entries.
 var ErrNotRegular = errors.New("not a regular file")
 
-// openRegular は path を読み取り用に開く。通常ファイルでなければ ErrNotRegular を返す。
+// openRegular opens path for reading and returns ErrNotRegular if it is not a regular file.
 //
-// シンボリックリンクを辿るとセッションの外のファイルを表示してしまい、FIFO は開くだけで
-// 書き手を待って止まる。Lstat で先に弾き、Unix では O_NOFOLLOW と O_NONBLOCK を付けて開き、
-// 開いた後のファイルも確かめる（Lstat と open の間のすり替えに備える）。
+// Following a symlink could expose a file outside the session; opening a FIFO could block waiting
+// for a writer. Reject these with Lstat first. On Unix, open with O_NOFOLLOW and O_NONBLOCK, and
+// check the open file in case it was replaced between Lstat and open.
 func openRegular(path string) (*os.File, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -37,7 +37,7 @@ func openRegular(path string) (*os.File, error) {
 	return f, nil
 }
 
-// readRegular は通常ファイル path の内容を読む。
+// readRegular reads the contents of the regular file at path.
 func readRegular(path string) (data []byte, err error) {
 	f, err := openRegular(path)
 	if err != nil {
@@ -49,7 +49,7 @@ func readRegular(path string) (data []byte, err error) {
 	return io.ReadAll(f)
 }
 
-// requireRegular は開いたファイルが通常ファイルであることを確かめる。
+// requireRegular checks that the open file is a regular file.
 func requireRegular(f *os.File) error {
 	info, err := f.Stat()
 	if err != nil {
@@ -61,8 +61,8 @@ func requireRegular(f *os.File) error {
 	return nil
 }
 
-// requireSessionDir は dir が実ディレクトリであることを確かめる。
-// 無ければ fs.ErrNotExist を含むエラー、リンクなどなら ErrNotRegular を返す。
+// requireSessionDir checks that dir is a real directory. It returns an error wrapping
+// fs.ErrNotExist if absent, or ErrNotRegular for a symlink or other nondirectory entry.
 func requireSessionDir(dir string) error {
 	info, err := os.Lstat(dir)
 	if err != nil {

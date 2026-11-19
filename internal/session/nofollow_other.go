@@ -4,12 +4,12 @@ package session
 
 import "os"
 
-// appendOpenFlags は Unix 専用（O_NOFOLLOW | O_NONBLOCK）。
-// この OS では Lstat と、開いた後の確認に頼る。
+// appendOpenFlags is only needed on Unix (O_NOFOLLOW | O_NONBLOCK). On this OS, rely on Lstat and
+// the post-open check.
 const appendOpenFlags = 0
 
-// openNoFollow は path を読み取り用に開く。
-// この OS には O_NOFOLLOW が無いので、呼び出し側の Lstat と、開いた後の確認で弾く。
+// openNoFollow opens path for reading. Without O_NOFOLLOW, the caller relies on Lstat and the
+// post-open check to reject nonregular files.
 func openNoFollow(path string) (*os.File, error) {
 	return os.Open(path)
 }

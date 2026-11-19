@@ -18,7 +18,7 @@ import (
 	gopty "github.com/aymanbagabas/go-pty"
 )
 
-// ptyRun は実際の PTY で /bin/sh を動かす。端末側はメモリ上の memTerminal。
+// ptyRun runs /bin/sh on a real PTY with a memTerminal on the user side.
 type ptyRun struct {
 	t    *testing.T
 	term *memTerminal
@@ -39,7 +39,7 @@ func startPTY(t *testing.T, tty bool, script string, configure func(*Options)) *
 	if configure != nil {
 		configure(&opts)
 	}
-	// ハングしたらテストを止めずに子を kill して失敗させる。
+	// Kill a hung child and fail the test rather than blocking the suite.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	go func() {
 		res, err := Run(ctx, opts)
@@ -92,7 +92,7 @@ func TestPTYExitCode(t *testing.T) {
 
 func TestPTYOutputIsRelayedAndRecordedIdentically(t *testing.T) {
 	var record syncBuffer
-	// 終了直前に書いた出力まで届くことを確かめるため、最後の printf の直後に exit する。
+	// Exit immediately after the last printf to check that output written just before exit arrives.
 	p := startPTY(t, false, `printf 'hello \033[31mworld\033[0m'; printf ' tail'; exit 3`, func(o *Options) { o.Record = &record })
 	out := p.wait()
 	if out.err != nil {
@@ -110,7 +110,7 @@ func TestPTYOutputIsRelayedAndRecordedIdentically(t *testing.T) {
 	}
 }
 
-// 大きな出力を出してすぐ終了しても、末尾まで欠けない。
+// Even a child that exits immediately after a large write must deliver the last byte.
 func TestPTYLargeOutputIsNotTruncated(t *testing.T) {
 	var record syncBuffer
 	p := startPTY(t, false, `i=0; while [ $i -lt 2000 ]; do echo "line $i ................................................"; i=$((i+1)); done; echo END`, func(o *Options) { o.Record = &record })
@@ -156,7 +156,7 @@ func TestPTYInputReachesChild(t *testing.T) {
 	}
 }
 
-// 非 TTY の入力が EOF になったら EOT が届き、cat が終了する（ハングしない）。
+// At EOF on non-TTY input, cat receives EOT and exits instead of hanging.
 func TestPTYNonTTYInputEOFEndsCat(t *testing.T) {
 	p := startPTY(t, false, `cat; echo "cat-exit:$?"`, nil)
 	p.term.typeString(t, "abc\n")
@@ -174,7 +174,7 @@ func TestPTYNonTTYInputEOFEndsCat(t *testing.T) {
 	}
 }
 
-// 改行で終わらない入力（printf abc | geminus run ...）でも cat が終了する。
+// cat also exits when input has no trailing newline (printf abc | geminus run ...).
 func TestPTYNonTTYInputWithoutTrailingNewlineEndsCat(t *testing.T) {
 	p := startPTY(t, false, `cat; echo "cat-exit:$?"`, nil)
 	p.term.typeString(t, "abc")
@@ -189,7 +189,7 @@ func TestPTYNonTTYInputWithoutTrailingNewlineEndsCat(t *testing.T) {
 	}
 }
 
-// 入力が空（</dev/null）でも、標準入力を読む子は EOF を受けて終了する。
+// A child reading empty standard input (</dev/null) receives EOF and exits.
 func TestPTYNonTTYEmptyInputEndsCat(t *testing.T) {
 	p := startPTY(t, false, `cat; echo "cat-exit:$?"`, nil)
 	p.term.inW.Close()
@@ -271,7 +271,7 @@ func TestPTYContextCancelKillsChild(t *testing.T) {
 	}
 }
 
-// バックグラウンドの孫が PTY を握ったままでも、子の終了で Run が返る。
+// Run returns when the child exits even if a background grandchild still holds the PTY.
 func TestPTYReturnsWhileGrandchildHoldsThePTY(t *testing.T) {
 	p := startPTY(t, false, `sleep 30 & echo started; exit 4`, nil)
 	start := time.Now()
@@ -347,7 +347,7 @@ func TestPTYChildCloseIsIdempotent(t *testing.T) {
 	if err != nil || code != 2 {
 		t.Fatalf("Wait = %d, %v", code, err)
 	}
-	// 終了後のシグナルと kill は何もしない（回収済みの PID に送らない）。
+	// Signal and Kill do nothing after exit; neither should signal a reaped PID.
 	if err := child.Signal(syscall.SIGTERM); err != nil {
 		t.Errorf("Signal after exit: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestPTYSpawnerRejectsEmptyArgv(t *testing.T) {
 	}
 }
 
-// 利用者側の端末も実際の PTY にして、raw mode・サイズ・SIGWINCH の経路を通す。
+// Use a real PTY on the user side too, to exercise raw mode, sizing and SIGWINCH.
 func TestOSTerminalOnRealPTY(t *testing.T) {
 	pty, err := gopty.New()
 	if err != nil {
@@ -396,7 +396,7 @@ func TestOSTerminalOnRealPTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MakeRaw: %v", err)
 	}
-	// raw mode では改行を待たずに1バイトずつ読める。
+	// In raw mode, individual bytes can be read without waiting for a newline.
 	if _, err := pty.Write([]byte("a")); err != nil {
 		t.Fatal(err)
 	}
@@ -433,9 +433,9 @@ func TestOSTerminalOnRealPTY(t *testing.T) {
 	stop()
 }
 
-// Signals を渡さない既定の経路: geminus が受けた SIGTERM が子へ届く。
+// With the default Signals source, SIGTERM received by geminus reaches the child.
 func TestPTYForwardsRealSignals(t *testing.T) {
-	// 転送の登録より先にシグナルが届いてもテストプロセスが死なないようにする。
+	// Keep an early signal from terminating the test process before forwarding is registered.
 	guard := make(chan os.Signal, 16)
 	signal.Notify(guard, syscall.SIGTERM)
 	defer signal.Stop(guard)
@@ -462,7 +462,7 @@ func TestPTYForwardsRealSignals(t *testing.T) {
 	}
 }
 
-// シグナルは子だけでなく、同じプロセスグループの孫にも届く。
+// The signal reaches both the child and a grandchild in its process group.
 func TestPTYSignalReachesGrandchild(t *testing.T) {
 	signals := make(chan os.Signal)
 	script := `sh -c 'trap "echo grandchild-term; exit 0" TERM; echo grandchild-ready; while :; do sleep 0.05; done' &
@@ -486,7 +486,7 @@ wait`
 	}
 }
 
-// パス区切りを含む相対パスは、子の作業ディレクトリから解決する。
+// Resolve relative paths containing separators against the child's working directory.
 func TestPTYRelativeCommandResolvesAgainstDir(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "agent.sh")

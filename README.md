@@ -1,172 +1,172 @@
 # geminus
 
-Claude Code と Hermes Agent の入出力を、PTY 越しにそのまま中継する薄い CLI クライアント。
+A lightweight CLI that relays input and output unchanged between your terminal and Claude Code or Hermes Agent through a pseudoterminal (PTY).
 
-- エージェントの出力は解釈も再構成もしない。バイト列をそのまま端末へ流す。
-- セッションを閉じても、同じ geminus セッション ID で会話を再開できる。再開は各エージェントの resume 機能に任せる。
-- デーモン、DB、HTTP、常駐プロセスは無い。状態はローカルファイルだけに置く。
-- 単一バイナリ（CGO 無効）。macOS / Linux / Windows で同じコマンド体系。
+- geminus passes the agent's output bytes straight to the terminal without interpreting or reconstructing them.
+- After closing a session, you can resume the conversation with the same geminus session ID. Each agent handles resumption itself.
+- There is no daemon, database, HTTP layer, or resident process. All state lives in local files.
+- A single binary (CGO disabled) provides the same commands on macOS, Linux, and Windows.
 
-設計は [docs/architecture.md](docs/architecture.md) にある。
+See [the architecture guide](docs/architecture.md) for the design.
 
-## インストール
+## Installation
 
-Go 1.23 以降が必要。
+Requires Go 1.23 or later.
 
 ```sh
 go install github.com/hauntedfail/geminus/cmd/geminus@latest
 ```
 
-ソースからビルドする場合は、リポジトリの直下で次を実行する。
+To build from source, run these commands from the repository root:
 
 ```sh
 go build -o geminus ./cmd/geminus
 ./geminus version
 ```
 
-配布用のバイナリは `bash scripts/crossbuild.sh` で作る。`dist/` に darwin / linux / windows × amd64 / arm64 の6つができる。
+To build release binaries, run `bash scripts/crossbuild.sh`. It produces six binaries in `dist/`: amd64 and arm64 builds for darwin, linux, and windows.
 
-エージェント本体（`claude`、`hermes`）は別に入れて、`PATH` に置く。認証もエージェント側のものをそのまま使う。geminus は認証情報を読まないし、保存もしない。
+Install the agents (`claude`, `hermes`) separately and put them on your `PATH`. Each agent handles its own authentication; geminus neither reads nor stores credentials.
 
-## クイックスタート
+## Quick start
 
 ```sh
-# 環境を確かめる（PTY、端末、見つかったエージェント）
+# Check the PTY, terminal, and available agents
 geminus doctor
 geminus agents
 
-# 対話セッションを始める（既定は claude）
+# Start an interactive session (defaults to claude)
 geminus run
-geminus run "このリポジトリの構成を説明して"
-geminus run --agent hermes --title "設計の相談"
+geminus run "Explain how this repository is organized"
+geminus run --agent hermes --title "Design discussion"
 
-# 終了すると、再開用のコマンドが stderr に出る
+# When the session ends, geminus prints the resume command to stderr
 #   geminus: session 20261119-122625-df5d ended (exit 0). Resume with: geminus run --resume 20261119-122625-df5d
 geminus run --resume 20261119-122625-df5d
 
-# 1往復だけ聞く（PTY は使わない）
-geminus ask "go.mod の依存を一覧にして"
-geminus ask --continue "その中で直接依存はどれ？"      # このディレクトリで最後に更新したセッションを続ける
-geminus ask --session 20261119-122625-df5d "続き"      # セッションを指定して続ける
-cat notes.txt | geminus ask "要約して"                 # 標準入力はエージェントにそのまま渡る
+# Ask a single question (no PTY)
+geminus ask "List the dependencies in go.mod"
+geminus ask --continue "Which of those are direct dependencies?"  # Continue the most recently updated session in this directory
+geminus ask --session 20261119-122625-df5d "Go on"               # Continue a specific session
+cat notes.txt | geminus ask "Summarize these notes"               # stdin goes straight to the agent
 geminus ask --json "hello"                             # {"session","agent","exit_code","output"}
 
-# セッションを見る
-geminus ls                    # 新しい順に 20 件。--all で全件、--json で JSON
+# Inspect sessions
+geminus ls                    # The 20 newest first; --all lists every session, --json outputs JSON
 geminus show 20261119-122625-df5d
-geminus log 20261119-122625-df5d              # 記録した出力（制御シーケンスは除く）
-geminus log 20261119-122625-df5d --tail 20    # 末尾 20 行
-geminus log 20261119-122625-df5d --raw        # 制御シーケンスを残す
-geminus log 20261119-122625-df5d --json       # transcript.jsonl のイベント列
+geminus log 20261119-122625-df5d              # Recorded output without control sequences
+geminus log 20261119-122625-df5d --tail 20    # Last 20 lines
+geminus log 20261119-122625-df5d --raw        # Keep control sequences
+geminus log 20261119-122625-df5d --json       # Events from transcript.jsonl
 
-# 消す
+# Delete a session
 geminus rm 20261119-122625-df5d
 ```
 
-任意のコマンドも PTY 越しに起動できる。`--` の後ろがそのままコマンド行になる。
+You can also run an arbitrary command through a PTY. Everything after `--` is passed through as the command line.
 
 ```sh
 geminus run --agent cmd -- sh -c 'echo hello'
 ```
 
-共通フラグは `--home DIR`、`--agent NAME`、`--json`、`-v`。コマンド名の前後どちらに書いてもよい。
-各コマンドの詳細は `geminus help <command>` で出る。
+The common flags are `--home DIR`, `--agent NAME`, `--json`, and `-v`. They can go before or after the command name.
+Run `geminus help <command>` for details about a command.
 
-### 終了コード
+### Exit codes
 
-| コード | 意味 |
+| Code | Meaning |
 |---|---|
-| 0 | 正常終了 |
-| 1 | geminus 自体のエラー（I/O、PTY 確保の失敗など） |
-| 2 | 使い方のエラー |
-| その他 | `run` / `ask` は子プロセスの終了コードをそのまま返す。Unix でシグナルにより終了した子は 128 + シグナル番号 |
+| 0 | Success |
+| 1 | geminus error (for example, an I/O error or failure to allocate a PTY) |
+| 2 | Usage error |
+| Other | `run` and `ask` return the child's exit code unchanged. On Unix, if a signal terminates the child, the code is 128 + the signal number. |
 
-## バックエンド
+## Backends
 
-| `--agent` | 新規 | 再開（`run --resume`） | ワンショット（`ask`） |
+| `--agent` | New session | Resume (`run --resume`) | One-shot (`ask`) |
 |---|---|---|---|
-| `claude` | `claude --session-id <uuid>` | `claude --resume <uuid>` | `claude -p --session-id <uuid> <prompt>`（続きは `--resume <uuid>`） |
-| `hermes` | `hermes chat -c <name> --create-if-missing` | 新規と同じ（名前が一致すれば再開） | 左に `-q <prompt> --oneshot` を足す |
-| `cmd` | `--` の後ろのコマンド行をそのまま起動 | 非対応。注記を出して新しく起動する | 非対応 |
+| `claude` | `claude --session-id <uuid>` | `claude --resume <uuid>` | `claude -p --session-id <uuid> <prompt>` (use `--resume <uuid>` to continue) |
+| `hermes` | `hermes chat -c <name> --create-if-missing` | Same command; resumes if the name matches | Append `-q <prompt> --oneshot` to the new-session command |
+| `cmd` | Run the command line after `--` unchanged | Not supported; geminus records a note and starts a new process | Not supported |
 
-- `<uuid>` は geminus が作り、`session.json` に保存する。
-- `<name>` には geminus のセッション ID をそのまま使う。
-- `--resume ID --fresh` は、geminus のセッションはそのままに、エージェント側の会話だけを新しくする。
-- 既定のバックエンドは `claude`。`$GEMINUS_HOME/config.json` に `{"agent": "hermes"}` と書けば変えられる。
-- 再開するセッションは、最初に作ったときのディレクトリで動かす（claude は会話をディレクトリごとに持つため）。今いる場所と違う場合は stderr に出る。
+- geminus generates `<uuid>` and saves it in `session.json`.
+- `<name>` is the geminus session ID.
+- `--resume ID --fresh` starts a new conversation on the agent side but keeps the geminus session.
+- The default backend is `claude`. To change it, set `{"agent": "hermes"}` in `$GEMINUS_HOME/config.json`.
+- A resumed session runs in the directory where it was created because claude stores conversations by directory. If that differs from your current directory, geminus tells you on stderr.
 
-## セッションの保存場所
+## Session storage
 
 ```
-~/.geminus/                         # GEMINUS_HOME か --home で変えられる
-  config.json                       # 任意
+~/.geminus/                         # Override with GEMINUS_HOME or --home
+  config.json                       # Optional
   sessions/
-    20261119-122625-df5d/           # ID は YYYYMMDD-HHMMSS-<4桁の16進>
-      session.json                  # メタ情報
-      transcript.jsonl              # イベント列（起動、入力、出力の範囲、注記、終了）
-      raw.log                       # PTY の出力そのもの
+    20261119-122625-df5d/           # ID format: YYYYMMDD-HHMMSS-<4 hex digits>
+      session.json                  # Session metadata
+      transcript.jsonl              # Events: start, input, output ranges, notes, exit
+      raw.log                       # Raw PTY output
 ```
 
-- ディレクトリは `0700`、ファイルは `0600` で作る。`geminus doctor` は、他のユーザが読める状態を警告する。
-- 場所の優先順は `--home DIR`、環境変数 `GEMINUS_HOME`、`~/.geminus`。
-- `raw.log` は 64 MiB で記録を止める。会話はそのまま続く。
+- geminus creates directories with mode `0700` and files with mode `0600`. `geminus doctor` warns if other users can read them.
+- geminus uses `--home DIR` first, then the `GEMINUS_HOME` environment variable, then `~/.geminus`.
+- Recording to `raw.log` stops at 64 MiB. The conversation continues.
 
-### 記録される内容
+### What gets recorded
 
-**`raw.log` には会話そのものが入る。** エージェントが画面に出したものは、貼り付けたコード、読んだファイルの中身、表示されたトークンを含めてすべて残る。
+**`raw.log` contains the conversation itself.** It captures everything the agent displays, including pasted code, the contents of files it reads, and any tokens shown on screen.
 
-- `~/.geminus` をバックアップやクラウド同期の対象に入れるときは、会話を置いてよい場所かを確かめる。
-- セッションのディレクトリや `geminus log` の出力を共有する前に、中身を読む。
-- 記録を残したくないときは `geminus run --no-record` を使う。`raw.log` と出力イベントを書かず、起動引数はコマンド名だけを残し、プロンプトをタイトルにもしない。
+- Before including `~/.geminus` in backups or cloud sync, make sure the destination is suitable for storing your conversations.
+- Review session directories and `geminus log` output before sharing them.
+- To avoid recording output, use `geminus run --no-record`. It skips `raw.log` and output events, keeps only the command name from the launch arguments, and does not use the prompt as the title.
 
-`transcript.jsonl` に残す起動引数は、秘密らしい値を `[REDACTED]` に置き換える。
+In the launch arguments saved to `transcript.jsonl`, geminus replaces values that look like secrets with `[REDACTED]`. Examples include:
 
-- `--api-key VALUE`、`--token=VALUE`、`OPENAI_API_KEY=VALUE`
-- 1つの引数の中の `NAME_TOKEN=value` / `NAME_TOKEN="value"` / `NAME_TOKEN='value'`
-- `X-Api-Key: value`、`"token": "value"`、`Authorization: Bearer value`、`https://user:pass@host`
+- `--api-key VALUE`, `--token=VALUE`, `OPENAI_API_KEY=VALUE`
+- Assignments inside a single argument: `NAME_TOKEN=value`, `NAME_TOKEN="value"`, or `NAME_TOKEN='value'`
+- `X-Api-Key: value`, `"token": "value"`, `Authorization: Bearer value`, `https://user:pass@host`
 
-これは起動引数だけが対象で、`raw.log` の中身には手を加えない。また、任意の文字列から秘密を見分ける方法は無いので、取りこぼしはある（たとえば `sh -c 'curl --token abc'` の `abc`）。残したくない値は環境変数で渡すか、`--no-record` を使う。
+Redaction applies only to launch arguments; it does not change `raw.log`. It cannot identify every secret in arbitrary text (for example, `abc` in `sh -c 'curl --token abc'`). Pass sensitive values through environment variables or use `--no-record`.
 
-`session.json`、`transcript.jsonl`、`raw.log` がシンボリックリンクや名前付きパイプなどにすり替わっている場合、geminus は辿らずにエラーにする。
+If `session.json`, `transcript.jsonl`, or `raw.log` has been replaced with a symbolic link, named pipe, or other non-regular file, geminus returns an error rather than opening it.
 
-## 既知の制約
+## Known limitations
 
-- **パイプ入力は画面にエコーされる。** `printf 'hello\n' | geminus run` のように標準入力が端末でない場合も、子には PTY を渡す。PTY は受け取った入力をエコーするので、出力と `raw.log` に入力の写し（と `^D`）が混ざる。入力の終わりは EOT（Ctrl-D）として1回だけ子に送る。
-- **Windows はコンパイルの確認だけ。** ConPTY の経路はビルドが通ることまでを確かめている。実機での動作は未確認。macOS と Linux はテスト一式が通っている。
-- **同時起動のロックは無い。** `session.json` の `status` と PID を見て、動いているセッションの二重起動を断る（`--force` で開ける）。ロックファイルは持たないので、2つのプロセスがごく短い間に重なると、どちらも起動する。PID の再利用で「動いている」と誤判定することもある。
-- **別の端末からの attach はできない。** 続きは `--resume` で開き直す。
-- **会話の履歴を geminus は持たない。** 再開できるかはエージェント側の履歴次第。エージェントが履歴を消すと再開できない。
-- `ask` は標準出力だけを記録する。標準エラーは端末へ出すが、記録しない。
-- `cmd` バックエンドは `--resume` しても会話は続かない（同じ geminus セッションに記録が追記されるだけ）。
+- **Piped input is echoed on screen.** Even when stdin is not a terminal, as in `printf 'hello\n' | geminus run`, the child gets a PTY. The PTY echoes its input, so a copy of the input (and `^D`) appears in the output and in `raw.log`. geminus signals the end of input by sending EOT (Ctrl-D) to the child once.
+- **Windows support is compile-tested only.** The ConPTY code builds, but it has not been tested on a Windows machine. The full test suite passes on macOS and Linux.
+- **There is no lock against concurrent starts.** geminus checks the `status` and PID in `session.json` and refuses to reopen a running session unless you pass `--force`. Without a lock file, two processes starting close enough together can both get through. A reused PID can also make a session appear to be running.
+- **You cannot attach from another terminal.** Reopen the session with `--resume` to continue.
+- **geminus does not maintain conversation history.** Resuming depends on the agent's own history. If the agent deletes it, the conversation cannot be resumed.
+- `ask` records only stdout. It sends stderr to the terminal without recording it.
+- With the `cmd` backend, `--resume` appends to the same geminus session log but does not continue the conversation.
 
-## トラブルシュート
+## Troubleshooting
 
-**再開しようとすると、エージェントが「セッションが無い」と言って終わる。**
-エージェント側の履歴が消えている。`--fresh` を付けると、geminus のセッション（記録とタイトル）は残したまま、エージェント側だけ新しく始める。
+**The agent says the session does not exist and exits when I try to resume.**
+The agent's history is gone. Use `--fresh` to start a new agent conversation while keeping the geminus session's recording and title.
 
 ```sh
 geminus run --resume 20261119-122625-df5d --fresh
 ```
 
-**打った文字が表示されない。改行がずれる。**
-端末が raw mode のまま残っている。geminus が強制終了（`kill -9` など）されると起きる。`geminus doctor` の `terminal echo` が `warn` になる。次で直る。
+**I can't see what I type, or line breaks are misaligned.**
+The terminal is still in raw mode. This can happen if geminus is killed (for example, with `kill -9`). `geminus doctor` reports `warn` for `terminal echo`. To restore the terminal, run:
 
 ```sh
 stty sane
 ```
 
-`stty sane` も見えないまま打つことになる。Enter で確定できなければ Ctrl-J を押す。Windows では端末を開き直す。
+You won't see `stty sane` as you type it. If Enter doesn't submit the command, press Ctrl-J. On Windows, reopen the terminal instead.
 
-**`session ... is already open in process N` と出て開けない。**
-そのセッションを別の geminus が開いている。前回の geminus が落ちて PID が別のプロセスに再利用された場合も出る。`geminus ls` で `running` か `stale` かを確かめ、動いていないことが分かっていれば `--force` を付ける。
+**I can't open a session: `session ... is already open in process N`.**
+Another geminus process has the session open. This can also happen if the previous process crashed and another process reused its PID. Check `geminus ls` for `running` or `stale`. Use `--force` only if you know the session is not running.
 
-**`agent binary not found` と出る。**
-`geminus doctor` でどのエージェントが `PATH` にあるかを見る。
+**I get `agent binary not found`.**
+Run `geminus doctor` to see which agents are on your `PATH`.
 
-**壊れたセッションが `ls` で警告になる。**
-`geminus rm <id>` は `session.json` が読めなくても消せる。
+**`ls` warns about a corrupt session.**
+`geminus rm <id>` can delete the session even if `session.json` is unreadable.
 
-## 開発
+## Development
 
 ```sh
 go build ./...
@@ -174,8 +174,8 @@ go vet ./...
 go test ./... -count=1
 go test ./... -count=1 -race
 bash scripts/crossbuild.sh
-bash scripts/test-linux.sh        # docker の Linux コンテナで vet と test
+bash scripts/test-linux.sh        # Run vet and tests in a Linux container using Docker
 ```
 
-テストは実際の PTY と偽エージェント（`test/fakeagent`）を使う。CI は置いていない。
-`scripts/test-linux.sh` は macOS / Windows の開発機から Linux の PTY 経路を確かめるためのもので、引数は `go test` にそのまま渡る。
+The tests use a real PTY and a fake agent (`test/fakeagent`). There is no CI setup.
+Use `scripts/test-linux.sh` to check Linux PTY behavior from a macOS or Windows development machine. It passes its arguments unchanged to `go test`.

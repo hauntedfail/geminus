@@ -13,7 +13,7 @@ import (
 	"golang.org/x/term"
 )
 
-// openTTY は実際の PTY を確保し、端末側（slave）を cols x rows にして返す。
+// openTTY allocates a real PTY and returns the slave terminal sized to cols by rows.
 func openTTY(t *testing.T, cols, rows int) *os.File {
 	t.Helper()
 	pty, err := gopty.New()
@@ -31,7 +31,7 @@ func openTTY(t *testing.T, cols, rows int) *os.File {
 	return unix.Slave()
 }
 
-// doctorOn は stdin を tty にして doctor を実行する。
+// doctorOn runs doctor with tty as stdin.
 func doctorOn(t *testing.T, s *sandbox, tty *os.File, args ...string) result {
 	t.Helper()
 	var out, errOut bytes.Buffer
@@ -74,7 +74,7 @@ func TestDoctorReportsTheTerminalState(t *testing.T) {
 		t.Errorf("exit = %d, ok = %v", r.code, report.OK)
 	}
 
-	// --json のキー名は外から読まれるので固定する。
+	// External consumers rely on these --json field names.
 	var raw struct {
 		Terminal map[string]any `json:"terminal"`
 	}
@@ -91,7 +91,8 @@ func TestDoctorReportsTheTerminalState(t *testing.T) {
 	}
 }
 
-// 前回の geminus が raw mode のまま落ちた状態。doctor は警告し、直し方を1行添える。直しはしない。
+// Simulate a previous run crashing in raw mode. doctor should warn and suggest a one-line
+// fix without applying it.
 func TestDoctorWarnsWhenEchoIsOff(t *testing.T) {
 	emptyPath(t)
 	s := newSandbox(t)
@@ -111,7 +112,7 @@ func TestDoctorWarnsWhenEchoIsOff(t *testing.T) {
 	if c.Status != checkWarn || !strings.Contains(c.Detail, "stty sane") {
 		t.Errorf("echo check = %+v, want a warning that mentions stty sane", c)
 	}
-	// 警告であって失敗ではない。
+	// This is a warning, not a failure.
 	if r.code != ExitOK || !report.OK {
 		t.Errorf("exit = %d, ok = %v; want a warning only", r.code, report.OK)
 	}
@@ -130,13 +131,14 @@ func TestDoctorWarnsWhenEchoIsOff(t *testing.T) {
 		t.Errorf("stty sane appears %d times, want once:\n%s", n, text.stdout)
 	}
 
-	// doctor は端末の設定を変えない。
+	// doctor must not change terminal settings.
 	if after := decodeDoctor(t, doctorOn(t, s, tty, "--json")); after.Terminal.Echo {
 		t.Error("doctor turned echo back on; it must only report")
 	}
 }
 
-// 端末が無ければ echo は読めない。失敗にも警告にもしない。
+// Without a terminal, the echo setting is unavailable. This is neither a warning nor a
+// failure.
 func TestDoctorWithoutATerminal(t *testing.T) {
 	emptyPath(t)
 	s := newSandbox(t)

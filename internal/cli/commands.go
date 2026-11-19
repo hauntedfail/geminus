@@ -7,20 +7,20 @@ import (
 	"github.com/hauntedfail/geminus/internal/version"
 )
 
-// command は1つのサブコマンドの定義。
+// command defines a subcommand.
 type command struct {
 	name    string
 	summary string
-	// usage は "geminus <name>" の後ろに続く引数の書式。
+	// usage describes the arguments following "geminus <name>".
 	usage string
-	// interspersed が true なら位置引数の後ろのフラグも解釈する。
+	// interspersed enables flag parsing after positional arguments.
 	interspersed bool
-	// flags はコマンド固有のフラグを登録する。共通フラグは newFlagSet が足す。
+	// flags registers command-specific flags; newFlagSet adds the common flags.
 	flags func(fs *flag.FlagSet, o *Options)
 	run   func(inv Invocation) int
 }
 
-// commands はヘルプに出す順で並べる。
+// commands lists subcommands in help order.
 func commands() []command {
 	return []command{
 		{

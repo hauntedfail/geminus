@@ -11,27 +11,27 @@ import (
 	"syscall"
 )
 
-// handledSignals は中継の間 geminus が自分で受けるシグナル。
+// handledSignals lists the signals geminus handles while relaying.
 //
-// SIGINT / SIGTERM / SIGHUP / SIGQUIT は子へ転送する。raw mode 中の Ctrl-C はバイトとして
-// PTY を通るので、ここに来るのは外から送られたもの。
-// SIGPIPE は転送しない。受けておくと、閉じた標準出力（`geminus run | head`）への書き込みが
-// プロセスの即死ではなく EPIPE になり、端末を復元してから終われる。
+// Forward SIGINT, SIGTERM, SIGHUP and SIGQUIT. Ctrl-C travels through the PTY as a byte in raw
+// mode, so these signals come from outside. Catch SIGPIPE without forwarding it: writing to closed
+// stdout (`geminus run | head`) then returns EPIPE instead of terminating geminus before it can
+// restore the terminal.
 func handledSignals() []os.Signal {
 	return []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGPIPE}
 }
 
-// forwardable は sig を子へ転送するかを返す。
+// forwardable reports whether to forward sig to the child.
 func forwardable(sig os.Signal) bool {
 	return sig != syscall.SIGPIPE
 }
 
-// signalChild は子のプロセスグループへ sig を送る。
-// go-pty は Setsid で起動するので、子はセッションリーダーで、pgid は pid に等しい。
+// signalChild sends sig to the child's process group. go-pty starts the child with Setsid, so it
+// is the session leader and its PGID equals its PID.
 //
-// 呼び出し側（ptyChild）は Wait が返った後は送らないが、カーネルが子を回収してから
-// その印が立つまでの一瞬は防げない。その間に同じ pgid が再利用される可能性は、
-// PID が一巡する必要があるので無視している。
+// The caller (ptyChild) stops signaling after Wait returns. There is a brief race between the
+// kernel reaping the child and the caller marking it as reaped. Reuse of the same PGID in that
+// interval would require PID wraparound, so we ignore it.
 func signalChild(proc *os.Process, _ io.Writer, sig os.Signal) error {
 	s, ok := sig.(syscall.Signal)
 	if !ok {
@@ -39,7 +39,7 @@ func signalChild(proc *os.Process, _ io.Writer, sig os.Signal) error {
 	}
 	err := syscall.Kill(-proc.Pid, s)
 	if errors.Is(err, syscall.ESRCH) {
-		return nil // 既に終了している
+		return nil // The child has already exited.
 	}
 	return err
 }
@@ -48,7 +48,8 @@ func killChild(proc *os.Process) error {
 	return signalChild(proc, nil, syscall.SIGKILL)
 }
 
-// exitCode は終了コードを返す。シグナルで終了した場合はシェルと同じ 128+番号にする。
+// exitCode returns the exit status, using the shell convention of 128 plus the signal number for
+// signal termination.
 func exitCode(state *os.ProcessState) int {
 	if status, ok := state.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 		return 128 + int(status.Signal())
@@ -56,7 +57,7 @@ func exitCode(state *os.ProcessState) int {
 	return state.ExitCode()
 }
 
-// watchResize は SIGWINCH のたびに notify を呼ぶ。
+// watchResize calls notify on each SIGWINCH.
 func watchResize(_ *stdTerminal, notify func()) func() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGWINCH)
@@ -81,7 +82,7 @@ func watchResize(_ *stdTerminal, notify func()) func() {
 	}
 }
 
-// enableVT は Windows のコンソール専用。Unix の端末は最初から VT を解釈する。
+// enableVT is needed only for Windows consoles. Unix terminals already interpret VT sequences.
 func enableVT(_, _ *os.File) func() {
 	return func() {}
 }

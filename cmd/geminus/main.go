@@ -1,4 +1,4 @@
-// Command geminus は Claude Code / Hermes Agent の入出力を PTY 越しに中継する。
+// Command geminus relays Claude Code and Hermes Agent I/O through a PTY.
 package main
 
 import (

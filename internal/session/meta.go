@@ -1,13 +1,13 @@
-// Package session は geminus のセッションをローカルファイルとして保存する。
+// Package session stores geminus sessions in local files.
 //
-// レイアウト:
+// Layout:
 //
-//	$GEMINUS_HOME/sessions/<id>/session.json      メタ（一時ファイル + rename で置換）
-//	$GEMINUS_HOME/sessions/<id>/transcript.jsonl  追記専用のイベント列
-//	$GEMINUS_HOME/sessions/<id>/raw.log           PTY の生バイト
+//	$GEMINUS_HOME/sessions/<id>/session.json      metadata (replaced by renaming a temporary file)
+//	$GEMINUS_HOME/sessions/<id>/transcript.jsonl  append-only event stream
+//	$GEMINUS_HOME/sessions/<id>/raw.log           raw PTY bytes
 //
-// 会話には秘密が混ざり得るので、ディレクトリは 0700、ファイルは 0600 で作る。
-// 同じセッションへ書くプロセスは1つだけという前提で、ロックは取らない。
+// Conversations may contain secrets, so directories are created with mode 0700 and files with mode
+// 0600. No locking is used: each session is assumed to have a single writer process.
 package session
 
 import (
@@ -19,40 +19,40 @@ import (
 	"time"
 )
 
-// SchemaVersion は session.json の現在の形式バージョン。
+// SchemaVersion is the current session.json format version.
 const SchemaVersion = 1
 
-// Status はセッションの状態。
+// Status is the state of a session.
 type Status string
 
 const (
-	// StatusCreated は作成済みで、まだエージェントを起動していない状態。
+	// StatusCreated means the session exists but the agent has not started.
 	StatusCreated Status = "created"
-	// StatusRunning はエージェントが動いている状態。PID と組で判断する（Meta.Active）。
+	// StatusRunning means the agent is running. Check the PID as well (see Meta.Active).
 	StatusRunning Status = "running"
-	// StatusExited はエージェントが終了した状態。
+	// StatusExited means the agent has exited.
 	StatusExited Status = "exited"
 )
 
 var (
-	// ErrNotFound はセッションが存在しないことを表す。
+	// ErrNotFound means the session does not exist.
 	ErrNotFound = errors.New("session not found")
-	// ErrCorrupt は session.json や transcript.jsonl が読めない形であることを表す。
+	// ErrCorrupt means session.json or transcript.jsonl contains malformed data.
 	ErrCorrupt = errors.New("corrupt session data")
-	// ErrInvalidID はセッション ID の形式が不正であることを表す。
+	// ErrInvalidID means the session ID is malformed.
 	ErrInvalidID = errors.New("invalid session id")
-	// ErrUnsupportedVersion は session.json がこのバイナリより新しい形式であることを表す。
+	// ErrUnsupportedVersion means session.json uses a format newer than this binary supports.
 	ErrUnsupportedVersion = errors.New("unsupported session format version")
 )
 
-// AgentSession はエージェント側のセッションを指すキー。
-// claude は kind "uuid"、hermes は kind "name"。
+// AgentSession identifies the session on the agent side. Claude uses kind "uuid"; Hermes uses kind
+// "name".
 type AgentSession struct {
 	Kind  string `json:"kind"`
 	Value string `json:"value"`
 }
 
-// Meta は session.json の内容。
+// Meta holds the contents of session.json.
 type Meta struct {
 	Version      int           `json:"version"`
 	ID           string        `json:"id"`
@@ -63,22 +63,23 @@ type Meta struct {
 	CreatedAt    time.Time     `json:"created_at"`
 	UpdatedAt    time.Time     `json:"updated_at"`
 	Status       Status        `json:"status"`
-	// PID は Status が running の間、中継している geminus プロセスの PID。
-	// 二重起動の判定に使う（plan.md 3.5）。
+	// PID identifies the geminus relay process while Status is running. It is used to detect duplicate
+	// launches (plan.md section 3.5).
 	PID int `json:"pid,omitempty"`
-	// ExitCode は子が終了するまで nil。0 も値として保存する。
+	// ExitCode is nil until the child exits. Zero is stored as a value.
 	ExitCode *int  `json:"exit_code,omitempty"`
 	Turns    int   `json:"turns"`
 	RawBytes int64 `json:"raw_bytes"`
 }
 
-// Active は、このセッションを別のプロセスが今も開いているかを返す。
-// PID の再利用で偽陽性になり得るので、呼び出し側は上書き手段（--force）を用意する。
+// Active reports whether another process still has this session open. PID reuse can cause false
+// positives, so callers should provide an override (--force).
 func (m Meta) Active() bool {
 	return m.Status == StatusRunning && ProcessAlive(m.PID)
 }
 
-// clone はポインタの指す先まで複製する。保存済みの値を呼び出し側と共有しないため。
+// clone copies the pointed-to values too, so the stored metadata shares no pointers with the
+// caller.
 func (m Meta) clone() Meta {
 	out := m
 	if m.AgentSession != nil {
@@ -94,13 +95,13 @@ func (m Meta) clone() Meta {
 
 var idPattern = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$`)
 
-// ValidID は id が YYYYMMDD-HHMMSS-<4hex> の形かを返す。
-// id はパスの一部になるので、ファイルを触る前に必ずこれで確かめる。
+// ValidID reports whether id has the form YYYYMMDD-HHMMSS-<4hex>. Since id becomes part of a path,
+// always validate it before accessing files.
 func ValidID(id string) bool {
 	return idPattern.MatchString(id)
 }
 
-// NewID は t のローカル時刻から YYYYMMDD-HHMMSS-<4hex> の ID を作る。
+// NewID creates a YYYYMMDD-HHMMSS-<4hex> ID using the local time of t.
 func NewID(t time.Time) (string, error) {
 	var suffix [2]byte
 	if _, err := rand.Read(suffix[:]); err != nil {

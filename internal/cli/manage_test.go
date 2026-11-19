@@ -14,7 +14,8 @@ import (
 
 const sampleRaw = "\x1b[1;32mready\x1b[0m\r\nline two\r\n\x1b]0;title\x07line three\r\n"
 
-// writeBrokenSession は session.json が読めないセッションを置き、その id を返す。
+// writeBrokenSession creates a session with unreadable session.json metadata and returns
+// its ID.
 func writeBrokenSession(t *testing.T, s *sandbox, id, content string) string {
 	t.Helper()
 	dir := filepath.Join(s.home, sessionsDirName, id)
@@ -132,7 +133,7 @@ func TestLsReportsBrokenSessionsButListsTheRest(t *testing.T) {
 	}
 }
 
-// session.json に仕込まれた制御シーケンスを、ls / show が端末へそのまま出さない。
+// ls and show must not pass control sequences from session.json through to the terminal.
 func TestLsAndShowNeutralizeControlSequencesInMeta(t *testing.T) {
 	s := newSandbox(t)
 	meta := s.seed("cmd", func(m session.Meta) session.Meta {
@@ -273,7 +274,8 @@ func TestLogJSON(t *testing.T) {
 	}
 }
 
-// transcript に壊れた行があっても、読めた分は出して終了コードで知らせる。
+// For a corrupt transcript line, emit the readable events and report the error via the exit
+// code.
 func TestLogJSONWithACorruptLine(t *testing.T) {
 	s := newSandbox(t)
 	id := s.seed("cmd", nil).ID
@@ -390,7 +392,7 @@ func TestRmDeletesABrokenSession(t *testing.T) {
 
 func TestAgents(t *testing.T) {
 	dir := fakeBin(t, "claude")
-	// hermes は見つからない状態にする。
+	// Make hermes unavailable on PATH.
 	t.Setenv("PATH", dir)
 	s := newSandbox(t)
 
@@ -535,7 +537,7 @@ func TestDoctorFindsProblems(t *testing.T) {
 	})
 }
 
-// GEMINUS_HOME は --home が無いときに使われ、--home はそれを上書きする。
+// Use GEMINUS_HOME by default; an explicit --home takes precedence.
 func TestHomeResolution(t *testing.T) {
 	envHome := filepath.Join(t.TempDir(), "from-env")
 	t.Setenv(session.EnvHome, envHome)

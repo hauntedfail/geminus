@@ -104,13 +104,13 @@ func TestExitEventKeepsZeroCodeInJSON(t *testing.T) {
 	}
 }
 
-// 出力イベントの offset は、そのイベントを追記した時点の raw.log の長さになる。
+// An output event's offset is the length of raw.log when the event is appended.
 func TestAppendEventRecordsRawOffset(t *testing.T) {
 	store, _ := newTestStore(t)
 	meta := mustCreate(t, store, "x")
 	paths, _ := store.Paths(meta.ID)
 
-	// 以前の実行が残した raw.log がある状態から始める（resume）。
+	// Start with a raw.log from an earlier run, as when resuming a session.
 	if err := os.WriteFile(paths.Raw, bytes.Repeat([]byte("p"), 812), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestAppendEventRecordsRawOffset(t *testing.T) {
 		t.Errorf("RawBytes = %d, want 912", got)
 	}
 
-	// 出力以外のイベントには offset を付けない。
+	// Only output events have an offset.
 	note, err := log.AppendEvent(NoteEvent("n"))
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +148,8 @@ func TestAppendEventRecordsRawOffset(t *testing.T) {
 	}
 }
 
-// Write で書いたバイト列は、output イベントの offset/bytes で raw.log から正確に取り出せる。
+// The offset and byte count of an output event identify exactly the bytes written to raw.log by
+// Write.
 func TestWriteRecordsOutputSpans(t *testing.T) {
 	store, clock := newTestStore(t)
 	clock.step = 0
@@ -165,9 +166,9 @@ func TestWriteRecordsOutputSpans(t *testing.T) {
 
 	write("hello ")
 	clock.Advance(500 * time.Millisecond)
-	write("world") // 同じ窓の中なので1つのイベントにまとまる
+	write("world") // Both writes fall in one window and produce one event.
 	clock.Advance(2 * time.Second)
-	write("\x1b[31mred\x1b[0m") // 窓を越えたので別イベント
+	write("\x1b[31mred\x1b[0m") // A new window produces a separate event.
 	if _, err := log.AppendEvent(NoteEvent("between")); err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +235,7 @@ func TestSeqContinuesAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// クラッシュで途中まで書かれた行が残っていても、続きの seq と行の区切りを保つ。
+	// Preserve sequence numbering and line boundaries even if a crash left a partial line.
 	paths, _ := store.Paths(meta.ID)
 	f, err := os.OpenFile(paths.Transcript, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -250,7 +251,7 @@ func TestSeqContinuesAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Seq != 5 { // note×3 + output×1 の次
+	if got.Seq != 5 { // After three notes and one output event.
 		t.Errorf("seq after reopen = %d, want 5", got.Seq)
 	}
 	if reopened.RawBytes() != 3 {
@@ -268,7 +269,7 @@ func TestSeqContinuesAcrossReopen(t *testing.T) {
 
 func TestRawLogLimit(t *testing.T) {
 	store, clock := newTestStore(t)
-	clock.step = 0 // 2回の書き込みを同じ出力窓に入れる
+	clock.step = 0 // Keep both writes in the same output window.
 	meta := mustCreate(t, store, "x")
 	log := openTestLog(t, store, meta.ID, LogOptions{Raw: true, MaxRawBytes: 10})
 
@@ -312,7 +313,7 @@ func TestDefaultRawLimitIs64MiB(t *testing.T) {
 	}
 }
 
-// --no-record: raw.log を作らず、出力イベントも残さない。それ以外のイベントは残す。
+// With --no-record, keep other events but do not create raw.log or record output events.
 func TestLogWithoutRaw(t *testing.T) {
 	store, _ := newTestStore(t)
 	meta := mustCreate(t, store, "x")
@@ -387,7 +388,7 @@ func TestReadEventsHandlesLongLines(t *testing.T) {
 	store, _ := newTestStore(t)
 	meta := mustCreate(t, store, "x")
 	log := openTestLog(t, store, meta.ID, LogOptions{})
-	long := strings.Repeat("あ", 100_000) // bufio.Scanner の既定上限を超える長さ
+	long := strings.Repeat("あ", 100_000) // Exceeds the default bufio.Scanner limit.
 	if _, err := log.AppendEvent(InputEvent(long)); err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +427,7 @@ func TestProcessAlive(t *testing.T) {
 		}
 	}
 
-	// 終了して回収済みの子プロセスは生きていない。
+	// A child that has exited and been reaped is no longer alive.
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("helper process: %v", err)
@@ -456,7 +457,7 @@ func TestMetaActive(t *testing.T) {
 	}
 }
 
-// raw.log や transcript.jsonl がシンボリックリンクにすり替わっていたら、辿らずに拒否する。
+// Reject symlinks replacing raw.log or transcript.jsonl rather than following them.
 func TestOpenLogRejectsSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need privileges on Windows")

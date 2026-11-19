@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// fakeClock は呼ぶたびに step だけ進む時計。更新順を決定的にする。
+// fakeClock advances by step on each call so update order is deterministic.
 type fakeClock struct {
 	mu   sync.Mutex
 	now  time.Time
@@ -57,7 +57,7 @@ func mustCreate(t *testing.T, store *Store, title string) Meta {
 func assertPerm(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		return // Windows は POSIX の権限ビットを持たない
+		return // Windows has no POSIX permission bits.
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -131,7 +131,7 @@ func TestCreate(t *testing.T) {
 	assertPerm(t, paths.Dir, 0o700)
 	assertPerm(t, paths.Meta, 0o600)
 
-	// 呼び出し側の値を後から書き換えても保存済みのメタに影響しない。
+	// Changes to the caller's values must not affect the stored metadata.
 	key.Value = "changed"
 	if meta.AgentSession.Value == "changed" {
 		t.Error("Create kept a reference to the caller's AgentSession")
@@ -142,7 +142,8 @@ func TestCreateTightensLooseUmask(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permissions only")
 	}
-	// 既存の home が緩い権限でも、セッションのディレクトリとファイルは厳しくする。
+	// Session directories and files must be private even if the existing home directory has loose
+	// permissions.
 	home := filepath.Join(t.TempDir(), "home")
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
@@ -162,7 +163,7 @@ func TestCreateTightensLooseUmask(t *testing.T) {
 
 func TestCreateGeneratesUniqueIDs(t *testing.T) {
 	store, clock := newTestStore(t)
-	clock.step = 0 // 同じ秒に作っても衝突しない
+	clock.step = 0 // IDs must not collide even within the same second.
 	seen := map[string]bool{}
 	for i := 0; i < 50; i++ {
 		meta := mustCreate(t, store, "x")
@@ -228,7 +229,7 @@ func TestSessionJSONShape(t *testing.T) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		t.Fatalf("session.json is not a JSON object: %v", err)
 	}
-	// plan.md 3.2 のフィールド名。exit_code は 0 でも出力する。
+	// Check the field names from plan.md section 3.2. Include exit_code even when zero.
 	for _, name := range []string{"version", "id", "title", "agent", "cwd", "created_at", "updated_at", "status", "exit_code", "turns", "raw_bytes"} {
 		if _, ok := fields[name]; !ok {
 			t.Errorf("session.json lacks %q: %s", name, data)
@@ -265,12 +266,12 @@ func TestSaveLeavesNoTempFiles(t *testing.T) {
 	}
 }
 
-// 書き込み中でも、読む側は常に完全な session.json を見る。
+// Readers must always see a complete session.json, even during a write.
 func TestSaveIsAtomicForReaders(t *testing.T) {
 	store, clock := newTestStore(t)
 	clock.step = time.Millisecond
 	meta := mustCreate(t, store, strings.Repeat("long title ", 200))
-	id := meta.ID // 読む側のゴルーチンは meta を共有しない
+	id := meta.ID // The reader goroutine does not share meta.
 
 	stop := make(chan struct{})
 	readErr := make(chan error, 1)
@@ -392,7 +393,7 @@ func TestListOrdersByUpdatedAtDescending(t *testing.T) {
 		t.Errorf("order = %s, want third,second,first", got)
 	}
 
-	// 一番古いセッションを更新すると先頭に来る（作成順ではない）。
+	// Updating the oldest session moves it to the front; the order is not by creation time.
 	if _, err := store.Save(first); err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +437,7 @@ func TestListReportsBrokenSessionsAndKeepsTheRest(t *testing.T) {
 	if err := os.WriteFile(paths.Meta, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// セッション ID の形をしていないものは無視する。
+	// Ignore entries whose names do not look like session IDs.
 	sessions := filepath.Join(store.Home(), "sessions")
 	if err := os.WriteFile(filepath.Join(sessions, ".DS_Store"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -479,7 +480,7 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-// ユーザ入力の id でセッション置き場の外を触らせない。
+// A user-supplied id must not allow access outside the session store.
 func TestInvalidIDsAreRejected(t *testing.T) {
 	store, _ := newTestStore(t)
 	mustCreate(t, store, "x")
@@ -549,7 +550,7 @@ func TestLoadCorrupt(t *testing.T) {
 			} else if err := os.WriteFile(paths.Meta, []byte(tt.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := store.Load(meta.ID) // panic しないことも確認している
+			_, err := store.Load(meta.ID) // Also check that Load does not panic.
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("err = %v, want %v", err, tt.want)
 			}
@@ -656,7 +657,8 @@ func TestCreateFailsWhenHomeIsAFile(t *testing.T) {
 	}
 }
 
-// 書き込めない場所ではエラーを返し、半端なセッションや一時ファイルを残さない。
+// An unwritable location must produce an error without leaving a partial session or temporary
+// files.
 func TestWriteFailuresLeaveNoDebris(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs POSIX permissions and a non-root user")

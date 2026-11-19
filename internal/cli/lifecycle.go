@@ -10,21 +10,20 @@ import (
 	"github.com/hauntedfail/geminus/internal/session"
 )
 
-// errBusy は、セッションを別のプロセスが開いていることを表す。
+// errBusy indicates that another process has the session open.
 var errBusy = errors.New("session is already open")
 
-// target は起動するセッションと、その相手になるアダプタ。
+// target pairs the session to launch with its adapter.
 type target struct {
 	meta    session.Meta
 	adapter agent.Adapter
-	// created は、このプロセスが今回新しく作ったセッションであることを表す。
-	// 子を起動する前に失敗したら、空のセッションを残さないよう消す。
+	// created marks a session newly created by this process. Remove it if launch fails rather
+	// than leaving an empty session behind.
 	created bool
 }
 
-// loadTarget は既存のセッション id を開く準備をする。
-// agentFlag が空でなく、セッションのバックエンドと違えばエラーにする。
-// 別のプロセスが開いていれば errBusy を返す（force で無視する）。
+// loadTarget prepares to open an existing session. A nonempty agentFlag must match its
+// backend. If another process has it open, return errBusy unless force is set.
 func loadTarget(store *session.Store, id, agentFlag string, force bool) (target, error) {
 	meta, err := store.Load(id)
 	if err != nil {
@@ -43,7 +42,7 @@ func loadTarget(store *session.Store, id, agentFlag string, force bool) (target,
 	return target{meta: meta, adapter: adapter}, nil
 }
 
-// createTarget は adapter 用の新しいセッションを作る。
+// createTarget creates a session for adapter.
 func createTarget(store *session.Store, adapter agent.Adapter, title, cwd string) (target, error) {
 	meta, err := store.Create(session.CreateParams{Title: title, Agent: adapter.Name(), Cwd: cwd})
 	if err != nil {
@@ -52,21 +51,22 @@ func createTarget(store *session.Store, adapter agent.Adapter, title, cwd string
 	return target{meta: meta, adapter: adapter, created: true}, nil
 }
 
-// keyPlan はエージェント側のセッションをどう指すかの決定。
+// keyPlan describes how to identify the agent-side session.
 type keyPlan struct {
 	key agent.SessionKey
-	// resume が true なら key の指す会話を再開する。false なら key で新しく始める。
+	// resume selects whether to resume the conversation identified by key or start a new one
+	// with that key.
 	resume bool
-	// notes は transcript と stderr に残す注記。
+	// notes are written to the transcript and stderr.
 	notes []string
 }
 
-// planKey は t を起動するときの継続キーを決める。
+// planKey selects the session key for launching t.
 //
-//	新規セッション       新しいキーで始める
-//	再開                 保存済みのキーで再開する
-//	再開 + fresh         キーだけ作り直して新しく始める（geminus のセッションは同じ）
-//	再開できないアダプタ 注記を残して新しく始める
+//	New session:       Start with a new key.
+//	Resume:            Use the stored key.
+//	Resume with fresh: Start with a new key in the same geminus session.
+//	No resume support: Record a note and start a new conversation.
 func planKey(t target, fresh bool) (keyPlan, error) {
 	caps := t.adapter.Capabilities()
 	if fresh && caps.SessionKey == agent.KeyNone {
@@ -96,7 +96,8 @@ func planKey(t target, fresh bool) (keyPlan, error) {
 	return plan, nil
 }
 
-// storedKey は key を session.json に入れる形にする。キーを持たないアダプタは nil。
+// storedKey converts key to its session.json representation, or nil for adapters without
+// keys.
 func storedKey(key agent.SessionKey) *session.AgentSession {
 	if key.Kind == agent.KeyNone || key.Kind == "" {
 		return nil
@@ -104,14 +105,15 @@ func storedKey(key agent.SessionKey) *session.AgentSession {
 	return &session.AgentSession{Kind: string(key.Kind), Value: key.Value}
 }
 
-// workDir は子を動かすディレクトリを返す。
-// 再開するセッションは、作ったときのディレクトリで動かす（claude は会話をディレクトリごとに持つ）。
+// workDir returns the child's working directory. Resume sessions where they were created
+// because Claude scopes conversations by directory.
 func workDir(t target, cwd string) (string, error) {
 	if t.created || t.meta.Cwd == "" {
 		return cwd, nil
 	}
 	dir := t.meta.Cwd
-	// session.json は geminus 以外も書ける。相対パスは、どこを指すかが実行場所で変わるので受けない。
+	// Other programs can write session.json. Reject relative paths because their meaning
+	// depends on where geminus is invoked.
 	if !filepath.IsAbs(dir) {
 		return "", fmt.Errorf("session %s: its working directory %q is not an absolute path", t.meta.ID, dir)
 	}
@@ -122,16 +124,16 @@ func workDir(t target, cwd string) (string, error) {
 	return dir, nil
 }
 
-// announceDir は、今いる場所と違うディレクトリでエージェントを動かすことを stderr に知らせる。
-// エージェントは動かす場所の設定ファイルを読むので、黙って場所を変えない。
+// announceDir warns on stderr when the agent will run outside the current directory. The
+// change matters because agents read configuration from their working directory.
 func announceDir(env Env, command, dir, cwd string) {
 	if !sameDir(dir, cwd) {
 		fmt.Fprintf(env.Stderr, "%s %s: running the agent in the session's directory %q\n", programName, command, dir)
 	}
 }
 
-// resolveBinary は argv[0] を PATH で解決した argv を返す。
-// セッションに手を付ける前に、起動できないことを見つけるために使う。
+// resolveBinary resolves argv[0] against PATH so a missing executable is detected before
+// the session is changed.
 func resolveBinary(argv []string) ([]string, error) {
 	resolved, err := agent.ResolveArgv(argv)
 	if errors.Is(err, agent.ErrNotInstalled) {
@@ -140,8 +142,8 @@ func resolveBinary(argv []string) ([]string, error) {
 	return resolved, err
 }
 
-// rollback は、子を起動できなかったセッションを起動前の状態に戻す。
-// 今回作ったセッションは消し、既存のセッションはメタを戻す。
+// rollback restores the state before a failed launch: remove a newly created session or
+// restore an existing session's metadata.
 func rollback(store *session.Store, t target) error {
 	if t.created {
 		return store.Delete(t.meta.ID)
@@ -158,21 +160,21 @@ func rollback(store *session.Store, t target) error {
 	return err
 }
 
-// startParams は begin の入力。
+// startParams holds the inputs to begin.
 type startParams struct {
 	key agent.SessionKey
-	// title が空でなければタイトルを置き換える。
+	// A nonempty title replaces the session title.
 	title string
-	// argv は実際に起動するコマンド。秘密は begin が伏せてから記録する。
+	// argv is the command to execute. begin masks secrets before recording it.
 	argv  []string
 	notes []string
-	// record が false なら raw.log と output イベントを書かない（--no-record）。
+	// When record is false (--no-record), skip raw.log and output events.
 	record bool
-	// force が true なら、別のプロセスが開いているセッションでも開く（--force）。
+	// When force is true (--force), open the session even if another process has it open.
 	force bool
 }
 
-// activeSession は running にしたセッション。finish か abort で必ず閉じる。
+// activeSession represents a session marked running. Close it with finish or abort.
 type activeSession struct {
 	store  *session.Store
 	target target
@@ -180,8 +182,8 @@ type activeSession struct {
 	record bool
 }
 
-// begin はセッションを running にし、transcript に session.start を書く。
-// 失敗したら起動前の状態に戻す。
+// begin marks the session running and writes session.start to the transcript. On failure it
+// restores the state before launch.
 func begin(store *session.Store, t target, p startParams) (*activeSession, error) {
 	if err := markRunning(store, t, p); err != nil {
 		return nil, err
@@ -203,11 +205,11 @@ func begin(store *session.Store, t target, p startParams) (*activeSession, error
 	return active, nil
 }
 
-// recordedArgv は session.start に残す argv を返す。
+// recordedArgv returns the arguments to store in session.start.
 //
-// 通常は秘密の値だけを伏せる。--no-record では、何を起動したかが分かるコマンド名だけを残し、
-// 引数（claude / hermes ではプロンプトそのもの）は残さない。値の伏せ方には取りこぼしが
-// あり得るので、記録を避けたい利用者には引数ごと書かない。
+// Normally only secret values are masked. With --no-record, keep the command name but omit
+// all arguments, including Claude and Hermes prompts. Redaction can miss secrets, so don't
+// record arguments at all when the user opts out.
 func recordedArgv(argv []string, record bool) []string {
 	if record {
 		return agent.RedactArgv(argv)
@@ -218,11 +220,11 @@ func recordedArgv(argv []string, record bool) []string {
 	return []string{argv[0], agent.Redacted}
 }
 
-// markRunning は session.json を running にし、このプロセスの PID を入れる。
+// markRunning sets the status in session.json to running and records this process's PID.
 //
-// loadTarget で確かめた後に別のプロセスが同じセッションを開いていたら、書き換えずに
-// errBusy を返す。ストアはロックを持たないので（plan.md 3.5）、読んでから書くまでの
-// ごく短い間に2つのプロセスが重なる余地は残る。
+// If another process opened the session after loadTarget checked it, return errBusy without
+// changing it. The store does not lock (plan.md 3.5), so two processes can still race
+// between the read and write.
 func markRunning(store *session.Store, t target, p startParams) error {
 	var busy error
 	_, err := store.Update(t.meta.ID, func(m session.Meta) session.Meta {
@@ -240,7 +242,7 @@ func markRunning(store *session.Store, t target, p startParams) error {
 		return m
 	})
 	if busy != nil {
-		// 相手のセッションなので、メタは戻さない。
+		// Don't restore metadata: the session belongs to the other process.
 		return busy
 	}
 	if err != nil {
@@ -253,8 +255,8 @@ func undo(store *session.Store, t target, cause error) error {
 	return errors.Join(cause, rollback(store, t))
 }
 
-// abort は子を起動できなかったときに呼ぶ。cause に後始末のエラーを足して返す。
-// 残るセッション（今回作ったものでない）には、session.start の後に起動できなかった旨を残す。
+// abort handles a child launch failure and returns cause together with any cleanup errors.
+// For a preexisting session, record the failed launch after session.start.
 func (a *activeSession) abort(cause error) error {
 	var noteErr error
 	if !a.target.created {
@@ -263,8 +265,8 @@ func (a *activeSession) abort(cause error) error {
 	return errors.Join(cause, noteErr, a.log.Close(), rollback(a.store, a.target))
 }
 
-// finish は終了コードを記録してセッションを閉じる。addTurns は増やすターン数。
-// 記録の失敗は、子の終了コードを返す妨げにしない。呼び出し側は警告として出す。
+// finish records the exit code, adds addTurns to the turn count, and closes the session.
+// The caller warns about recording failures but still returns the child's exit code.
 func (a *activeSession) finish(code, addTurns int) error {
 	_, exitErr := a.log.AppendEvent(session.ExitEvent(code))
 	rawBytes := a.log.RawBytes()
@@ -282,8 +284,8 @@ func (a *activeSession) finish(code, addTurns int) error {
 	return errors.Join(exitErr, closeErr, saveErr)
 }
 
-// childExitCode は子の終了コードを geminus の終了コードにする。
-// 取れなかった場合（負の値）は geminus 自体のエラーとして扱う。
+// childExitCode maps the child's exit code to the geminus exit code. A negative value means
+// no status was available and is treated as an internal error.
 func childExitCode(code int) int {
 	if code < 0 {
 		return ExitError

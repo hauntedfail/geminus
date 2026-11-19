@@ -10,38 +10,38 @@ import (
 )
 
 var (
-	// ErrNoSize は端末のサイズが取れないことを表す（入出力がどちらも端末でない）。
+	// ErrNoSize means neither input nor output is a terminal that can report its size.
 	ErrNoSize = errors.New("proxy: terminal size is not available")
-	// ErrNotTTY は端末でない入力を raw mode にしようとしたことを表す。
+	// ErrNotTTY means the input cannot be put into raw mode because it is not a terminal.
 	ErrNotTTY = errors.New("proxy: input is not a terminal")
 )
 
-// Terminal は利用者側の端末。
+// Terminal represents the user's terminal.
 type Terminal interface {
-	// Read は利用者の入力を読む。
+	// Read reads input from the user.
 	io.Reader
-	// Write は利用者の画面へ書く。
+	// Write writes to the user's screen.
 	io.Writer
-	// IsTTY は入力が対話端末かを返す。false なら Run は raw mode に入らない。
+	// IsTTY reports whether the input is an interactive terminal. If not, Run skips raw mode.
 	IsTTY() bool
-	// MakeRaw は端末を raw mode にし、元に戻す関数を返す。
+	// MakeRaw puts the terminal in raw mode and returns a function that restores it.
 	MakeRaw() (restore func() error, err error)
-	// Size は端末の桁数と行数を返す。取れなければ ErrNoSize。
+	// Size returns the number of columns and rows, or ErrNoSize if unavailable.
 	Size() (cols, rows int, err error)
-	// WatchResize はサイズが変わるたびに notify を呼ぶ。
-	// stop は監視を止め、stop が返った後は notify を呼ばない。
+	// WatchResize calls notify whenever the terminal size changes. No callbacks occur after stop
+	// returns.
 	WatchResize(notify func()) (stop func())
 }
 
-// OSTerminal は標準入力と標準出力による端末を返す。
+// OSTerminal returns a terminal backed by standard input and output.
 func OSTerminal() Terminal {
 	return NewTerminal(os.Stdin, os.Stdout)
 }
 
-// NewTerminal は in と out による端末を返す。
+// NewTerminal returns a terminal backed by in and out.
 //
-// *os.File が端末を指していれば TTY として扱う（raw mode、サイズ、リサイズ通知）。
-// それ以外（パイプ、ファイル、メモリ上のバッファ）は非 TTY になる。
+// An *os.File that refers to a terminal supports TTY operations (raw mode, size queries and resize
+// notifications). Pipes, regular files and in-memory buffers are not TTYs.
 func NewTerminal(in io.Reader, out io.Writer) Terminal {
 	t := &stdTerminal{in: in, out: out}
 	if f, ok := in.(*os.File); ok {
@@ -56,8 +56,8 @@ func NewTerminal(in io.Reader, out io.Writer) Terminal {
 type stdTerminal struct {
 	in      io.Reader
 	out     io.Writer
-	inFile  *os.File // in が *os.File でなければ nil
-	outFile *os.File // out が *os.File でなければ nil
+	inFile  *os.File // nil unless in is an *os.File
+	outFile *os.File // nil unless out is an *os.File
 }
 
 func (t *stdTerminal) Read(p []byte) (int, error)  { return t.in.Read(p) }
@@ -91,8 +91,8 @@ func (t *stdTerminal) MakeRaw() (func() error, error) {
 	}, nil
 }
 
-// sizeFile はサイズの問い合わせ先を返す。出力が端末ならそちらを優先する
-// （`geminus run < file` でも画面のサイズを使うため）。
+// sizeFile returns the file to query for the terminal size. It prefers an output terminal so
+// `geminus run < file` still uses the screen dimensions.
 func (t *stdTerminal) sizeFile() *os.File {
 	for _, f := range []*os.File{t.outFile, t.inFile} {
 		if isTerminalFile(f) {

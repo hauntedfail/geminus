@@ -36,8 +36,8 @@ func runLog(inv Invocation) int {
 	return ExitOK
 }
 
-// logEvents は transcript.jsonl のイベント列を JSON 配列で出す。
-// 壊れた行があっても読めた分は出し、終了コードで知らせる。
+// logEvents writes transcript.jsonl events as a JSON array. If a line is corrupt, emit the
+// readable events and signal the error via the exit code.
 func logEvents(inv Invocation, store *session.Store, id string) int {
 	const name = "log"
 	events, readErr := store.ReadEvents(id)
@@ -59,7 +59,8 @@ func logEvents(inv Invocation, store *session.Store, id string) int {
 	return ExitOK
 }
 
-// logOutput は raw.log を出す。既定では制御シーケンスを除き、--raw ではそのまま出す。
+// logOutput writes raw.log, stripping control sequences by default and preserving the
+// original bytes with --raw.
 func logOutput(inv Invocation, store *session.Store, id string) (err error) {
 	raw, err := store.OpenRaw(id)
 	if err != nil {
@@ -72,7 +73,8 @@ func logOutput(inv Invocation, store *session.Store, id string) (err error) {
 		err = errors.Join(err, raw.Close())
 	}()
 
-	// 書き込みは下から順に: 端末 ← バッファ ← 末尾 N 行 ← 制御シーケンスの除去。
+	// Writes flow through control-sequence stripping, the last-N-lines filter, and the buffer
+	// before reaching the terminal.
 	out := bufio.NewWriter(inv.Env.Stdout)
 	stages := []io.Closer{}
 	var dst io.Writer = out
@@ -90,7 +92,7 @@ func logOutput(inv Invocation, store *session.Store, id string) (err error) {
 	if _, err := io.Copy(dst, raw); err != nil {
 		return fmt.Errorf("session %s: read raw.log: %w", id, err)
 	}
-	// 上の段から閉じて、溜めている分を下の段へ流す。
+	// Close writers in that order so each flushes its pending data into the next.
 	for i := len(stages) - 1; i >= 0; i-- {
 		if err := stages[i].Close(); err != nil {
 			return err

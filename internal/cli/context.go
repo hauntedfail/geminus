@@ -19,11 +19,11 @@ import (
 
 const (
 	configFileName = "config.json"
-	// 既定のタイトルに使う文字数の上限。
+	// Maximum number of characters in a default title.
 	maxTitleRunes = 60
 )
 
-// usageErr は使い方のエラー。report が ExitUsage に変える。
+// usageErr indicates a usage error, which report maps to ExitUsage.
 type usageErr struct{ msg string }
 
 func (e *usageErr) Error() string { return e.msg }
@@ -32,7 +32,7 @@ func usagef(format string, args ...any) error {
 	return &usageErr{msg: fmt.Sprintf(format, args...)}
 }
 
-// report は err を stderr に出し、種類に応じた終了コードを返す。
+// report writes err to stderr and returns the corresponding exit code.
 func report(env Env, command string, err error) int {
 	var usage *usageErr
 	if errors.As(err, &usage) {
@@ -41,12 +41,12 @@ func report(env Env, command string, err error) int {
 	return fail(env, command, err)
 }
 
-// warn は処理を止めない異常を stderr に出す。
+// warn reports a nonfatal problem on stderr.
 func warn(env Env, command string, err error) {
 	fmt.Fprintf(env.Stderr, "%s %s: warning: %v\n", programName, command, err)
 }
 
-// verboseLogf は -v のときだけ stderr に書く関数を返す。-v が無ければ nil。
+// verboseLogf returns a function that writes to stderr when -v is set, or nil otherwise.
 func verboseLogf(inv Invocation) func(format string, args ...any) {
 	if !inv.Options.Verbose {
 		return nil
@@ -56,7 +56,8 @@ func verboseLogf(inv Invocation) func(format string, args ...any) {
 	}
 }
 
-// openStore は --home / GEMINUS_HOME / ~/.geminus の順で状態ディレクトリを決めて開く。
+// openStore opens the state directory selected by --home, GEMINUS_HOME, or ~/.geminus, in
+// that order.
 func openStore(inv Invocation) (*session.Store, error) {
 	home, err := session.ResolveHome(inv.Options.Home)
 	if err != nil {
@@ -65,14 +66,14 @@ func openStore(inv Invocation) (*session.Store, error) {
 	return session.Open(home)
 }
 
-// config は $GEMINUS_HOME/config.json の内容。ファイルは無くてもよい。
+// config holds the contents of the optional $GEMINUS_HOME/config.json file.
 type config struct {
-	// Agent は --agent を省いたときのバックエンド。
+	// Agent selects the backend when --agent is omitted.
 	Agent string `json:"agent"`
 }
 
-// loadConfig は home の config.json を読む。無ければ空の config を返す。
-// 読めない内容は黙って無視せず、エラーにする。
+// loadConfig reads config.json from home. A missing file yields an empty config; unreadable
+// or invalid content is an error.
 func loadConfig(home string) (config, error) {
 	path := filepath.Join(home, configFileName)
 	data, err := os.ReadFile(path)
@@ -89,8 +90,8 @@ func loadConfig(home string) (config, error) {
 	return cfg, nil
 }
 
-// defaultAgentName は新しいセッションで使うバックエンド名を決める。
-// 優先順は --agent、config.json、claude。
+// defaultAgentName selects the backend for a new session. Precedence is --agent, then
+// config.json, then claude.
 func defaultAgentName(inv Invocation, home string) (string, error) {
 	if inv.Options.Agent != "" {
 		return inv.Options.Agent, nil
@@ -105,7 +106,7 @@ func defaultAgentName(inv Invocation, home string) (string, error) {
 	return agent.DefaultName, nil
 }
 
-// lookupAdapter は name のアダプタを返す。未知の名前は使い方のエラーにする。
+// lookupAdapter returns the adapter for name, treating an unknown name as a usage error.
 func lookupAdapter(name string) (agent.Adapter, error) {
 	adapter, err := agent.Lookup(name)
 	if errors.Is(err, agent.ErrUnknownAgent) {
@@ -114,11 +115,11 @@ func lookupAdapter(name string) (agent.Adapter, error) {
 	return adapter, err
 }
 
-// writeJSON は v を整形した JSON 1個として w に書く。
+// writeJSON writes v to w as a single indented JSON value.
 //
-// encoding/json は DEL と C1 制御文字（U+0080〜U+009F）をそのまま出す。端末によっては
-// 制御シーケンスとして解釈されるので、\u00XX に置き換える。これらは JSON の文字列の中に
-// しか現れないので、置き換えても同じ値を表す JSON のままになる。
+// encoding/json emits DEL and C1 controls (U+0080 through U+009F) literally. Escape them as
+// \u00XX so terminals cannot interpret them as control sequences. They occur only inside
+// JSON strings, so escaping preserves the decoded value.
 func writeJSON(w io.Writer, v any) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -139,10 +140,10 @@ func writeJSON(w io.Writer, v any) error {
 	return err
 }
 
-// printable は、ファイルや他のプログラムから来た文字列を端末に出せる形にする。
-// 制御文字（ESC、改行、C1 など）、双方向の向きを変える書式文字、壊れた UTF-8 を "?" に
-// 置き換える。session.json の title や cwd に仕込まれたエスケープシーケンスを端末に
-// 流さないため。人が読む出力に使い、--json の出力には使わない。
+// printable makes text from files or external programs safe for terminal display. It
+// replaces controls (including ESC, newlines, and C1), bidirectional formatting characters,
+// and invalid UTF-8 with "?" so fields like title and cwd in session.json cannot inject
+// terminal escapes. Use it for human-readable output, not --json.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
@@ -156,7 +157,7 @@ func printable(s string) string {
 	}, s)
 }
 
-// oneArg は位置引数がちょうど1つであることを確かめて返す。
+// oneArg requires exactly one positional argument and returns it.
 func oneArg(args []string, what string) (string, error) {
 	switch len(args) {
 	case 0:
@@ -168,7 +169,7 @@ func oneArg(args []string, what string) (string, error) {
 	}
 }
 
-// noArgs は位置引数が無いことを確かめる。
+// noArgs checks that there are no positional arguments.
 func noArgs(args []string) error {
 	if len(args) > 0 {
 		return usagef("unexpected argument %q", args[0])
@@ -176,8 +177,8 @@ func noArgs(args []string) error {
 	return nil
 }
 
-// defaultTitle は --title が無いときのタイトルを args から作る。
-// cmd の args はコマンド行なので、秘密を伏せてから使う。
+// defaultTitle builds a title from args when --title is absent. For cmd, redact secrets
+// before using the command line.
 func defaultTitle(adapter agent.Adapter, args []string) string {
 	if adapter.Name() == agent.GenericName {
 		args = agent.RedactArgv(args)
@@ -185,7 +186,7 @@ func defaultTitle(adapter agent.Adapter, args []string) string {
 	return truncateTitle(strings.Join(args, " "))
 }
 
-// truncateTitle は最初の行だけを残し、長ければ切り詰める。
+// truncateTitle keeps only the first line and shortens it if necessary.
 func truncateTitle(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
@@ -198,8 +199,8 @@ func truncateTitle(s string) string {
 	return string(runes[:maxTitleRunes-1]) + "…"
 }
 
-// sameDir は a と b が同じディレクトリを指すかを返す。
-// シンボリックリンク越しの違い（/tmp と /private/tmp など）は同じと見なす。
+// sameDir reports whether a and b refer to the same directory, even through symlinks such
+// as /tmp and /private/tmp.
 func sameDir(a, b string) bool {
 	if filepath.Clean(a) == filepath.Clean(b) {
 		return true

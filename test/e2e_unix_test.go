@@ -16,7 +16,7 @@ import (
 	gopty "github.com/aymanbagabas/go-pty"
 )
 
-// liveRun は、標準入力を開いたまま動かしている `geminus run`。
+// liveRun is a running `geminus run` process with standard input held open.
 type liveRun struct {
 	t      *testing.T
 	stdin  io.WriteCloser
@@ -43,8 +43,7 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-// start は geminus を起動し、標準入力のパイプを開いたままにする。
-// 偽エージェントは入力の EOF まで動き続ける。
+// start launches geminus and keeps its standard input pipe open. The fake agent runs until EOF.
 func (h *harness) start(args ...string) *liveRun {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
@@ -64,7 +63,7 @@ func (h *harness) start(args ...string) *liveRun {
 	return live
 }
 
-// wait は geminus の終了を待ち、終了コードを返す。
+// wait waits for geminus to exit and returns its exit code.
 func (l *liveRun) wait() int {
 	l.t.Helper()
 	select {
@@ -93,7 +92,7 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// startAgent は偽エージェントを動かし、準備ができるまで待ってセッションを返す。
+// startAgent runs the fake agent, waits until it is ready and returns the session.
 func (h *harness) startAgent() (*liveRun, sessionInfo) {
 	h.t.Helper()
 	live := h.start("run", "--agent", "cmd", "--", fakeBin)
@@ -123,7 +122,7 @@ func TestRunningSessionCannotBeOpenedTwice(t *testing.T) {
 		t.Errorf("the refused commands changed the session: %+v", got)
 	}
 
-	// --force は実行中でも開ける。
+	// --force allows opening a session that is still running.
 	if forced := h.run("", "run", "--resume", session.ID, "--force", "--", fakeBin); forced.code != 0 {
 		t.Errorf("run --force: exit %d (stderr: %q)", forced.code, forced.stderr)
 	}
@@ -146,7 +145,7 @@ func TestRunningSessionCannotBeOpenedTwice(t *testing.T) {
 	h.ok("", "rm", session.ID)
 }
 
-// geminus に届いた SIGTERM は子へ転送され、子の終了がセッションに記録される。
+// geminus forwards SIGTERM to the child and records the child's exit in the session.
 func TestSignalIsForwardedAndTheExitIsRecorded(t *testing.T) {
 	h := newHarness(t)
 	live, session := h.startAgent()
@@ -168,7 +167,7 @@ func TestSignalIsForwardedAndTheExitIsRecorded(t *testing.T) {
 	}
 }
 
-// geminus が kill -9 されても、セッションは次の run で開ける。
+// The next run can open the session even after geminus is killed with kill -9.
 func TestSessionSurvivesACrashOfGeminus(t *testing.T) {
 	h := newHarness(t)
 	live, session := h.startAgent()
@@ -186,7 +185,7 @@ func TestSessionSurvivesACrashOfGeminus(t *testing.T) {
 		t.Errorf("ls = %q, want the crashed session shown as stale", out.stdout)
 	}
 
-	// --force 無しで開ける。記録は前回の続きに追記される。
+	// Reopen without --force and append to the previous recording.
 	h.ok("after crash\n", "run", "--resume", session.ID, "--", fakeBin)
 	got := h.show(session.ID)
 	if got.Status != "exited" || got.ExitCode == nil || *got.ExitCode != 0 {
@@ -196,8 +195,9 @@ func TestSessionSurvivesACrashOfGeminus(t *testing.T) {
 	if !strings.Contains(raw, "echo:after crash") {
 		t.Errorf("raw.log = %q, want the resumed run appended", raw)
 	}
-	// クラッシュした回の出力は raw.log に残るが、output イベントは書かれないことがある
-	// （イベントは時間幅ごとにまとめて書く）。再開後のイベントは、ファイルの続きを指していればよい。
+	// Output from the crashed run remains in raw.log, but its output event may not have been flushed
+	// because events are batched by time window. Events after resume need only point to the newly
+	// appended data.
 	var end int64
 	for _, e := range h.events(session.ID) {
 		if e.Type != "output" {
@@ -218,7 +218,7 @@ var (
 	echoOff     = regexp.MustCompile(`(^|\s)-echo(\s|;|$)`)
 )
 
-// terminalSession は、テストが端末の役をする PTY の上で動かしているシェル。
+// terminalSession is a shell running on a PTY with the test acting as the terminal.
 type terminalSession struct {
 	t      *testing.T
 	pty    gopty.Pty
@@ -226,7 +226,7 @@ type terminalSession struct {
 	screen *lockedBuffer
 }
 
-// onTerminal は script を PTY 上の sh で動かす。script からは $GEMINUS と $FAKE が使える。
+// onTerminal runs script in sh on a PTY. The script can use $GEMINUS and $FAKE.
 func (h *harness) onTerminal(script string, env ...string) *terminalSession {
 	h.t.Helper()
 	pty, err := gopty.New()
@@ -244,7 +244,7 @@ func (h *harness) onTerminal(script string, env ...string) *terminalSession {
 		h.t.Fatal(err)
 	}
 	term := &terminalSession{t: h.t, pty: pty, cmd: cmd, screen: &lockedBuffer{}}
-	// PTY を閉じると Read が解けて、このゴルーチンは終わる。
+	// Closing the PTY unblocks Read and lets this goroutine exit.
 	go io.Copy(term.screen, pty)
 	return term
 }
@@ -261,7 +261,8 @@ func (s *terminalSession) typeKeys(keys string) {
 	}
 }
 
-// finish は script の最後の出力 marker を待ち、シェルの終了を確かめて画面の内容を返す。
+// finish waits for the script's final output marker, verifies the shell exited and returns the
+// screen contents.
 func (s *terminalSession) finish(marker string) string {
 	s.t.Helper()
 	s.expect(marker)
@@ -271,10 +272,10 @@ func (s *terminalSession) finish(marker string) string {
 	return s.screen.String()
 }
 
-// 端末（TTY）から使った場合: raw mode で中継し、終わったら端末の設定を元に戻す。
+// On a TTY, relay in raw mode and restore the terminal settings on exit.
 func TestRunOnATerminalRestoresIt(t *testing.T) {
 	h := newHarness(t)
-	// geminus の後で stty を動かし、端末が cooked mode に戻っていることを確かめる。
+	// Run stty after geminus to verify that the terminal is back in cooked mode.
 	term := h.onTerminal(`"$GEMINUS" run --agent cmd -- "$FAKE"; echo "rc=$?"; stty -a; echo stty-done`, "FAKE_EXIT=5")
 	term.expect("ready")
 	term.typeKeys("hello\r")
@@ -294,7 +295,7 @@ func TestRunOnATerminalRestoresIt(t *testing.T) {
 		t.Errorf("the terminal was left in raw mode:\n%s", settings)
 	}
 
-	// 端末からの入力は input イベントにしない（エコーとして raw.log に入るだけ）。
+	// TTY input does not produce input events; it appears in raw.log only as echoed output.
 	for _, e := range h.events(session.ID) {
 		if e.Type == "input" {
 			t.Errorf("a terminal session recorded an input event: %+v", e)
@@ -309,7 +310,7 @@ func TestRunOnATerminalRestoresIt(t *testing.T) {
 	}
 }
 
-// 端末のサイズは子の PTY に伝わる。端末が無ければ 80x24 にする。
+// The child's PTY inherits the terminal dimensions. Without a terminal, use 80x24.
 func TestTerminalSizeReachesTheAgent(t *testing.T) {
 	h := newHarness(t)
 	out := h.onTerminal(`"$GEMINUS" run --agent cmd -- sh -c 'echo "size=$(stty size)"'; echo size-done`).finish("size-done")

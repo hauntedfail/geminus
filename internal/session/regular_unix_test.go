@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// FIFO は開くだけで書き手を待つ。読み取りが止まらずにエラーになること。
+// Opening a FIFO normally waits for a writer. Reading should fail rather than block.
 func TestReadsRejectFIFOs(t *testing.T) {
 	for _, file := range sessionFiles {
 		t.Run(file, func(t *testing.T) {
@@ -25,14 +25,14 @@ func TestReadsRejectFIFOs(t *testing.T) {
 	}
 }
 
-// Lstat の後でファイルがすり替わっても、開いた後の確認で弾く。
+// The post-open check rejects a file replaced after Lstat.
 func TestOpenRegularChecksTheOpenedFile(t *testing.T) {
 	dir := t.TempDir()
 	fifo := dir + "/fifo"
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Lstat の確認を飛ばして、開く段階だけを試す。
+	// Skip the Lstat check to exercise the open step in isolation.
 	f, err := openNoFollow(fifo)
 	if err == nil {
 		defer f.Close()
@@ -51,8 +51,8 @@ func TestOpenRegularChecksTheOpenedFile(t *testing.T) {
 	}
 }
 
-// 追記で開く側も、Lstat の後でファイルが FIFO にすり替わったら待たずに失敗する。
-// 読み手のいない FIFO を書き込みで開くと、O_NONBLOCK が無ければ読み手を待って止まる。
+// Opening for append must also fail without blocking if a FIFO replaces the file after Lstat.
+// Without O_NONBLOCK, opening a FIFO for writing would wait for a reader.
 func TestAppendOpenDoesNotBlockOnAFIFO(t *testing.T) {
 	fifo := t.TempDir() + "/fifo"
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
@@ -60,7 +60,7 @@ func TestAppendOpenDoesNotBlockOnAFIFO(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		// Lstat の確認を飛ばして、開く段階だけを試す。
+		// Skip the Lstat check to exercise the open step in isolation.
 		f, err := openAppendChecked(fifo)
 		if err == nil {
 			f.Close()

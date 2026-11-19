@@ -1,4 +1,4 @@
-// Package version は geminus のバージョン文字列を持つ。
+// Package version provides the geminus version string.
 package version
 
 import (
@@ -6,11 +6,11 @@ import (
 	"runtime"
 )
 
-// Version はリリース時に
-// -ldflags "-X github.com/hauntedfail/geminus/internal/version.Version=..." で上書きする。
+// Version is overridden at release time with -ldflags "-X
+// github.com/hauntedfail/geminus/internal/version.Version=...".
 var Version = "0.1.0-dev"
 
-// String は `geminus version` が出す1行を返す。
+// String returns the line printed by `geminus version`.
 func String() string {
 	return fmt.Sprintf("geminus %s (%s %s/%s)", Version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
