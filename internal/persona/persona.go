@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -220,11 +221,15 @@ func Load(ctx context.Context) (Directory, error) {
 	return dir, nil
 }
 
+// peerName is what a persona's name may look like. Names are shown on screen
+// and typed as arguments, so a peer whose ID is anything else is not offered.
+var peerName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$`)
+
 // isAgent filters out the human and, when a geminise membership exists,
 // every peer that it does not list as an agent (Honcho workspaces collect
 // stray peers).
 func isAgent(name string, profile honchoProfile, members membership) bool {
-	if name == "" || name == profile.PeerName {
+	if !peerName.MatchString(name) || name == profile.PeerName {
 		return false
 	}
 	if len(members.Members) == 0 {

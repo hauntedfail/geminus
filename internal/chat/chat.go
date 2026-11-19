@@ -136,7 +136,7 @@ func (a *App) Main(args []string, in io.Reader, errw io.Writer) int {
 	}
 
 	if err := a.loadDirectory(); err != nil {
-		fmt.Fprintln(errw, "geminus:", err)
+		fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
 		return 1
 	}
 	if list {
@@ -153,7 +153,7 @@ func (a *App) Main(args []string, in io.Reader, errw io.Writer) int {
 	} else if err := a.connect(name, resume, latest); err != nil {
 		// Asked for one persona on the command line: either that
 		// conversation opens or the command fails.
-		fmt.Fprintln(errw, "geminus:", err)
+		fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
 		return 1
 	}
 	a.loop()
@@ -185,11 +185,11 @@ func (a *App) loadDirectory() error {
 func (a *App) showPersonas() {
 	title := "Personas"
 	if a.dir.Workspace != "" {
-		title += " (Honcho workspace " + a.dir.Workspace + ")"
+		title += " (Honcho workspace " + oneLine(a.dir.Workspace) + ")"
 	}
 	a.Out.line(a.Out.bold(title))
 	if a.dir.Warning != "" {
-		a.Out.line(a.Out.warn("! " + a.dir.Warning))
+		a.Out.line(a.Out.warn("! " + oneLine(a.dir.Warning)))
 	}
 	if len(a.dir.Personas) == 0 {
 		a.Out.line("  none found")
@@ -197,10 +197,11 @@ func (a *App) showPersonas() {
 	}
 	width := 0
 	for _, p := range a.dir.Personas {
-		width = max(width, len(p.Name))
+		width = max(width, len(oneLine(p.Name)))
 	}
 	for i, p := range a.dir.Personas {
-		how := "no route: add \"" + p.Name + "\" to " + a.dir.ConfigPath
+		name := oneLine(p.Name)
+		how := "no route: add \"" + name + "\" to " + a.dir.ConfigPath
 		if p.Route != nil {
 			how = p.Route.Describe()
 		}
@@ -208,7 +209,7 @@ func (a *App) showPersonas() {
 		if a.cur != nil && a.cur.Name == p.Name && a.agent != nil {
 			mark = "●"
 		}
-		a.Out.line(fmt.Sprintf("%s %d  %-*s  %-13s  %s", mark, i+1, width, p.Name, p.Tag(), how))
+		a.Out.line(fmt.Sprintf("%s %d  %-*s  %-13s  %s", mark, i+1, width, name, p.Tag(), how))
 	}
 }
 
@@ -216,13 +217,14 @@ func (a *App) showPersonas() {
 // persona always carries its tag: talking to this computer's own agent
 // through geminus is possible, but it should never be mistaken for a remote.
 func who(p persona.Persona) string {
-	return p.Name + " [" + p.Tag() + "]"
+	return oneLine(p.Name) + " [" + p.Tag() + "]"
 }
 
 // short abbreviates a session ID for display. /resume accepts any unique
 // prefix, so the short form is enough to name a session.
 func short(id string) string {
 	const keep = 14
+	id = oneLine(id)
 	if len(id) > keep+2 {
 		return id[:keep] + "…"
 	}
@@ -231,6 +233,7 @@ func short(id string) string {
 
 // when trims an ISO timestamp to minutes.
 func when(stamp string) string {
+	stamp = oneLine(stamp)
 	if len(stamp) >= 16 && stamp[10] == 'T' {
 		return stamp[:10] + " " + stamp[11:16]
 	}
@@ -245,12 +248,12 @@ func (a *App) status() string {
 		}
 		return s
 	}
-	agent := strings.TrimSpace(a.info.Name + " " + a.info.Version)
+	agent := oneLine(a.info.Name + " " + a.info.Version)
 	route := "local"
 	if a.cur.Route.SSH != "" {
 		route = "via ssh " + a.cur.Route.SSH
 	}
-	return fmt.Sprintf("● connected  %s  %s %s  session %s  cwd %s", who(*a.cur), agent, route, short(a.session), a.cwd)
+	return fmt.Sprintf("● connected  %s  %s %s  session %s  cwd %s", who(*a.cur), agent, route, short(a.session), oneLine(a.cwd))
 }
 
 func (a *App) prompt() string {
@@ -403,7 +406,7 @@ func (a *App) showSessions() error {
 		if s.ID == a.session {
 			mark = "●"
 		}
-		title := sanitize(s.Title)
+		title := oneLine(s.Title)
 		if title == "" {
 			title = "(untitled)"
 		}

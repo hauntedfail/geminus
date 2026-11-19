@@ -60,7 +60,7 @@ A terminal delivers Ctrl-C to every process in the foreground process group. If 
 
 ### Errors
 
-When the agent's output ends, every pending call fails with `acp.ErrClosed` carrying the notable tail of the process's stderr: for example `sh: 1: exec: hermes: not found`, or ssh's own `Permission denied (publickey)`. Agents log their startup at INFO level on stderr; those lines are dropped when anything else was written. The interface prints the error, switches to the disconnected prompt, and remembers the session so that `/resume` reconnects to it.
+When the agent's output ends, every pending call fails with `acp.ErrClosed` carrying the notable tail of the process's stderr (at most 40 lines of 1 KiB are kept, however much the process writes): for example `sh: 1: exec: hermes: not found`, or ssh's own `Permission denied (publickey)`. Agents log their startup at INFO level on stderr; those lines are dropped when anything else was written. The interface prints the error, switches to the disconnected prompt, and remembers the session so that `/resume` reconnects to it.
 
 An error reply from the agent (`acp.RPCError`) is shown with the agent's message and does not end the connection.
 
@@ -68,7 +68,7 @@ Hermes answers `session/load` for an unknown ID with a null result, which the pr
 
 ## What goes on the screen
 
-Agent text is printed as it arrives, with control characters removed so that a reply cannot move the cursor, change colors or set the window title. Reasoning is reduced to one `… thinking` line. A tool call is one dim line with its title; a failed one gets a second line. `internal/chat.Printer` tracks whether the cursor is in the middle of a line so that these side notes and the status line always start on a line of their own.
+Agent text is printed as it arrives. Nothing from outside can control the terminal: `chat.Printer` strips control characters and bidirectional overrides from everything it prints (replies, error messages, the remote stderr tail, agent names, session titles and IDs, persona names), keeping only the few color codes geminus writes itself. Values shown inside a line are also flattened to one line so they cannot imitate a status line, and Honcho peers whose IDs are not plain names are not offered as personas. Reasoning is reduced to one `… thinking` line. A tool call is one dim line with its title; a failed one gets a second line. `internal/chat.Printer` tracks whether the cursor is in the middle of a line so that these side notes and the status line always start on a line of their own.
 
 Input is read line by line in the terminal's normal mode, so the terminal's own line editing and input methods work. When stdin is not a terminal, each line is echoed, which keeps piped runs and test output readable. Color is used only on a terminal and is turned off by `NO_COLOR`.
 

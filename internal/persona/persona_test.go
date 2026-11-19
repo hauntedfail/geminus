@@ -171,3 +171,17 @@ func TestRouteExec(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadSkipsPeersWithUnsafeNames(t *testing.T) {
+	srv := honcho(t, "sibyl", "evil\x1b[2J", "two words", "-flag", strings.Repeat("x", 65))
+	setup(t, srv.URL, "")
+	os.Remove(filepath.Join(os.Getenv(EnvHermesHome), "geminise.json"))
+
+	dir, err := Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := describe(dir); got != "sibyl [REMOTE] no route" {
+		t.Errorf("personas = %q", got)
+	}
+}

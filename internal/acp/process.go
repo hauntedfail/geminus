@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"io"
 	"os/exec"
 	"strings"
@@ -79,16 +80,31 @@ type tail struct {
 	part  string
 }
 
-const tailLines = 40
+const (
+	tailLines = 40
+	// tailLineBytes bounds one kept line, and the unfinished line being
+	// collected, so a process flooding stderr cannot grow memory.
+	tailLineBytes = 1024
+)
 
 func (t *tail) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	chunks := strings.Split(t.part+string(p), "\n")
-	t.part = chunks[len(chunks)-1]
-	t.lines = append(t.lines, chunks[:len(chunks)-1]...)
-	if extra := len(t.lines) - tailLines; extra > 0 {
-		t.lines = t.lines[extra:]
+	for rest := p; len(rest) > 0; {
+		line, after, ended := bytes.Cut(rest, []byte{'\n'})
+		rest = after
+		// Keep the start of an overlong line; the rest is dropped.
+		if room := tailLineBytes - len(t.part); room > 0 {
+			t.part += string(line[:min(room, len(line))])
+		}
+		if !ended {
+			break
+		}
+		t.lines = append(t.lines, t.part)
+		t.part = ""
+		if len(t.lines) > tailLines {
+			t.lines = t.lines[len(t.lines)-tailLines:]
+		}
 	}
 	return len(p), nil
 }

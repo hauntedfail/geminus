@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/hauntedfail/geminus/internal/acp"
 )
@@ -20,19 +21,36 @@ func isTerminal(w any) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-// sanitize removes control characters from text that came from the agent,
-// so a reply cannot move the cursor, recolor the screen or retitle the window.
+// unsafeRune reports whether r could make a terminal do something other than
+// show a character: control characters (escape sequences start with one) and
+// the bidirectional overrides that reorder what is displayed.
+func unsafeRune(r rune) bool {
+	if r == '\n' || r == '\t' {
+		return false
+	}
+	return unicode.IsControl(r) || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
+}
+
+// sanitize removes everything from s that could control the terminal, so
+// text from an agent, a remote shell or the directory cannot move the cursor,
+// recolor or clear the screen, or retitle the window.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' {
-			return r
-		}
-		if unicode.IsControl(r) {
+		if unsafeRune(r) || r == utf8.RuneError {
 			return -1
 		}
 		return r
 	}, s)
 }
+
+// oneLine is sanitize for values shown inside a line, such as a name or an
+// ID: line breaks become spaces so the value cannot imitate a status line.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(sanitize(s)), " ")
+}
+
+// The only escape sequences geminus writes itself; see Printer.style.
+var ownStyles = []string{"\x1b[0m", "\x1b[1m", "\x1b[2m", "\x1b[31m", "\x1b[33m"}
 
 // Printer writes to the screen and remembers whether the cursor is at the
 // start of a line, so status lines never land in the middle of a reply.
@@ -48,7 +66,37 @@ func newPrinter(w io.Writer, color bool) *Printer { return &Printer{w: w, color:
 // NewPrinter returns a printer without color, for tests and plain output.
 func NewPrinter(w io.Writer) *Printer { return newPrinter(w, false) }
 
+// clean is the last line of defense: everything printed goes through it, so
+// a call site that forgets to sanitize an outside value still cannot emit an
+// escape sequence. Only geminus's own styling survives, and only in color
+// mode.
+func (p *Printer) clean(s string) string {
+	if !strings.ContainsFunc(s, unsafeRune) && utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+scan:
+	for i := 0; i < len(s); {
+		if p.color && s[i] == 0x1b {
+			for _, style := range ownStyles {
+				if strings.HasPrefix(s[i:], style) {
+					b.WriteString(style)
+					i += len(style)
+					continue scan
+				}
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		if !unsafeRune(r) && (r != utf8.RuneError || size > 1) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func (p *Printer) write(s string) {
+	s = p.clean(s)
 	if s == "" {
 		return
 	}
@@ -60,6 +108,7 @@ func (p *Printer) write(s string) {
 
 // line prints s on a line of its own.
 func (p *Printer) line(s string) {
+	s = p.clean(s)
 	p.mu.Lock()
 	lead := ""
 	if p.midLine {
@@ -131,7 +180,7 @@ func (v *turnView) thought(string) {
 func (v *turnView) tool(e acp.ToolEvent) {
 	v.thinking = false
 	if !e.Update {
-		v.titles[e.ID] = sanitize(e.Title)
+		v.titles[e.ID] = oneLine(e.Title)
 		v.out.line(v.out.dim("  ⚙ " + v.titles[e.ID]))
 		return
 	}
@@ -159,7 +208,7 @@ func (v *turnView) permission(req acp.PermissionRequest, lines <-chan string, st
 		choices = append(choices, "[a] always allow")
 	}
 	choices = append(choices, "[n] reject")
-	v.out.line(v.out.warn(fmt.Sprintf("  ? %s asks to run: %s", v.name, sanitize(req.Title))))
+	v.out.line(v.out.warn(fmt.Sprintf("  ? %s asks to run: %s", v.name, oneLine(req.Title))))
 	v.out.write("    " + strings.Join(choices, "  ") + " (default n) ❯ ")
 
 	var answer string
