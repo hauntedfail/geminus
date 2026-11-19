@@ -8,7 +8,7 @@ import (
 
 // Version is overridden at release time with -ldflags "-X
 // github.com/hauntedfail/geminus/internal/version.Version=...".
-var Version = "0.2.0-dev"
+var Version = "0.3.0-dev"
 
 // String returns the line printed by `geminus version`.
 func String() string {

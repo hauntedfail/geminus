@@ -1,6 +1,6 @@
 # geminus — Implementation plan for a lightweight agent client
 
-- Status: **Superseded on 2026-11-19.** Sections 1–11 record the first design, a local PTY wrapper, which was removed. Section 12 and `docs/architecture.md` describe what geminus is now.
+- Status: **Superseded on 2026-11-19.** Sections 1–12 record two designs that were built and removed (a local PTY wrapper, then ssh with ACP). Section 13 and `docs/architecture.md` describe what geminus is now.
 - Repository: `/Users/vvx/projekt/go/geminus`
 - Language: Go (single static binary, CGO disabled)
 - Created: 2026-11-19
@@ -350,3 +350,34 @@ The first cut of the redesign only reached Hermes, took its choices from command
 Not verified: Claude Code, Codex and pi (no bridge installed anywhere), Windows, mirai, and a tool-permission prompt against a real harness.
 
 One run of the first check stalled: a message to sibyl got no reply within 90 seconds. It did not happen again in four further runs, and `GEMINUS_TRACE` was added afterwards so that a recurrence can be diagnosed. Its cause is unknown.
+
+---
+
+## 13. Honcho as the only channel (2026-11-19)
+
+Section 12's design reached other computers over ssh and spoke ACP to agent programs. Both were choices nobody had agreed to. The requirement, stated before any code existed, was to build on Honcho, add no ports, and keep geminus a thin client. That design was removed (`6023fdf` is its last commit) and the architecture was settled with the owner step by step before this one was written:
+
+- geminus is only the client and keeps no state: no config file, no routes, no session store.
+- The bridge on each computer is an extension of geminish, but geminus and geminish stay separate products: records are told apart by metadata, and a geminus prompt gets no geminish envelope or preamble.
+- One conversation is one Honcho session; prompt and output messages carry the text word for word; delivery state is the prompt message's metadata; defaults live in the owner's peer metadata.
+- The bridge runs each prompt through the agent program's own non-interactive, session-continuing mode.
+
+### Verified by running it (chrome, real Honcho)
+
+| Check | Result |
+|---|---|
+| geminish 0.5.0 on chrome publishes its node card; `geminus persona` lists it | chrome: hermes claude codex grok pi opencode |
+| chrome → Honcho → chrome bridge → Hermes, two turns | the second turn recalled a code word from the first; doorbell rang |
+| the same with Claude Code, Grok, Codex | each recalled the code word |
+| `--continue` from a new process | history shown from Honcho, conversation reopened |
+| Go and Python signatures | identical for the same inputs (test vectors) |
+| built geminus against the real Python bridge with an in-memory Honcho | conversation, continuation, a failing turn, reopening, and refusal of a forged prompt |
+| `go test ./... -race`; bridge tests on Python 3.9 and 3.11 | pass |
+
+One fault was found this way and fixed: the bridge, running as a service, picked an older Codex than the owner's shell does. It now reads the owner's interactive shell environment to find and start programs.
+
+### Not verified
+
+- pi and OpenCode as harnesses (no API key and no credit where tried).
+- Windows, for geminus and for the bridge.
+- A harness that stops to ask for permission.

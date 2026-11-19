@@ -1,10 +1,11 @@
 // Package chat is geminus's terminal interface. It is a proxy screen: the
 // person picks a persona (who) and a harness (which agent program on that
-// persona's computer), and talks. Everything behind the screen (the model,
-// tools, sessions, history) belongs to the harness; geminus only relays.
+// persona's computer) and types. geminus writes each prompt into Honcho word
+// for word; the bridge on the persona's computer runs it there, and whatever
+// that agent prints appears here when it arrives.
 //
-// The persona, the harness and the connection state are always on screen, in
-// the prompt and in the status line.
+// geminus keeps nothing of its own. Personas, what each computer offers,
+// conversations, and the person's defaults all live in Honcho.
 package chat
 
 import (
@@ -17,60 +18,64 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hauntedfail/geminus/internal/acp"
-	"github.com/hauntedfail/geminus/internal/harness"
-	"github.com/hauntedfail/geminus/internal/persona"
+	"github.com/hauntedfail/geminus/internal/honcho"
+	"github.com/hauntedfail/geminus/internal/profile"
 	"github.com/hauntedfail/geminus/internal/version"
+	"github.com/hauntedfail/geminus/internal/wire"
 )
 
-const usage = `geminus talks to your agents on other computers.
+const usage = `geminus talks to the agents on your other computers, through Honcho.
 
 Usage:
-  geminus                  connect to the default persona, or pick one
+  geminus                  talk to the default persona, or pick one
   geminus persona          list personas and exit
-  geminus persona NAME     connect to NAME
+  geminus persona NAME     talk to NAME
   geminus version | help
 
-Options when connecting:
+Options:
   --harness ID             use this agent program instead of the default
-  --continue, -c           reopen the latest session instead of starting one
-  --resume ID              reopen a session by ID
+  --cwd DIR                directory on that computer for a new conversation
+  --continue, -c           reopen the latest conversation
+  --resume ID              reopen a conversation by ID
 
-Everything else is chosen inside geminus (type /help there) and remembered
-with /default. Settings live in ~/.geminus/config.json.
+Everything else is chosen inside geminus (type /help there). geminus keeps
+no files: personas, conversations and your defaults live in Honcho.
 `
 
-// EnvTrace names the environment variable that turns on protocol tracing.
-const EnvTrace = "GEMINUS_TRACE"
+const commandHelp = `geminus commands
+  /persona [NAME]        pick who to talk to
+  /harness [ID]          pick the agent program on that persona's computer
+  /new [DIR]             start a new conversation (optionally in DIR there)
+  /sessions              list your conversations with this persona
+  /resume [ID|N]         reopen a conversation (default: the latest)
+  /status                show persona, harness, bridge and conversation
+  /default               show your defaults; /default save keeps the current
+                         persona, harness and directory;
+                         /default persona|harness|cwd VALUE (or none)
+  /quit                  leave geminus
+  //TEXT                 send a line that starts with a slash to the agent
+  While an answer is arriving, Ctrl-C stops watching it; the agent keeps
+  working and the rest appears when it arrives. At the prompt, Ctrl-C quits.`
 
-// connectTimeout bounds the handshake, including ssh and agent startup.
-const connectTimeout = 90 * time.Second
-
-// Agent is the part of an ACP connection the interface uses.
-type Agent interface {
-	Initialize(ctx context.Context, clientVersion string) (acp.Info, error)
-	NewSession(ctx context.Context, cwd string) (string, error)
-	LoadSession(ctx context.Context, cwd, sessionID string, h *acp.Handler) error
-	ListSessions(ctx context.Context, cwd string) ([]acp.SessionInfo, error)
-	Prompt(ctx context.Context, sessionID, text string, h *acp.Handler) (string, error)
-	Commands(sessionID string) []acp.Command
-	Done() <-chan struct{}
-	Err() error
-	Close() error
-}
+const (
+	// watchEvery is how often Honcho is read while an answer is expected.
+	watchEvery = time.Second
+	// idleEvery is how often it is read at the prompt.
+	idleEvery = 4 * time.Second
+	// slowAfter is when geminus says that nothing has picked the prompt up.
+	slowAfter = 20 * time.Second
+)
 
 // App is one run of the interface. The zero value is not usable; see Run.
 type App struct {
-	Out *Printer
-	// Load reads the persona directory and the settings.
-	Load func(context.Context) (persona.Directory, error)
-	// Probe finds out which harnesses a node has.
-	Probe func(context.Context, persona.Node, []harness.Harness) (harness.Probe, error)
-	// Dial starts the connection to a harness on a node.
-	Dial func(persona.Node, harness.Harness) (Agent, error)
-	// SaveDefaults and SaveNode write settings.
-	SaveDefaults func(persona.Defaults) error
-	SaveNode     func(string, persona.Node) error
+	Out     *Printer
+	Profile profile.Profile
+	Honcho  *honcho.Client
+	// Now and the two intervals are replaceable for tests.
+	Now       func() time.Time
+	Watch     time.Duration
+	Idle      time.Duration
+	SlowAfter time.Duration
 
 	ctx   context.Context
 	lines <-chan string
@@ -80,20 +85,21 @@ type App struct {
 	// interrupt delivers Ctrl-C.
 	interrupt <-chan os.Signal
 
-	dir persona.Directory
-	// cur, node, probe and choices describe the selected persona; har is
-	// the selected harness. They outlive a lost connection.
-	cur     *persona.Persona
-	node    persona.Node
-	probe   harness.Probe
-	choices []harness.Choice
-	har     *harness.Harness
-
-	agent Agent
-	info  acp.Info
-	cwd   string
-	// session is the open session; last is the one to offer after a drop.
-	session, last string
+	personas []Persona
+	defaults wire.Defaults
+	cur      *Persona
+	harness  *wire.Harness
+	// cwd is the directory for the next new conversation; session is the
+	// open conversation, or "" before the first prompt creates one.
+	cwd, session string
+	// title is the open conversation's title.
+	title string
+	// shown holds the messages of the open conversation already on screen.
+	shown map[string]bool
+	// waiting holds the prompts whose answer has not ended yet, and state
+	// the last state seen for each.
+	waiting map[string]bool
+	state   map[string]string
 }
 
 // Run is the geminus command. It returns the process exit code.
@@ -102,51 +108,28 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errw io.Writer) 
 	signal.Notify(interrupt, os.Interrupt)
 	defer signal.Stop(interrupt)
 
-	// GEMINUS_TRACE names a file that receives every protocol line. It holds
-	// the conversation, so it is created private.
-	var trace *os.File
-	if path := os.Getenv(EnvTrace); path != "" {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	req := parseArgs(args)
+	app := &App{Out: newPrinter(out, isTerminal(out) && os.Getenv("NO_COLOR") == ""), ctx: ctx, interrupt: interrupt}
+	if !req.badUsage && !req.version && !req.help {
+		prof, err := profile.Load()
 		if err != nil {
-			fmt.Fprintln(errw, "geminus:", err)
+			fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
 			return 1
 		}
-		defer f.Close()
-		trace = f
+		client, err := honcho.New(prof.BaseURL, prof.Workspace, prof.APIKey)
+		if err != nil {
+			fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
+			return 1
+		}
+		app.Profile, app.Honcho = prof, client
 	}
-
-	app := &App{
-		Out:  newPrinter(out, isTerminal(out) && os.Getenv("NO_COLOR") == ""),
-		Load: persona.Load,
-		Probe: func(ctx context.Context, node persona.Node, all []harness.Harness) (harness.Probe, error) {
-			return node.Probe(ctx, all)
-		},
-		Dial: func(node persona.Node, h harness.Harness) (Agent, error) {
-			cmd, err := node.Exec(h)
-			if err != nil {
-				return nil, err
-			}
-			proc, err := acp.Start(cmd)
-			if err != nil {
-				return nil, err
-			}
-			if trace != nil {
-				proc.Trace(trace)
-			}
-			return proc, nil
-		},
-		SaveDefaults: persona.SaveDefaults,
-		SaveNode:     persona.SaveNode,
-		ctx:          ctx,
-		interrupt:    interrupt,
-	}
-	return app.Main(args, in, errw)
+	return app.main(req, in, errw)
 }
 
 // request is what the command line asked for.
 type request struct {
 	list                    bool
-	persona, harness        string
+	persona, harness, cwd   string
 	resume                  string
 	latest                  bool
 	version, help, badUsage bool
@@ -178,6 +161,8 @@ func parseArgs(args []string) request {
 			}
 		case arg == "--harness" || arg == "-H":
 			r.harness = value()
+		case arg == "--cwd":
+			r.cwd = value()
 		case arg == "--resume":
 			r.resume = value()
 		case arg == "--continue" || arg == "-c":
@@ -186,15 +171,20 @@ func parseArgs(args []string) request {
 			r.badUsage = true
 		}
 	}
-	if r.list && (r.harness != "" || r.resume != "" || r.latest) || r.resume != "" && r.latest {
+	reopen := r.resume != "" || r.latest
+	if r.list && (r.harness != "" || reopen || r.cwd != "") || r.resume != "" && r.latest ||
+		reopen && (r.harness != "" || r.cwd != "") {
 		r.badUsage = true
 	}
 	return r
 }
 
-// Main runs the command line in args against the input in.
+// Main runs a command line against the input in, for tests.
 func (a *App) Main(args []string, in io.Reader, errw io.Writer) int {
-	req := parseArgs(args)
+	return a.main(parseArgs(args), in, errw)
+}
+
+func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 	switch {
 	case req.badUsage:
 		fmt.Fprint(errw, usage)
@@ -206,6 +196,12 @@ func (a *App) Main(args []string, in io.Reader, errw io.Writer) int {
 		a.Out.write(usage)
 		return 0
 	}
+	if a.Now == nil {
+		a.Now = time.Now
+	}
+	if a.Watch == 0 {
+		a.Watch, a.Idle, a.SlowAfter = watchEvery, idleEvery, slowAfter
+	}
 	if err := a.loadDirectory(); err != nil {
 		fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
 		return 1
@@ -214,14 +210,13 @@ func (a *App) Main(args []string, in io.Reader, errw io.Writer) int {
 		a.showPersonas()
 		return 0
 	}
-	defer a.disconnect()
 	a.lines = readLines(in)
 	a.echo = !isTerminal(in)
 
 	name := req.persona
 	explicit := name != ""
 	if name == "" {
-		name = a.dir.Defaults.Persona
+		name = a.defaults.Persona
 	}
 	if name == "" {
 		// A persona must be chosen before anything else can happen.
@@ -231,7 +226,17 @@ func (a *App) Main(args []string, in io.Reader, errw io.Writer) int {
 		}
 		name = picked
 	}
-	if err := a.start(name, req.harness, req.resume, req.latest); err != nil {
+	var err error
+	if req.resume != "" || req.latest {
+		// A reopened conversation keeps the harness and directory it was
+		// started with, so neither is asked for.
+		if err = a.selectPersona(name); err == nil {
+			err = a.resume(req.resume)
+		}
+	} else if err = a.start(name, req.harness); err == nil && req.cwd != "" {
+		a.cwd = req.cwd
+	}
+	if err != nil {
 		if explicit {
 			// Asked for one persona on the command line: either that
 			// conversation opens or the command fails.
@@ -239,8 +244,8 @@ func (a *App) Main(args []string, in io.Reader, errw io.Writer) int {
 			return 1
 		}
 		a.Out.line(a.Out.fail("✗ " + err.Error()))
-		a.Out.line(a.status())
 	}
+	a.Out.line(a.status())
 	a.loop()
 	return 0
 }
@@ -258,47 +263,19 @@ func readLines(in io.Reader) <-chan string {
 	return lines
 }
 
-func (a *App) loadDirectory() error {
-	dir, err := a.Load(a.ctx)
-	if err != nil {
-		return err
-	}
-	a.dir = dir
-	return nil
-}
-
-// loop reads lines until the input ends, /quit, or Ctrl-C at the prompt.
-func (a *App) loop() {
-	for {
-		a.Out.write(a.prompt())
-		var done <-chan struct{}
-		if a.agent != nil {
-			done = a.agent.Done()
-		}
-		select {
-		case line, ok := <-a.lines:
-			if !ok {
-				a.Out.line("")
-				return
-			}
-			a.entered(line)
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			if line == "/quit" || line == "/exit" {
-				return
-			}
-			if err := a.handle(line); err != nil {
-				a.Out.line(a.Out.fail("✗ " + err.Error()))
-			}
-		case <-done:
+// readLine reads one line of input outside the main loop.
+func (a *App) readLine() (string, bool) {
+	select {
+	case line, ok := <-a.lines:
+		if !ok {
 			a.Out.line("")
-			a.dropped(a.agent.Err())
-		case <-a.interrupt:
-			a.Out.line("")
-			return
+			return "", false
 		}
+		a.entered(line)
+		return strings.TrimSpace(line), true
+	case <-a.interrupt:
+		a.Out.line("")
+		return "", false
 	}
 }
 
@@ -309,4 +286,53 @@ func (a *App) entered(line string) {
 		return
 	}
 	a.Out.typed()
+}
+
+func (a *App) prompt() string {
+	switch {
+	case a.cur == nil:
+		return a.Out.dim("geminus") + " ❯ "
+	case a.harness == nil:
+		return a.Out.bold(who(*a.cur)) + " ❯ "
+	}
+	return a.Out.bold(who(*a.cur)) + a.Out.dim(" · "+a.harness.ID) + " ❯ "
+}
+
+// loop reads lines until the input ends, /quit, or Ctrl-C at the prompt.
+// While it waits it shows answers that arrive for the open conversation.
+func (a *App) loop() {
+	idle := time.NewTicker(a.Idle)
+	defer idle.Stop()
+	for {
+		a.Out.write(a.prompt())
+	wait:
+		for {
+			select {
+			case line, ok := <-a.lines:
+				if !ok {
+					a.Out.line("")
+					return
+				}
+				a.entered(line)
+				line = strings.TrimSpace(line)
+				if line == "/quit" || line == "/exit" {
+					return
+				}
+				if line != "" {
+					if err := a.handle(line); err != nil {
+						a.Out.line(a.Out.fail("✗ " + err.Error()))
+					}
+				}
+				break wait
+			case <-idle.C:
+				// Results are asynchronous: show what arrived while idle.
+				if len(a.waiting) > 0 && a.session != "" && a.arrivals() {
+					break wait
+				}
+			case <-a.interrupt:
+				a.Out.line("")
+				return
+			}
+		}
+	}
 }

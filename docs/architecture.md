@@ -1,105 +1,84 @@
 # geminus architecture
 
-This document describes how the code works today.
+This document describes how the code works today. `docs/protocol.md` specifies the records exchanged; this explains the shape and the reasons.
 
 ## What geminus is for
 
-geminus lets one person talk directly to an agent that runs on another computer. Launching an agent that is already on this computer is not the point: the agent's own app does that.
+The owner works on several computers and wants to stay at one of them: type to the agent on another computer and see what it does, without walking over, without opening ports, and without relaying through a second agent that rephrases things.
 
-It is a proxy screen in front of existing agents. The person chooses a **persona** (who: a label from a Honcho peer) and a **harness** (what: the agent program on that persona's computer), and geminus relays the conversation. Everything behind the screen (model, tools, sessions, history, permissions policy) belongs to the harness and is reached only through the harness's own published interface. geminus never drives a terminal UI, never starts a process per turn, and never touches a harness's files.
-
-An earlier version (commit `d8ec09f`) wrapped the local `claude` and `hermes` command lines in a pseudo-terminal. That design answered the wrong question and was removed. `plans/geminus/plan.md` is its record.
+geminus is the client for that and nothing else. It is deliberately a thin wrapper: it does not run a model, does not start or drive an agent program, and stores nothing.
 
 ## Shape
 
 ```
-  terminal ── geminus ── ssh ─────────────── harness's ACP server
-                 │        one process per     (hermes acp, grok agent stdio,
-                 │        connection          claude-agent-acp, ...) on the
-                 │                            persona's computer
-                 ├── ssh, once per persona pick: which harnesses are installed there?
-                 ├── Honcho: POST /v3/workspaces/<ws>/peers/list   (who exists)
-                 └── ~/.geminus/config.json   (routes, defaults, extra harnesses)
+ this computer                         Honcho                      the persona's computer
+┌───────────┐   HTTPS (outgoing)   ┌───────────┐   HTTPS (outgoing)   ┌───────────────────────┐
+│  geminus  │ ───────────────────▶ │ sessions  │ ◀─────────────────── │ bridge (in geminish's │
+│           │ ◀─────────────────── │ messages  │ ───────────────────▶ │ resident poller)      │
+└───────────┘                      │ peers     │                      │   └─▶ hermes / claude │
+      │                            └───────────┘                      │       / codex / …     │
+      └── empty POST to Mozilla push ("doorbell") ───────────────────▶└───────────────────────┘
 ```
 
 | Package | Responsibility |
 |---|---|
 | `cmd/geminus` | `main` only. |
-| `internal/chat` | The terminal interface: picking persona and harness, prompt, status line, slash commands, turn display, permission prompts. |
-| `internal/persona` | The persona directory (Honcho peers), each persona's node (where its computer is), defaults, and writing the config file. |
-| `internal/harness` | The known agent programs and the probe that finds which of them a computer has. |
-| `internal/acp` | An Agent Client Protocol client over a child process's stdin and stdout. |
-| `internal/acp/acptest` | A scripted ACP agent for tests. |
+| `internal/chat` | The terminal interface: picking persona and harness, sending, showing answers as they arrive, slash commands. |
+| `internal/wire` | The protocol: record shapes, signatures, the node card, the doorbell. |
+| `internal/honcho` | The Honcho HTTP calls geminus makes; `honchotest` is an in-memory Honcho for tests. |
+| `internal/profile` | Reads the two existing files that say who and where this computer is. |
 | `internal/version` | The version string. |
 
-There are no third-party dependencies.
+No third-party dependencies.
 
 ## Decisions
 
-**Talk ACP to the harness's own server.** ACP gives structured turns, streaming, tool calls, permission requests, cancellation and session listing, and many agents serve it: natively (Hermes, OpenCode, Gemini CLI, Grok) or through a small bridge program (Claude Code, Codex, pi). One protocol therefore covers "any agent" without geminus knowing anything about a particular one. One harness process serves the whole connection, across `/new` and `/resume`.
+**Honcho is the only channel, and the place for everything.** The owner chose to build on Honcho so as not to design or manage persona switching, sessions or storage again. So each concept is a Honcho object: a persona is a peer, a conversation is a session, a turn is messages, what a computer offers and the owner's defaults are peer metadata. geminus has no files. Any computer with the same Hermes profile shows the same personas, conversations and defaults, and a conversation can be continued from any of them.
 
-**Reach remote computers with ssh.** ssh already provides authentication, encryption and host verification that the person has set up, so geminus adds no credentials and no listener of its own. geminus runs ssh with `BatchMode=yes` so that a missing key fails with an error instead of a password prompt fighting the conversation for the terminal.
+**No ports.** Both sides only make outgoing HTTPS requests to Honcho, which works from behind NAT. The one other request is the doorbell: an empty POST to the Mozilla push endpoint that geminish already keeps for its own purposes, so the bridge reads Honcho at once instead of at its next timer tick. It carries nothing and decides nothing; without it the prompt is picked up within the bridge's poll interval.
 
-**A persona is a label; it must be chosen.** The workspace's Honcho peers are the personas. Nothing happens before one is selected, by default or by hand. Honcho knows nothing about hosts, and guessing a host from a name would be a way to talk to the wrong machine, so the route is asked for once and stored. This computer's own persona is known from the Hermes profile and needs no route. If Honcho cannot be read, geminus says so and offers only the personas it knows locally.
+**The bridge is geminish's, the conversation is geminus's.** Something on the other computer has to read Honcho and start the agent program. geminish's poller already runs there, so the bridge is a part of it and geminus stays a client. But the two are different products: geminish is agents writing to agents, where a message is input from a peer and never the owner's word. A geminus prompt is the owner's word. So the bridge shares only the process: geminus records are recognized by metadata (`kind: geminus` on a session, a `geminus` key on a message), never go through geminish's mail rules, and are handed over without any preamble.
 
-**Harness choices are observed, not configured.** When a persona is picked, geminus runs one small shell script on that computer that reports which known programs are on its `PATH`. The list offered is exactly what is installed there at that moment: usable harnesses first, then agents that are installed without their ACP bridge, shown with the command that would fix it but not selectable. `/harness` looks again. The registry of known harnesses is built in and can be extended in the config file.
+**The prompt is passed word for word.** Whether a computer may run something is decided by who signed it, not by wrapping the text in warnings. The prompt message's content is exactly what was typed, and the output messages' content is exactly what the program printed, so the Honcho session reads as the conversation it is.
 
-**Choices are made inside geminus and remembered.** The command line carries a persona name at most. Persona, harness and session mode have defaults that are set with `/default` from within the conversation. A persona's own harness beats the general default, and a default the computer does not have is skipped, not forced.
+**The agent program's own non-interactive mode.** The bridge runs one process per prompt in the mode each program provides for exactly this (`claude -p --resume`, `codex exec resume`, `hermes chat --continue`, …). Nothing else is installed, the program's permissions are its own, and the conversation is an ordinary session of that program on that computer.
 
-**Slash commands are shared with the harness.** geminus owns a small fixed set. Any other slash command belongs to the harness and is sent as typed, provided the harness announced it or announced no list at all. `//name` reaches a harness command that shares a name with a geminus one. A command unknown to both is a typo and is not sent.
+**Harness choices are observed.** A bridge publishes which agent programs its computer has, found in the owner's interactive shell environment there, and republishes every five minutes. geminus offers exactly that list and shows its age. Looking in the owner's shell environment matters: a service has a short `PATH` and no profile, and would otherwise pick a different copy of a program than the owner gets (this happened: an older Codex with another default model).
 
-**The remote owns the session.** Sessions, their history and their IDs live with the harness. geminus stores nothing about a conversation. `/sessions`, `--continue` and `/resume` ask the harness (`session/list`, `session/load`), so the list is always the truth, and the same session can be picked up from any computer.
+**Asynchronous by construction.** A prompt is a record; so is each piece of the answer. Sending never waits for the other side, watching can be abandoned without affecting the work, and a computer that is off simply answers later. The screen states what is known: recorded, doorbell rung, picked up and working, finished or failed, or not picked up since when.
 
-**State is always on screen.** The prompt is `sibyl [REMOTE] · hermes ❯` when connected and `geminus (disconnected) ❯` when not. The status line (shown on every change and by `/status`) adds the harness's reported name and version, the route, the session and the directory. The local persona always carries `[THIS COMPUTER]`.
+## The bridge
 
-**Nothing is sent by accident.** Text typed while disconnected is not sent. A message in flight when the connection drops is not sent again; the person is told it may not have arrived. A tool call runs only after an explicit `y` or `a`.
+The bridge lives in geminish (`bridge.py`, from 0.5.0), next to but apart from the mail client. On every poller cycle it:
 
-## Finding the harnesses
+1. republishes its node card if it changed or is five minutes old;
+2. lists the geminus sessions addressed to its persona with `pending: true` (one request);
+3. for each, clears the mark, then reads the messages and runs every prompt that qualifies, in a worker of its own so that one long turn does not block another conversation or the mail.
 
-`harness.Script` builds one line of POSIX shell: print `home=$HOME`, then `have=NAME` for each program that `command -v` finds. `persona.Node.Probe` runs it through `ssh … sh -lc '…'` for a remote node, or uses `exec.LookPath` directly on this computer. The login shell matters: a non-interactive ssh command gets a minimal `PATH` that does not include `~/.local/bin` or a node version manager's directory, which is where agents live.
+A prompt qualifies when its signature verifies for this session, persona and harness, its author is a human member, it is at most seven days old, and its one-time value has not been run here before (remembered in the poller's local state, so resetting a message's state or re-posting it does not run it again). Refusals are written back as the prompt's state with the reason.
 
-Program names reach a remote shell, so they are restricted to plain names and paths, both for built-in harnesses and for ones from the config file; a custom `command` may contain only plain arguments. Lines of the probe's output that are not `home=` or `have=` are ignored, because a login shell may print a greeting.
+Output is read as it is printed, written back in signed pieces at most every two seconds, and ends with a final piece; a failed run ends with a final piece that says why, with the program's own error output.
 
-The remote home directory from the probe is the default working directory for sessions when the persona has no `cwd`.
+## Trust
 
-## A connection
+The secret is geminish's group secret, already on each member computer. Signatures bind each record to its purpose with a label (see the protocol), so a signature for a prompt cannot serve as output, as a node card, as geminish mail, or as a prompt in another conversation or for another harness.
 
-1. `persona.Node.Exec` builds the process: the harness's ACP command itself on this computer, or `ssh -T -oBatchMode=yes -oConnectTimeout=10 -- ALIAS sh -lc 'exec hermes acp'` for a remote one.
-2. `acp.Start` runs it with pipes on stdin and stdout, keeps the last lines of stderr, and puts the process in its own process group (see below).
-3. `initialize` exchanges versions and capabilities. Then `session/new` starts a conversation, or `session/list` plus `session/load` reopens one; the agent replays the history, which geminus prints.
-4. Each message is one `session/prompt`. While it is in flight the agent sends `session/update` notifications (reply text, reasoning, tool calls) and may send `session/request_permission` requests, which geminus answers from the keyboard.
-5. Closing stdin ends the agent. If it does not exit within three seconds it is killed.
-
-### Why the process group matters
-
-A terminal delivers Ctrl-C to every process in the foreground process group. If ssh shared geminus's group, interrupting a reply would kill the connection. `acp.Start` starts the child in a new group (`Setpgid` on Unix, `CREATE_NEW_PROCESS_GROUP` on Windows), so Ctrl-C reaches only geminus, which turns it into a `session/cancel` message. The agent then ends the turn with the stop reason `cancelled` and the session stays usable.
-
-`acp.Client.Prompt` registers the cancel only after the prompt request has been written, so a cancel can never arrive ahead of the turn it is meant to stop.
-
-### Errors
-
-When the agent's output ends, every pending call fails with `acp.ErrClosed` carrying the notable tail of the process's stderr (at most 40 lines of 1 KiB are kept, however much the process writes): for example `sh: 1: exec: hermes: not found`, or ssh's own `Permission denied (publickey)`. Agents log their startup at INFO level on stderr; those lines are dropped when anything else was written. The interface prints the error, switches to the disconnected prompt, and remembers the session so that `/resume` reconnects to it.
-
-An error reply from the harness (`acp.RPCError`: no credit, an unsupported account, an unknown model) is shown in the harness's own words and does not end the connection.
-
-Setting `GEMINUS_TRACE` to a file path makes the client log every protocol line in both directions, truncated to 4000 bytes each. This is the tool for a harness that connects but behaves unexpectedly.
-
-Hermes answers `session/load` for an unknown ID with a null result, which the protocol also uses for success. geminus therefore resolves the ID against `session/list` first whenever the agent can list sessions.
+What this gives: holding the Honcho token alone, one can read conversations and write records, but cannot make a computer run anything, cannot make geminus show forged agent output, and cannot change what a computer appears to offer. What it does not give: separation between member computers. Any computer holding the secret can issue prompts as the owner. A key that only the owner's own keyboard holds would need a secret that geminus owns, which the design rules out; it remains the obvious next step if that separation is wanted.
 
 ## What goes on the screen
 
-Agent text is printed as it arrives. Nothing from outside can control the terminal: `chat.Printer` strips control characters and bidirectional overrides from everything it prints (replies, error messages, the remote stderr tail, agent names, session titles and IDs, persona names), keeping only the few color codes geminus writes itself. Values shown inside a line are also flattened to one line so they cannot imitate a status line, and Honcho peers whose IDs are not plain names are not offered as personas. Reasoning is reduced to one `… thinking` line. A tool call is one dim line with its title; a failed one gets a second line. `internal/chat.Printer` tracks whether the cursor is in the middle of a line so that these side notes and the status line always start on a line of their own.
+Agent output is printed as it arrives. Nothing from outside can control the terminal: `chat.Printer` strips control characters and bidirectional overrides from everything it prints (output, error text, names, titles, IDs), keeping only the few color codes geminus writes itself, and values shown inside a line are flattened to one line.
 
-Input is read line by line in the terminal's normal mode, so the terminal's own line editing and input methods work. When stdin is not a terminal, each line is echoed, which keeps piped runs and test output readable. Color is used only on a terminal and is turned off by `NO_COLOR`.
+Input is read line by line in the terminal's normal mode, so the terminal's own line editing and input methods work. When stdin is not a terminal each line is echoed, which keeps piped runs and test output readable.
 
 ## Tests
 
 | Level | What runs | What it shows |
 |---|---|---|
-| `internal/acp` | The client against the scripted agent, in process and as a child process | Handshake, streaming, permissions, cancel, load and list, stderr in errors, process group |
-| `internal/harness` | The registry and the probe script in a real shell | What is offered for a given set of installed programs, custom harnesses, rejection of shell syntax |
-| `internal/persona` | `Load` and the config writers against a stub Honcho server and temporary profiles | Filtering to agents, locality, nodes, defaults, fallback when Honcho is down, invalid config rejected, unknown config keys preserved |
-| `internal/chat` | The interface against in-process scripted agents | Picking persona and harness, defaults, every command, harness commands, the prompts and status lines, disconnect and reconnect, interrupt, output sanitizing |
-| `test` | The built binary with a fake `ssh`, the scripted agent and a stub Honcho | The pieces together, including the exact ssh command lines of the probe and of the connection, saved defaults across runs, and continuing a session from a second process |
+| `internal/wire` | Signing and record parsing | Signatures equal the ones the bridge's Python code produces; each is good for one purpose only; node cards and doorbell records must be signed for their own peer |
+| `internal/honcho` | The client against the in-memory Honcho | Paging, nested metadata filters, metadata merged rather than replaced, errors without the token |
+| `internal/chat` | The interface against the in-memory Honcho and a bridge that follows the protocol | Every flow and command, asynchronous answers, forged output ignored, defaults in Honcho, no files written |
+| `test` | The built binary, the real Python bridge, a fake agent program, the in-memory Honcho | That the two products agree end to end, including continuing a conversation, a failing turn, and a forged prompt being refused |
+| geminish `tests/test_bridge.py` | The bridge on its own | Runs once, verbatim, in order; refusals; output pieces; each program's command line; the owner's shell environment |
 
-The scripted agent proves the client and the interface. It does not prove that a real agent behaves the same way; that was checked by hand against Hermes and Grok (see the README's harness table) and has not been checked for the bridged harnesses or on Windows.
+The fake agent program proves the plumbing, not that a real program behaves the same; that was checked by hand for the harnesses marked so in the README.
