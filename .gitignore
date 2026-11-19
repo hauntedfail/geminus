@@ -1,0 +1,14 @@
+# ビルド成果物
+/geminus
+/geminus.exe
+/dist/
+
+# テスト・プロファイル
+*.test
+*.out
+coverage.*
+
+# エディタ・OS
+.DS_Store
+.idea/
+.vscode/
