@@ -46,6 +46,9 @@ no files: personas, conversations and your defaults live in Honcho.
 const commandHelp = `geminus commands
   /persona [NAME]        pick who to talk to
   /harness [ID]          pick the agent program on that persona's computer
+  /cwd [DIR]             directory on that computer for the conversation the
+                         next prompt starts (/cwd default: the bridge's own);
+                         a conversation stays in the directory it started in
   /new [DIR]             start a new conversation (optionally in DIR there)
   /sessions              list your conversations with this persona
   /resume [ID|N]         reopen a conversation (default: the latest)
@@ -220,6 +223,10 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 	case req.help:
 		a.Out.write(usage)
 		return 0
+	}
+	if err := validDir(req.cwd); err != nil {
+		fmt.Fprintln(errw, "geminus: --cwd:", err)
+		return 1
 	}
 	if a.Now == nil {
 		a.Now = time.Now

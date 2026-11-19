@@ -73,12 +73,17 @@ func (a *App) handle(line string) error {
 		if a.cur == nil || a.harness == nil {
 			return errors.New("pick a persona first (/persona)")
 		}
+		if err := validDir(arg); err != nil {
+			return err
+		}
 		a.session, a.title, a.tuning = "", "", wire.Tuning{}
 		a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 		if arg != "" {
 			a.cwd = arg
 		}
 		a.Out.line(a.status())
+	case "/cwd":
+		return a.chdir(arg)
 	case "/sessions":
 		return a.showSessions()
 	case "/resume":

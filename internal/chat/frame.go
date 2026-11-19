@@ -41,8 +41,10 @@ type view struct {
 	reported bool
 	seen     time.Time
 
-	cwd, session  string
-	model, effort string
+	// cwd is the directory chosen for the conversation, "" for the one the
+	// bridge there uses when none is; home is that one, when the bridge said.
+	cwd, home, session string
+	model, effort      string
 
 	// link says why Honcho could not be read; "" when it can.
 	link string
@@ -90,6 +92,7 @@ var slashCommands = []struct{ name, args, what string }{
 	{"/harness", "[ID]", "pick the agent program there"},
 	{"/model", "[NAME]", "model for this conversation"},
 	{"/effort", "[LEVEL]", "effort for this conversation"},
+	{"/cwd", "[DIR]", "directory there, until the conversation starts"},
 	{"/new", "[DIR]", "start a new conversation"},
 	{"/sessions", "", "list your conversations"},
 	{"/resume", "[ID|N]", "reopen a conversation"},
@@ -266,7 +269,7 @@ func render(in frameInput) frame {
 	f.curRow, f.curCol = len(f.rows)-len(lines)+curRow, 4+curCol
 	f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
 
-	f.rows = append(f.rows, statusRow(in, width))
+	f.rows = append(f.rows, statusRows(in, width)...)
 	f.rows = append(f.rows, hintRows(in, width)...)
 	return f
 }
@@ -303,9 +306,10 @@ func activity(in frameInput, width int) string {
 	return " " + mark + " " + pal.dim(plain)
 }
 
-// statusRow is the line under the box: the connection, the settings of the
-// conversation and which conversation it is.
-func statusRow(in frameInput, width int) string {
+// statusRows are the lines under the box: the connection, where on that
+// computer the conversation runs, its settings and which conversation it is.
+// What does not fit beside the rest goes to a second line.
+func statusRows(in frameInput, width int) []string {
 	v, pal := in.v, in.pal
 	type item struct{ plain, styled string }
 	var items []item
@@ -327,14 +331,24 @@ func statusRow(in frameInput, width int) string {
 		add("● "+text, pal.sgr(color, "●")+" "+text)
 	}
 	if v.harness != "" {
+		// A long path keeps its end and never takes the whole line.
+		room := max(width/2, 16)
+		switch {
+		case v.cwd != "":
+			dir := clipLeft(v.cwd, room)
+			add("in "+dir, pal.dim("in ")+dir)
+		case v.home != "":
+			dir := clipLeft(v.home, room-10)
+			add("in "+dir+" (default)", pal.dim("in ")+dir+pal.dim(" (default)"))
+		default:
+			// A bridge too old to say which one that is.
+			add("default directory", pal.dim("default directory"))
+		}
 		if v.model != "" {
 			add("model "+v.model, pal.dim("model ")+v.model)
 		}
 		if v.effort != "" {
 			add("effort "+v.effort, pal.dim("effort ")+v.effort)
-		}
-		if v.cwd != "" {
-			add("in "+v.cwd, pal.dim("in ")+v.cwd)
 		}
 		if v.session != "" {
 			add(v.session, pal.dim(v.session))
@@ -342,22 +356,27 @@ func statusRow(in frameInput, width int) string {
 			add("new conversation", pal.dim("new conversation"))
 		}
 	}
-	row, used := "  ", 2
+	const most = 2
+	rows, used := []string{"  "}, 2
 	for i, it := range items {
-		sep := ""
-		if i > 0 {
-			sep = " · "
+		sep := " · "
+		if used == 2 {
+			sep = ""
 		}
 		if used+textWidth(sep)+textWidth(it.plain) > width {
 			if i == 0 {
-				row += clipWidth(it.plain, width-used)
+				rows[0] += clipWidth(it.plain, width-used)
+				break
 			}
-			break
+			if len(rows) == most || 2+textWidth(it.plain) > width {
+				break
+			}
+			rows, used, sep = append(rows, "  "), 2, ""
 		}
-		row += pal.dim(sep) + it.styled
+		rows[len(rows)-1] += pal.dim(sep) + it.styled
 		used += textWidth(sep) + textWidth(it.plain)
 	}
-	return row
+	return rows
 }
 
 // slashMatches lists geminus's commands that start with what is typed.

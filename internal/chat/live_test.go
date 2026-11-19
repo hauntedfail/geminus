@@ -187,7 +187,8 @@ func TestTheBoxShowsWhoWhatAndWhere(t *testing.T) {
 ╭─ sibyl · Hermes Agent ──────────────────────────────────── REMOTE ─╮
 │ ❯ Type a prompt for Hermes Agent on sibyl                          │
 ╰────────────────────────────────────────────────────────────────────╯
-  ● bridge seen 15s ago · model opus · effort high · in /srv/app
+  ● bridge seen 15s ago · in /srv/app · model opus · effort high
+  new conversation
   / commands · Enter send · Alt+Enter new line · ↑ earlier prompts · …`
 	if got != want {
 		t.Errorf("empty box:\n%s\nwant:\n%s", got, want)
@@ -206,13 +207,54 @@ func TestTheBoxShowsWhoWhatAndWhere(t *testing.T) {
 	v.persona, v.local, v.session = "chrome", true, "geminus-chrome-20261119-abc123"
 	got, _ = draw(frameInput{v: v})
 	if !strings.Contains(got, "╭─ chrome · Hermes Agent ──────────────────────────── THIS COMPUTER ─╮") ||
-		!strings.Contains(got, "● bridge seen 15s ago · geminus-chrome-20261119-abc123") {
+		!strings.Contains(got, "  ● bridge seen 15s ago · default directory\n  geminus-chrome-20261119-abc123\n") {
 		t.Errorf("local box:\n%s", got)
 	}
 	// And the color of the box says the same.
 	styled := render(frameInput{v: v, cols: 71, rows: 24, now: noon, pal: palette{on: true}})
 	if !strings.Contains(styled.rows[1], "\x1b[33m╭─") {
 		t.Errorf("local border is not yellow: %q", styled.rows[1])
+	}
+}
+
+func TestTheDirectoryIsAlwaysUnderTheBox(t *testing.T) {
+	// Everything between the box and the one line of key hints.
+	status := func(v view, cols int) string {
+		_, f := draw(frameInput{v: v, cols: cols})
+		for i, row := range f.rows {
+			if strings.HasPrefix(row, "╰") {
+				return strings.Join(f.rows[i+1:len(f.rows)-1], "\n")
+			}
+		}
+		return ""
+	}
+	// None chosen: the one the bridge there uses, as it reported it.
+	v := sibylView()
+	v.home = "/home/sibyl"
+	if got, want := status(v, 81), "  ● bridge seen 15s ago · in /home/sibyl (default) · new conversation"; got != want {
+		t.Errorf("default directory:\n%q\nwant\n%q", got, want)
+	}
+	// A bridge too old to say which one that is.
+	v.home = ""
+	if got, want := status(v, 81), "  ● bridge seen 15s ago · default directory · new conversation"; got != want {
+		t.Errorf("unknown default directory:\n%q\nwant\n%q", got, want)
+	}
+	// A chosen one wins, and a long one keeps its end: that is the part
+	// that tells two projects apart. What does not fit beside it moves to a
+	// second line.
+	v.home, v.cwd, v.session = "/home/sibyl", "/home/sibyl/projects/clients/日本語/api-server", "geminus-sibyl-20261119-0a1b2c"
+	if got, want := status(v, 81), "  ● bridge seen 15s ago · in …ibyl/projects/clients/日本語/api-server\n  geminus-sibyl-20261119-0a1b2c"; got != want {
+		t.Errorf("long directory:\n%q\nwant\n%q", got, want)
+	}
+	// On a narrow screen it has a line to itself, and what no longer fits
+	// in two lines is left out.
+	if got, want := status(v, 51), "  ● bridge seen 15s ago\n  in …lients/日本語/api-server"; got != want {
+		t.Errorf("narrow:\n%q\nwant\n%q", got, want)
+	}
+	// Nothing is said about a directory before there is a program to run in it.
+	v = view{persona: "mirai"}
+	if got := status(v, 81); strings.Contains(got, " in ") {
+		t.Errorf("no bridge: %q", got)
 	}
 }
 
@@ -357,6 +399,7 @@ func TestOutputScrollsAboveTheBoxWhileTyping(t *testing.T) {
 │ ❯ half a pro                         │
 ╰──────────────────────────────────────╯
   ● bridge seen 15s ago
+  default directory · new conversation
   / commands · Enter send · Alt+Enter n…`
 	if got, want := term.text(), "first line\nsecond line, still coming\n"+box; got != want {
 		t.Errorf("screen:\n%s\nwant:\n%s", got, want)
@@ -537,7 +580,7 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 	w.offline["sibyl"] = true
 	w.mu.Unlock()
 	term, typed, done := w.onTerminal(t, "persona", "sibyl")
-	term.waitFor(t, "◆ geminus", "╭─ sibyl · Hermes Agent ─", "REMOTE ─╮", "● bridge seen 40s ago · new conversation")
+	term.waitFor(t, "◆ geminus", "╭─ sibyl · Hermes Agent ─", "REMOTE ─╮", "● bridge seen 40s ago · default directory · new conversation")
 
 	// Sending returns at once: the second prompt goes out while the first
 	// has not even been picked up.
@@ -566,7 +609,7 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 	typed("/compact\r")
 	term.waitFor(t, "echo: /compact")
 	typed("/mo\t", "fast-1\r")
-	term.waitFor(t, "model: fast-1", "· model fast-1 ·")
+	term.waitFor(t, "model: fast-1", "· default directory · model fast-1")
 
 	// A question is asked in the box; cancelling it changes nothing.
 	typed("/persona\r")
@@ -578,7 +621,14 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 	typed("chrome\r")
 	term.waitFor(t, "persona ❯ chrome", "╭─ harness ─")
 	typed("cl\r")
-	term.waitFor(t, "harness ❯ cl", "╭─ chrome · Claude Code ─", "THIS COMPUTER ─╮", "● bridge seen 5s ago · new conversation")
+	term.waitFor(t, "harness ❯ cl", "╭─ chrome · Claude Code ─", "THIS COMPUTER ─╮", "● bridge seen 5s ago · default directory · new conversation")
+
+	// The directory is under the box, and can be changed there until the
+	// first prompt of the conversation is sent.
+	typed("/cw\t", "~/projekt/api\r")
+	term.waitFor(t, "❯ /cwd ~/projekt/api", "● bridge seen 5s ago · in ~/projekt/api · new conversation")
+	typed("/cwd default\r")
+	term.waitFor(t, "● bridge seen 5s ago · default directory · new conversation")
 
 	typed("\x03", "\x03")
 	select {

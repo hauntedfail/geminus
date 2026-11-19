@@ -130,6 +130,10 @@ func NodeLabel(peer string) string { return "geminus-node:" + peer }
 // it.
 func OptionsLabel(peer string) string { return "geminus-node-options:" + peer }
 
+// CWDLabel binds the default directory in a node card to the peer that
+// published it.
+func CWDLabel(peer string) string { return "geminus-node-cwd:" + peer }
+
 // Session is the "geminus" object in a session's metadata.
 type Session struct {
 	V       int    `json:"v"`
@@ -242,6 +246,10 @@ type NodeCard struct {
 	// there are. OptionsSig signs the IDs with their options.
 	Sig        string `json:"sig"`
 	OptionsSig string `json:"options_sig,omitempty"`
+	// CWD is the directory the bridge runs a prompt in when the conversation
+	// names none, with a signature of its own. It is only ever shown.
+	CWD    string `json:"cwd,omitempty"`
+	CWDSig string `json:"cwd_sig,omitempty"`
 }
 
 // ParseNodeCard returns the card a member computer signed for exactly this
@@ -275,6 +283,10 @@ func ParseNodeCard(secret []byte, peer string, raw json.RawMessage) (NodeCard, b
 			plain[i] = Harness{ID: h.ID, Name: h.Name}
 		}
 		card.Harnesses, card.OptionsSig = plain, ""
+	}
+	// Likewise a directory nobody signed is not shown.
+	if card.CWD == "" || !Verify(secret, card.CWD, CWDLabel(peer), card.TS, card.CWDSig) {
+		card.CWD, card.CWDSig = "", ""
 	}
 	return card, true
 }

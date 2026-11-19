@@ -247,3 +247,39 @@ func TestASettingMustBeABareName(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeCardSaysWhereAPromptRunsWhenNoDirectoryIsChosen(t *testing.T) {
+	signed := func(peer, dir string) json.RawMessage {
+		var c NodeCard
+		_ = json.Unmarshal(card("mirai", "claude"), &c)
+		c.CWD, c.CWDSig = dir, Sign(secret(), dir, CWDLabel(peer), c.TS)
+		raw, _ := json.Marshal(c)
+		return raw
+	}
+	if c, ok := ParseNodeCard(secret(), "mirai", signed("mirai", `C:\Users\me`)); !ok || c.CWD != `C:\Users\me` {
+		t.Errorf("card = %+v, %v", c, ok)
+	}
+	// A directory that computer did not sign is not shown; the rest of the
+	// card still stands.
+	var forged NodeCard
+	_ = json.Unmarshal(signed("mirai", "/home/me"), &forged)
+	forged.CWD = "/somewhere/else"
+	raw, _ := json.Marshal(forged)
+	if c, ok := ParseNodeCard(secret(), "mirai", raw); !ok || c.CWD != "" || !c.Harnesses[0].Takes("model") {
+		t.Errorf("a card with a changed directory: %+v, %v", c, ok)
+	}
+	if c, ok := ParseNodeCard(secret(), "mirai", signed("sibyl", "/home/me")); !ok || c.CWD != "" {
+		t.Errorf("a directory signed for another peer: %+v, %v", c, ok)
+	}
+	// The signature is for this purpose only.
+	_ = json.Unmarshal(card("mirai", "claude"), &forged)
+	forged.CWD, forged.CWDSig = "claude", forged.Sig
+	raw, _ = json.Marshal(forged)
+	if c, ok := ParseNodeCard(secret(), "mirai", raw); !ok || c.CWD != "" {
+		t.Errorf("the list signature passed for a directory: %+v, %v", c, ok)
+	}
+	// A card from a bridge that does not say (geminish 0.6 and older).
+	if c, ok := ParseNodeCard(secret(), "mirai", card("mirai", "claude")); !ok || c.CWD != "" {
+		t.Errorf("an older card: %+v, %v", c, ok)
+	}
+}

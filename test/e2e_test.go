@@ -72,6 +72,7 @@ if [ -n "$said" ]; then
 	exit 0
 fi
 if [ "$prompt" = "fail" ]; then echo "half done"; echo "no credit left" >&2; exit 3; fi
+if [ "$prompt" = "where" ]; then echo "working in $(basename "$(pwd)")"; exit 0; fi
 printf 'in %s got: %s' "$session" "$prompt"
 if [ -n "$model$effort" ]; then printf ' [model=%s effort=%s]' "$model" "$effort"; fi
 printf '\n'
@@ -188,6 +189,8 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	sid := sessions[0].ID
 	expect(out,
 		"● mirai [REMOTE]  Hermes Agent",
+		// No directory was chosen: the bridge said which one it uses then.
+		"new conversation  in "+work+" (default)",
 		"recorded in Honcho for mirai",
 		fmt.Sprintf("in %s got: %s", sid, prompt),
 		fmt.Sprintf("in %s got: second", sid),
@@ -265,4 +268,18 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	if got := len(srv.Messages(sid)); got != before+1 {
 		t.Errorf("the bridge wrote %d message(s) for a forged prompt", got-before-1)
 	}
+
+	// The directory can be chosen until the conversation starts, and is read
+	// the way it would be typed on that computer: a relative one starts at
+	// the bridge's own. Once the conversation exists it stays there.
+	if err := os.Mkdir(filepath.Join(work, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, errs, code = run("/cwd sub\nwhere\n/cwd /etc\n/new\n/cwd nowhere\nwhere\n", "persona", "mirai", "--harness", "hermes")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	expect(out, "directory: sub on mirai", "working in sub",
+		"this conversation runs in sub on mirai and stays there",
+		"The working directory nowhere ("+filepath.Join(work, "nowhere")+") does not exist on mirai.")
 }

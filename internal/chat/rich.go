@@ -128,6 +128,7 @@ func (a *App) sync() {
 		model: oneLine(a.tuning.Model), effort: oneLine(a.tuning.Effort), slow: a.SlowAfter, rang: a.rang}
 	if a.cur != nil {
 		v.persona, v.local, v.reported, v.seen = oneLine(a.cur.Name), a.cur.Local, a.cur.Reported, a.cur.Seen
+		v.home = oneLine(a.cur.Home)
 	}
 	if a.harness != nil {
 		v.harness = oneLine(a.harness.Name)

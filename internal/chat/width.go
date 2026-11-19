@@ -116,6 +116,24 @@ func clipWidth(s string, w int) string {
 	return b.String() + "…"
 }
 
+// clipLeft shortens unstyled s to at most w columns by dropping its start,
+// which "…" then stands for. A path keeps the part that names the place.
+func clipLeft(s string, w int) string {
+	if textWidth(s) <= w {
+		return s
+	}
+	if w <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	used, from := 0, len(runes)
+	for from > 0 && used+runeWidth(runes[from-1]) <= w-1 {
+		from--
+		used += runeWidth(runes[from])
+	}
+	return "…" + string(runes[from:])
+}
+
 // wrapText cuts s, which has no line breaks, into rows of at most w columns.
 // Styling is kept with the text it precedes.
 func wrapText(s string, w int) []string {

@@ -34,6 +34,7 @@ sig = hex( HMAC-SHA256( secret, SHA256(content) || SHA256(label) || decimal(ts) 
 | Output | the message content | `geminus-output:<session>:<turn>:<seq>:<final 0 or 1>:<ok 0 or 1>:<H(native)>` |
 | Node card | harness IDs joined with `,` | `geminus-node:<peer>` |
 | Node card options | one entry per harness, joined with `,`; an entry is the ID and its options joined with `:` (`claude:model:effort,opencode:model`) | `geminus-node-options:<peer>` |
+| Node card directory | the directory | `geminus-node-cwd:<peer>` |
 | Session | the title | `geminus-session:<session>:<persona>:<harness>:<human>:<H(cwd)>[:<H(model)>:<H(effort)>]`, with `ts` = `updated` |
 | Defaults | the defaults as JSON text | `geminus-defaults:<human>` |
 
@@ -55,7 +56,9 @@ metadata  {"kind": "geminus",
                        "pending": true, "updated": 1795083503, "sig": "…"}}
 ```
 
-`harness` and `cwd` are fixed when the session is created: a conversation belongs to one agent program in one directory. An empty `cwd` means the bridge's default directory.
+`harness` and `cwd` are fixed when the session is created: a conversation belongs to one agent program in one directory. Until then the owner can name any directory (`/cwd`, `/new DIR`, `--cwd` in geminus); geminus does not check it, because only that computer knows what is there.
+
+The bridge reads `cwd` the way its owner would type it on that computer: `~` is their home directory, a relative path starts at the bridge's default directory, and an empty `cwd` is the default directory itself. A directory that does not exist fails the prompt with a message naming it. What is signed is the text as typed, not what it resolves to.
 
 `model` and `effort` are the owner's settings for this conversation (`/model`, `/effort` in geminus); either is left out when not set. They are kept here only so that geminus gets them back when the conversation is reopened, from any computer. The bridge does not read them from the session: each prompt carries its own.
 
@@ -99,7 +102,8 @@ metadata  {"geminus": {"v": 1, "role": "output", "turn": "<id of the prompt mess
 ```
 peer metadata  {"geminus_node": {"v": 1, "harnesses": [{"id": "claude", "name": "Claude Code",
                                                          "options": ["model", "effort"]}, …],
-                                 "ts": 1795083000, "sig": "…", "options_sig": "…"}}
+                                 "cwd": "/home/me", "ts": 1795083000,
+                                 "sig": "…", "options_sig": "…", "cwd_sig": "…"}}
 ```
 
 The bridge publishes it when it starts and every five minutes, listing the agent programs found on that computer's `PATH` at that moment. geminus offers exactly these, and shows the card's age as "last seen".
@@ -107,6 +111,8 @@ The bridge publishes it when it starts and every five minutes, listing the agent
 `options` names the settings the bridge can pass to that program for one run. geminus accepts `/model` or `/effort` only for a program that lists it. IDs and options contain neither `:` nor `,`.
 
 `sig` covers the harness IDs, as it has from the start, and `options_sig` the IDs with their options. A geminus older than options verifies `sig` and ignores the rest; a card from a bridge older than options has no `options_sig`, and geminus then offers its programs without settings. Options whose signature does not verify are treated the same way: not there.
+
+`cwd` is the bridge's default directory: where a prompt runs when its conversation names none. geminus only shows it, under the prompt box, and `cwd_sig` signs it so that what is shown is what that computer said. A card without it, or with one that does not verify, is read as before and geminus then says "default directory" without a path.
 
 ## Defaults
 

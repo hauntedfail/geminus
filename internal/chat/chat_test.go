@@ -70,6 +70,8 @@ type world struct {
 	ran     []string
 	// tuned is the model and effort each prompt in ran arrived with.
 	tuned []wire.Tuning
+	// homes is the default directory a persona's bridge reports, if it does.
+	homes map[string]string
 	mu    sync.Mutex
 }
 
@@ -111,6 +113,9 @@ func (w *world) card(peer string, seen time.Time, ids ...string) {
 	}
 	card.Sig = wire.Sign(w.prof.Secret, strings.Join(ids, ","), wire.NodeLabel(peer), card.TS)
 	card.OptionsSig = wire.Sign(w.prof.Secret, wire.CardText(card.Harnesses), wire.OptionsLabel(peer), card.TS)
+	if home := w.homes[peer]; home != "" {
+		card.CWD, card.CWDSig = home, wire.Sign(w.prof.Secret, home, wire.CWDLabel(peer), card.TS)
+	}
 	w.srv.SetPeerMetadata(peer, wire.NodeKey, card)
 }
 

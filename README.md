@@ -90,11 +90,12 @@ geminus says what actually happened: that the prompt is in Honcho, whether the d
 ╭─ mirai · Claude Code ──────────────────────────────────────── REMOTE ─╮
 │ ❯ and then run the whole suite                                        │
 ╰───────────────────────────────────────────────────────────────────────╯
-  ● bridge seen 15s ago · model opus · effort high · in /home/me/project · geminus-mirai-20261119-4f2a9c
-  / commands · Enter send · Alt+Enter new line · ↑ earlier prompts · Ctrl-C twice to quit
+  ● bridge seen 15s ago · in /home/me/project · model opus · effort high
+  geminus-mirai-20261119-4f2a9c
+  / commands · Enter send · Alt+Enter new line · ↑ earlier prompts · Ctrl-C twi…
 ```
 
-The prompt box stays at the bottom. Its top edge names the persona and the harness, with `REMOTE` or `THIS COMPUTER`; the edge is yellow for this computer and red when nothing can be sent. The line under it is the connection (when the bridge last reported, or that Honcho cannot be reached), the model, effort and directory of the conversation, and which conversation it is. The line above it follows the prompt that is waiting: in Honcho, picked up, working, with the time so far.
+The prompt box stays at the bottom. Its top edge names the persona and the harness, with `REMOTE` or `THIS COMPUTER`; the edge is yellow for this computer and red when nothing can be sent. Under it is the connection (when the bridge last reported, or that Honcho cannot be reached), the directory on that computer the conversation runs in, its model and effort, and which conversation it is; what does not fit on one line goes to a second. The directory is always there: the one you chose, or the bridge's own marked `(default)` (a bridge older than geminish 0.7 does not say which that is, and the line then reads `default directory`). The line above it follows the prompt that is waiting: in Honcho, picked up, working, with the time so far.
 
 | Key | |
 |---|---|
@@ -115,6 +116,7 @@ Inside geminus, a line starting with `/` is a command.
 |---|---|
 | `/persona [NAME]` | Pick who to talk to. |
 | `/harness [ID]` | Pick the agent program there. Starts a new conversation. |
+| `/cwd [DIR]` | Show or choose the directory on that computer for the conversation the next prompt starts. `~` and relative paths are read there, relative to the bridge's default directory (geminish 0.7 or later; an older bridge takes a full path only). `/cwd default` goes back to the bridge's own. Once a conversation has started it stays in its directory. |
 | `/new [DIR]` | Start a new conversation, optionally in directory DIR on that computer. |
 | `/sessions` | List your conversations with this persona, most recently used first. |
 | `/resume [ID\|N]` | Reopen a conversation and show it so far: the latest, a number from `/sessions`, an ID, or the unique end of one. |
