@@ -68,7 +68,9 @@ type world struct {
 	offline map[string]bool
 	stop    chan struct{}
 	ran     []string
-	mu      sync.Mutex
+	// tuned is the model and effort each prompt in ran arrived with.
+	tuned []wire.Tuning
+	mu    sync.Mutex
 }
 
 func newWorld(t *testing.T) *world {
@@ -95,14 +97,20 @@ func newWorld(t *testing.T) *world {
 	return w
 }
 
-var names = map[string]string{"hermes": "Hermes Agent", "claude": "Claude Code", "grok": "Grok", "codex": "Codex"}
+var names = map[string]string{"hermes": "Hermes Agent", "claude": "Claude Code", "grok": "Grok", "codex": "Codex",
+	"opencode": "OpenCode"}
+
+// takes is which settings each program can be given, as its bridge reports.
+var takes = map[string][]string{"hermes": {"model", "effort"}, "claude": {"model", "effort"}, "grok": {"model", "effort"},
+	"codex": {"model", "effort"}, "opencode": {"model"}}
 
 func (w *world) card(peer string, seen time.Time, ids ...string) {
 	card := wire.NodeCard{V: 1, TS: seen.Unix()}
 	for _, id := range ids {
-		card.Harnesses = append(card.Harnesses, wire.Harness{ID: id, Name: names[id]})
+		card.Harnesses = append(card.Harnesses, wire.Harness{ID: id, Name: names[id], Options: takes[id]})
 	}
 	card.Sig = wire.Sign(w.prof.Secret, strings.Join(ids, ","), wire.NodeLabel(peer), card.TS)
+	card.OptionsSig = wire.Sign(w.prof.Secret, wire.CardText(card.Harnesses), wire.OptionsLabel(peer), card.TS)
 	w.srv.SetPeerMetadata(peer, wire.NodeKey, card)
 }
 
@@ -153,7 +161,8 @@ func (w *world) bridge(persona string) {
 				}
 				harness, _ := info["harness"].(string)
 				cwd, _ := info["cwd"].(string)
-				label := wire.PromptLabel(s.ID, persona, harness, m.PeerID, meta.Nonce, cwd)
+				tuning := wire.Tuning{Model: meta.Model, Effort: meta.Effort}
+				label := wire.PromptLabel(s.ID, persona, harness, m.PeerID, meta.Nonce, cwd, tuning)
 				state := func(v, detail string) {
 					meta.State, meta.Detail = v, detail
 					w.srv.SetMetadata(s.ID, m.ID, map[string]any{wire.Kind: meta})
@@ -165,6 +174,7 @@ func (w *world) bridge(persona string) {
 				state(wire.StateRunning, "")
 				w.mu.Lock()
 				w.ran = append(w.ran, persona+"/"+harness+": "+m.Content)
+				w.tuned = append(w.tuned, tuning)
 				answer := w.answer
 				w.mu.Unlock()
 				pieces, ok := []string{"echo: " + m.Content}, true
@@ -522,12 +532,85 @@ func TestFailedAndRefusedTurnsSayWhy(t *testing.T) {
 	}
 }
 
-func TestSlashLinesForTheAgentNeedTwoSlashes(t *testing.T) {
+// The agent program has slash commands of its own. geminus keeps only the
+// ones it knows and hands every other slash line to the agent as typed.
+func TestSlashLinesGeminusDoesNotKnowGoToTheAgent(t *testing.T) {
 	w := newWorld(t)
-	w.talk([]string{"persona", "sibyl"}, [2]string{"//model", "echo: /model"}, [2]string{"/zzz", "unknown command /zzz"},
-		[2]string{"/help", "geminus commands"})
-	if len(w.ran) != 1 || w.ran[0] != "sibyl/hermes: /model" {
-		t.Errorf("ran = %v; a mistyped command must not reach the agent", w.ran)
+	w.talk([]string{"persona", "sibyl"}, [2]string{"/compact keep the plan", "echo: /compact keep the plan"},
+		[2]string{"/help", "geminus commands"}, [2]string{"//help", "echo: /help"})
+	want := []string{"sibyl/hermes: /compact keep the plan", "sibyl/hermes: /help"}
+	if strings.Join(w.ran, "|") != strings.Join(want, "|") {
+		t.Errorf("ran = %v, want %v", w.ran, want)
+	}
+	w.expectNot("unknown command")
+}
+
+func TestModelAndEffortBelongToOneConversation(t *testing.T) {
+	w := newWorld(t)
+	w.talk([]string{"persona", "chrome", "--harness", "claude"},
+		[2]string{"/model", "model: Claude Code's default"},
+		[2]string{"/model opus", "model: opus"},
+		[2]string{"/effort high", "effort: high"},
+		[2]string{"one", "echo: one"},
+		[2]string{"/status", "model opus  effort high"},
+		[2]string{"/model default", "model: Claude Code's default"},
+		[2]string{"two", "echo: two"},
+		[2]string{"/model sonnet", "model: sonnet"},
+		[2]string{"/new", "new conversation"},
+		[2]string{"three", "echo: three"})
+	want := []wire.Tuning{{Model: "opus", Effort: "high"}, {Effort: "high"}, {}}
+	if len(w.tuned) != 3 || w.tuned[0] != want[0] || w.tuned[1] != want[1] || w.tuned[2] != want[2] {
+		t.Errorf("prompts ran with %+v, want %+v", w.tuned, want)
+	}
+	// Nothing about the model became a default, here or in the program.
+	if got := w.defaults(); got.Persona != "" || len(got.Personas) != 0 {
+		t.Errorf("defaults = %+v", got)
+	}
+
+	// The setting lives in the conversation: another geminus that reopens it
+	// (the first one, where sonnet was set last) gets it back.
+	w.newApp()
+	w.talk([]string{"persona", "chrome", "--resume", "2"}, [2]string{"four", "echo: four"})
+	if last := w.tuned[len(w.tuned)-1]; last != (wire.Tuning{Model: "sonnet", Effort: "high"}) {
+		t.Errorf("the reopened conversation ran with %+v", last)
+	}
+	w.expect("model sonnet  effort high")
+}
+
+// A bridge from before settings existed still runs plain prompts, signed
+// the way they always were; it just cannot be given a model.
+func TestAnOlderBridgeStillWorksButTakesNoSettings(t *testing.T) {
+	w := newWorld(t)
+	old := wire.NodeCard{V: 1, TS: now.Unix(), Harnesses: []wire.Harness{{ID: "hermes", Name: "Hermes Agent"}}}
+	old.Sig = wire.Sign(w.prof.Secret, "hermes", wire.NodeLabel("sibyl"), old.TS) // as geminish 0.5 signs it
+	w.srv.SetPeerMetadata("sibyl", wire.NodeKey, old)
+
+	w.talk([]string{"persona", "sibyl"}, [2]string{"/model opus", "is too old to pass a model"}, [2]string{"hello", "echo: hello"})
+	if len(w.tuned) != 1 || w.tuned[0] != (wire.Tuning{}) {
+		t.Errorf("prompts ran with %+v", w.tuned)
+	}
+	// The prompt's signature is the one a 0.5 bridge checks: no settings part.
+	sid := w.srv.Sessions()[0].ID
+	m := w.srv.Messages(sid)[0]
+	var meta wire.Message
+	raw, _ := json.Marshal(m.Metadata[wire.Kind])
+	_ = json.Unmarshal(raw, &meta)
+	plain := "geminus-prompt:" + sid + ":sibyl:hermes:h1karu:" + meta.Nonce + ":e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	if !wire.Verify(w.prof.Secret, "hello", plain, meta.TS, meta.Sig) {
+		t.Error("a prompt without settings is not signed in the form older bridges accept")
+	}
+}
+
+func TestASettingTheProgramCannotTakeOrThatIsNotANameIsNotSent(t *testing.T) {
+	w := newWorld(t)
+	w.card("chrome", now.Add(-5*time.Second), "hermes", "claude", "grok", "opencode")
+	w.talk([]string{"persona", "chrome", "--harness", "opencode"},
+		[2]string{"/effort high", "OpenCode takes no effort setting"},
+		[2]string{"/model --dangerously-skip-permissions", "not a usable model name"},
+		[2]string{"/model a/b#high", "model: a/b#high"},
+		[2]string{"go", "echo: go"})
+	if len(w.tuned) != 1 || w.tuned[0] != (wire.Tuning{Model: "a/b#high"}) {
+		t.Errorf("prompts ran with %+v", w.tuned)
 	}
 }
 
@@ -543,7 +626,7 @@ func TestPromptTypedOnAnotherComputerShowsUpHere(t *testing.T) {
 	sid := w.srv.Sessions()[0].ID
 	info := asMap(w.srv.Sessions()[0].Metadata[wire.Kind])
 	meta := wire.Message{V: 1, Role: wire.RolePrompt, Nonce: "n2", TS: now.Unix(), State: wire.StateQueued}
-	meta.Sig = wire.Sign(w.prof.Secret, "from mirai", wire.PromptLabel(sid, "sibyl", "hermes", "h1karu", "n2", ""), meta.TS)
+	meta.Sig = wire.Sign(w.prof.Secret, "from mirai", wire.PromptLabel(sid, "sibyl", "hermes", "h1karu", "n2", "", wire.Tuning{}), meta.TS)
 	w.srv.Append(sid, "h1karu", "from mirai", map[string]any{wire.Kind: meta})
 	info["pending"] = true
 	w.srv.SetMetadata(sid, "", map[string]any{"kind": wire.Kind, wire.Kind: info})

@@ -95,18 +95,7 @@ func (a *App) find(name string) (Persona, bool) {
 }
 
 // ago describes how long ago t was.
-func (a *App) ago(t time.Time) string {
-	d := a.Now().Sub(t)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", max(int(d.Seconds()), 0))
-	case d < time.Hour:
-		return fmt.Sprintf("%d min ago", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%d h ago", int(d.Hours()))
-	}
-	return fmt.Sprintf("%d days ago", int(d.Hours()/24))
-}
+func (a *App) ago(t time.Time) string { return since(a.Now().Sub(t)) }
 
 // offers describes what a persona's computer reported.
 func (a *App) offers(p Persona) string {
@@ -162,7 +151,7 @@ func (a *App) selectPersona(name string) error {
 	if !ok {
 		return fmt.Errorf("no persona named %q in Honcho", name)
 	}
-	a.cur, a.harness, a.session, a.title = &p, nil, "", ""
+	a.cur, a.harness, a.session, a.title, a.tuning = &p, nil, "", "", wire.Tuning{}
 	a.cwd = a.defaults.Personas[p.Name].CWD
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 	return nil
@@ -214,7 +203,7 @@ func (a *App) useHarness(id string) error {
 	for _, h := range p.Harnesses {
 		if h.ID == id {
 			h := h
-			a.harness, a.session, a.title = &h, "", ""
+			a.harness, a.session, a.title, a.tuning = &h, "", "", wire.Tuning{}
 			a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 			return nil
 		}
@@ -246,5 +235,12 @@ func (a *App) status() string {
 	if a.cwd != "" {
 		where = "  in " + oneLine(a.cwd)
 	}
-	return fmt.Sprintf("● %s  %s  %s  %s%s", who(p), oneLine(a.harness.Name), bridge, conversation, where)
+	tuned := ""
+	if a.tuning.Model != "" {
+		tuned += "  model " + oneLine(a.tuning.Model)
+	}
+	if a.tuning.Effort != "" {
+		tuned += "  effort " + oneLine(a.tuning.Effort)
+	}
+	return fmt.Sprintf("● %s  %s%s  %s  %s%s", who(p), oneLine(a.harness.Name), tuned, bridge, conversation, where)
 }

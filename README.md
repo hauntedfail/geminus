@@ -50,7 +50,7 @@ go build -o geminus ./cmd/geminus
 
 geminus needs nothing set up. It reads two files that a computer with Hermes and geminish already has, and writes neither: `~/.hermes/honcho.json` (the Honcho connection and who you are) and `~/.hermes/geminise.json` (the group's members and signing secret). `HERMES_HOME` moves `~/.hermes`.
 
-A computer can be talked to once geminish 0.5 or later runs there.
+A computer can be talked to once geminish 0.5 or later runs there. Setting a model or an effort for it needs geminish 0.6 or later there.
 
 ## Personas and harnesses
 
@@ -60,14 +60,14 @@ A **harness** is an agent program on the persona's computer. The list is not fix
 
 The bridge finds and starts programs in the environment of that computer's owner (their interactive login shell), so the copy that runs is the one they would get by typing the name there.
 
-| Harness | Run by the bridge as | Checked |
-|---|---|---|
-| `hermes` | `hermes chat -Q --continue <conversation>` | Two-turn conversations through Honcho |
-| `claude` | `claude -p --session-id` / `--resume` | Two-turn conversations through Honcho |
-| `codex` | `codex exec --json` / `codex exec resume` | Two-turn conversations through Honcho |
-| `grok` | `grok -p … --output-format json` / `-r` | Two-turn conversations through Honcho |
-| `pi` | `pi -p --session-id` | Not checked: no API key was configured where it was tried |
-| `opencode` | `opencode run -s` | Not checked: the account had no credit where it was tried |
+| Harness | Run by the bridge as | Checked | `/model`, `/effort` checked |
+|---|---|---|---|
+| `hermes` | `hermes chat -Q --continue <conversation>` | Two-turn conversations through Honcho, also to a second computer | Effort set and cleared; Hermes's own configuration unchanged afterwards. Model: only that Hermes accepts the line |
+| `claude` | `claude -p --session-id` / `--resume` | Two-turn conversations through Honcho; its own `/context` sent through geminus | Model and effort |
+| `codex` | `codex exec --json` / `codex exec resume` | Two-turn conversations through Honcho | Effort |
+| `grok` | `grok -p … --output-format json` / `-r` | Two-turn conversations through Honcho | Effort |
+| `pi` | `pi -p --session-id` | Not checked: no API key was configured where it was tried | Not checked |
+| `opencode` | `opencode run -s` | Not checked: the account had no credit where it was tried | Not checked |
 
 Every harness is driven through its own non-interactive, session-continuing mode. Nothing has to be installed beside it, and the bridge passes no option that loosens the program's permissions unless that computer's `geminise.json` adds one.
 
@@ -75,9 +75,37 @@ Every harness is driven through its own non-interactive, session-continuing mode
 
 A conversation is one Honcho session between you and the persona, bound to one harness and one directory on that computer. It is created by your first prompt.
 
-**Answers are asynchronous.** Sending returns as soon as Honcho has the prompt. geminus then shows the answer as pieces arrive. Ctrl-C stops watching, not the agent: the rest appears at the prompt when it arrives, and it is there when you reopen the conversation, from this computer or another. If the persona's computer is off, the prompt waits in Honcho and runs when its bridge is back (within seven days).
+**Answers are asynchronous.** Sending returns as soon as Honcho has the prompt, and the box takes the next prompt at once; answers scroll above it as their pieces arrive. Leaving geminus does not stop an agent: the answer is there when you reopen the conversation, from this computer or another. If the persona's computer is off, the prompt waits in Honcho and runs when its bridge is back (within seven days).
 
-geminus says what actually happened: `recorded in Honcho`, whether the doorbell rang, when the agent started working, and, if nothing picks the prompt up, that it has not been picked up and when the bridge was last seen.
+geminus says what actually happened: that the prompt is in Honcho, whether the doorbell rang, when the agent started working, and, if nothing picks the prompt up, that it has not been picked up and when the bridge was last seen.
+
+## The screen
+
+```
+◆ geminus 0.4.0-dev · you · Honcho workspace home
+
+❯ fix the failing test in the parser
+
+ ⠹ Claude Code on mirai is working… 12s
+╭─ mirai · Claude Code ──────────────────────────────────────── REMOTE ─╮
+│ ❯ and then run the whole suite                                        │
+╰───────────────────────────────────────────────────────────────────────╯
+  ● bridge seen 15s ago · model opus · effort high · in /home/me/project · geminus-mirai-20261119-4f2a9c
+  / commands · Enter send · Alt+Enter new line · ↑ earlier prompts · Ctrl-C twice to quit
+```
+
+The prompt box stays at the bottom. Its top edge names the persona and the harness, with `REMOTE` or `THIS COMPUTER`; the edge is yellow for this computer and red when nothing can be sent. The line under it is the connection (when the bridge last reported, or that Honcho cannot be reached), the model, effort and directory of the conversation, and which conversation it is. The line above it follows the prompt that is waiting: in Honcho, picked up, working, with the time so far.
+
+| Key | |
+|---|---|
+| Enter | Send. |
+| Alt+Enter, Shift+Enter, Ctrl-J, or `\` before Enter | New line. Pasted text keeps its line breaks. |
+| Tab | Complete a geminus command; typing `/` lists them. |
+| ↑ ↓ | Move between lines; from the first or last line, earlier and later prompts of this run. |
+| Ctrl-A Ctrl-E Ctrl-U Ctrl-K Ctrl-W, Alt+← → | Line editing. |
+| Ctrl-C | Clear the box; cancel a question; on an empty box, twice to quit. Ctrl-D on an empty box quits. |
+
+When geminus is not on a terminal (piped input, `TERM=dumb`) it works line by line instead: one prompt per line, and it waits for each answer.
 
 ## Commands
 
@@ -90,14 +118,19 @@ Inside geminus, a line starting with `/` is a command.
 | `/new [DIR]` | Start a new conversation, optionally in directory DIR on that computer. |
 | `/sessions` | List your conversations with this persona, most recently used first. |
 | `/resume [ID\|N]` | Reopen a conversation and show it so far: the latest, a number from `/sessions`, an ID, or the unique end of one. |
+| `/model [NAME]` | Model for this conversation. `/model default` goes back to the agent program's own. |
+| `/effort [LEVEL]` | Effort for this conversation. `/effort default` goes back. |
 | `/status` | Show persona, harness, bridge and conversation. |
 | `/default …` | Show or change your defaults (below). |
 | `/help`, `/quit` | |
-| `//TEXT` | Send a line that starts with a slash to the agent (for the agent program's own slash commands). |
 
-A single-slash line geminus does not know is reported and not sent, so a typo never reaches an agent.
+**Every other slash line goes to the agent as typed**, so the agent program's own slash commands work through geminus (`/compact`, `/context`, a skill). To send one that geminus also has, double the slash: `//help` sends `/help`. While a slash line is being typed, the line under the box says which of the two it is.
 
-At the prompt, Ctrl-C quits.
+### Model and effort
+
+`/model` and `/effort` belong to one conversation. The value travels with each prompt, inside what you sign, and the bridge gives it to the agent program for that conversation only: as an option of the run (`claude --model … --effort …`, `codex exec -m … -c model_reasoning_effort="…"`, `grok -m … --reasoning-effort …`), or, for Hermes, with Hermes's own `/model …` and `/reasoning …` inside the session. Nothing is written to the program's configuration: its default, and every other session of it, stay as they are. A new conversation starts with the program's own settings again, and a reopened one gets back what was set for it.
+
+geminus does not know which models or levels a program has. It passes the name through, and the program's own error comes back if it does not accept it. A program that has no such option (the list comes from the bridge) is refused before anything is sent.
 
 ## Defaults
 

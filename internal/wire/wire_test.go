@@ -23,14 +23,19 @@ func TestSignaturesAgreeWithTheBridge(t *testing.T) {
 		ts             int64
 		want           string
 	}{
-		{"hello 日本語", PromptLabel("sess", "mirai", "claude", "h1karu", "n1", "/home/me/project"), 1795000000,
-			"dd4d6b5ee2e6b602decc820fc986e36b87e22079f181ac4da53ae686d3eef4cc"},
+		{"hello 日本語", PromptLabel("sess", "mirai", "claude", "h1karu", "n1", "/home/me/project", Tuning{"opus", "high"}), 1795000000,
+			"5a1781f2c08ee07237079aa3deb30d7d816241fe97dac7ac0b6eb903af2ef2f1"},
+		{"hello 日本語", PromptLabel("sess", "mirai", "claude", "h1karu", "n1", "/home/me/project", Tuning{}), 1795000000,
+			"dd4d6b5ee2e6b602decc820fc986e36b87e22079f181ac4da53ae686d3eef4cc"}, // as geminish 0.5 signs it
 		{"out", OutputLabel("sess", "t1", 2, true, false, "native-7"), 1795000001,
 			"e58aa5fc372066fa1e61ee6976f21f846df5c9ae0a78b98ddeb32aaeef7c6eba"},
 		{"out", OutputLabel("sess", "t1", 1, false, true, ""), 1795000001,
 			"feb5333a3f863f03101a38f5c1ec535f300961a6e3222db2dd0bcab431b68127"},
 		{"hermes,claude", NodeLabel("mirai"), 1795000002,
 			"7e68ce915739878d1586115f55e92f545df07cf7a1451889c2ef40bd7e8e7a92"},
+		{CardText([]Harness{{ID: "hermes", Options: []string{"model", "effort"}}, {ID: "claude", Options: []string{"model", "effort"}},
+			{ID: "opencode", Options: []string{"model"}}}), OptionsLabel("mirai"), 1795000002,
+			"5cbeccf080d31c381eab5d0fb27ea0096b2ae772026ec78924ceea150cdad14b"},
 	} {
 		if got := Sign(secret(), tc.content, tc.label, tc.ts); got != tc.want {
 			t.Errorf("Sign(%q, %q) = %s, want %s", tc.content, tc.label, got, tc.want)
@@ -42,9 +47,11 @@ func TestSignaturesAgreeWithTheBridge(t *testing.T) {
 }
 
 func TestASignatureIsGoodForOnePurposeOnly(t *testing.T) {
+	tuned := Tuning{Model: "opus", Effort: "high"}
 	label := func(session, persona, harness, nonce, cwd string) string {
-		return PromptLabel(session, persona, harness, "h1karu", nonce, cwd)
+		return PromptLabel(session, persona, harness, "h1karu", nonce, cwd, tuned)
 	}
+	with := func(t Tuning) string { return PromptLabel("s1", "mirai", "claude", "h1karu", "n", "/work", t) }
 	sig := Sign(secret(), "deploy", label("s1", "mirai", "claude", "n", "/work"), 100)
 	for name, ok := range map[string]bool{
 		"other conversation": Verify(secret(), "deploy", label("s2", "mirai", "claude", "n", "/work"), 100, sig),
@@ -52,6 +59,11 @@ func TestASignatureIsGoodForOnePurposeOnly(t *testing.T) {
 		"other harness":      Verify(secret(), "deploy", label("s1", "mirai", "codex", "n", "/work"), 100, sig),
 		"other nonce":        Verify(secret(), "deploy", label("s1", "mirai", "claude", "m", "/work"), 100, sig),
 		"other directory":    Verify(secret(), "deploy", label("s1", "mirai", "claude", "n", "/"), 100, sig),
+		"other model":        Verify(secret(), "deploy", with(Tuning{Model: "haiku", Effort: "high"}), 100, sig),
+		"other effort":       Verify(secret(), "deploy", with(Tuning{Model: "opus", Effort: "max"}), 100, sig),
+		"no model":           Verify(secret(), "deploy", with(Tuning{Effort: "high"}), 100, sig),
+		"settings swapped":   Verify(secret(), "deploy", with(Tuning{Model: "high", Effort: "opus"}), 100, sig),
+		"settings taken off": Verify(secret(), "deploy", with(Tuning{}), 100, sig),
 		"other text":         Verify(secret(), "deploy!", label("s1", "mirai", "claude", "n", "/work"), 100, sig),
 		"other time":         Verify(secret(), "deploy", label("s1", "mirai", "claude", "n", "/work"), 101, sig),
 		"as output":          Verify(secret(), "deploy", OutputLabel("s1", "n", 1, true, true, ""), 100, sig),
@@ -97,7 +109,7 @@ func TestDefaultsMustBeSignedForTheirOwner(t *testing.T) {
 
 func TestSessionDescriptionMustBeSigned(t *testing.T) {
 	s := SealSession(secret(), "geminus-mirai-1", Session{V: 1, Human: "h1karu", Persona: "mirai", Harness: "claude",
-		CWD: "/work", Title: "fix the build", Updated: 500})
+		CWD: "/work", Model: "opus", Effort: "high", Title: "fix the build", Updated: 500})
 	if !VerifySession(secret(), "geminus-mirai-1", s) {
 		t.Fatal("a sealed description does not verify")
 	}
@@ -111,6 +123,8 @@ func TestSessionDescriptionMustBeSigned(t *testing.T) {
 	for name, bad := range map[string]Session{
 		"other directory": change(func(c *Session) { c.CWD = "/" }),
 		"other harness":   change(func(c *Session) { c.Harness = "codex" }),
+		"other model":     change(func(c *Session) { c.Model = "haiku" }),
+		"other effort":    change(func(c *Session) { c.Effort = "" }),
 		"other persona":   change(func(c *Session) { c.Persona = "sibyl" }),
 		"other owner":     change(func(c *Session) { c.Human = "someone" }),
 		"other title":     change(func(c *Session) { c.Title = "x" }),
@@ -128,15 +142,11 @@ func TestSessionDescriptionMustBeSigned(t *testing.T) {
 
 func card(peer string, ids ...string) json.RawMessage {
 	c := NodeCard{V: 1, TS: 500}
-	joined := ""
-	for i, id := range ids {
-		c.Harnesses = append(c.Harnesses, Harness{ID: id, Name: "Name of " + id})
-		if i > 0 {
-			joined += ","
-		}
-		joined += id
+	for _, id := range ids {
+		c.Harnesses = append(c.Harnesses, Harness{ID: id, Name: "Name of " + id, Options: []string{"model"}})
 	}
-	c.Sig = Sign(secret(), joined, NodeLabel(peer), c.TS)
+	c.Sig = Sign(secret(), strings.Join(ids, ","), NodeLabel(peer), c.TS)
+	c.OptionsSig = Sign(secret(), CardText(c.Harnesses), OptionsLabel(peer), c.TS)
 	raw, _ := json.Marshal(c)
 	return raw
 }
@@ -156,6 +166,31 @@ func TestNodeCardMustBeSignedForItsOwnPeer(t *testing.T) {
 	raw, _ := json.Marshal(forged)
 	if _, ok := ParseNodeCard(secret(), "mirai", raw); ok {
 		t.Error("a card with an added harness was accepted")
+	}
+	// Or claims that a program takes a setting its computer did not list:
+	// the programs are still believed, the options are not.
+	_ = json.Unmarshal(card("mirai", "claude"), &forged)
+	forged.Harnesses[0].Options = []string{"model", "effort"}
+	raw, _ = json.Marshal(forged)
+	if c, ok := ParseNodeCard(secret(), "mirai", raw); !ok || len(c.Harnesses[0].Options) != 0 {
+		t.Errorf("a card with an added option: %+v, %v", c, ok)
+	}
+	// A card from a bridge older than options (geminish 0.5) is read as before.
+	old := NodeCard{V: 1, TS: 500, Harnesses: []Harness{{ID: "hermes", Name: "Hermes Agent"}}}
+	old.Sig = Sign(secret(), "hermes", NodeLabel("mirai"), old.TS)
+	raw, _ = json.Marshal(old)
+	if c, ok := ParseNodeCard(secret(), "mirai", raw); !ok || c.Harnesses[0].ID != "hermes" || c.Harnesses[0].Takes("model") {
+		t.Errorf("an older card: %+v, %v", c, ok)
+	}
+	// An option cannot be folded into an ID.
+	_ = json.Unmarshal(card("mirai", "claude"), &forged)
+	forged.Harnesses[0] = Harness{ID: "claude:model"}
+	raw, _ = json.Marshal(forged)
+	if _, ok := ParseNodeCard(secret(), "mirai", raw); ok {
+		t.Error("a card with an option folded into the ID was accepted")
+	}
+	if !got.Harnesses[0].Takes("model") || got.Harnesses[0].Takes("effort") {
+		t.Errorf("options of %+v", got.Harnesses[0])
 	}
 	for _, raw := range []string{"", "null", "{}", `"x"`} {
 		if _, ok := ParseNodeCard(secret(), "mirai", json.RawMessage(raw)); ok {
@@ -185,6 +220,30 @@ func TestDoorbellEndpointMustBeSignedAndMozillas(t *testing.T) {
 	} {
 		if _, ok := Endpoint(secret(), "mirai", raw); ok {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// The same values the bridge accepts and refuses (geminish tests/test_bridge.py).
+func TestASettingMustBeABareName(t *testing.T) {
+	for _, good := range []string{"", "opus", "claude-opus-5-5", "provider/some-model:v1.5", "a/b#high", "sonnet[1m]", "gpt-5.2"} {
+		if !ValidSetting("model", good) {
+			t.Errorf("model %q refused", good)
+		}
+	}
+	for _, bad := range []string{"--dangerously-skip-permissions", "-x", "a b", "opus\n--yolo", strings.Repeat("x", 200), "モデル", "a\"b"} {
+		if ValidSetting("model", bad) {
+			t.Errorf("model %q accepted", bad)
+		}
+	}
+	for _, good := range []string{"", "low", "xhigh", "none", "very_high", "max-1"} {
+		if !ValidSetting("effort", good) {
+			t.Errorf("effort %q refused", good)
+		}
+	}
+	for _, bad := range []string{"--help", "high\"\nsandbox_mode=\"danger-full-access", "a=b", "a/b", "a.b", strings.Repeat("x", 40)} {
+		if ValidSetting("effort", bad) {
+			t.Errorf("effort %q accepted", bad)
 		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/hauntedfail/geminus/internal/honcho"
@@ -48,14 +49,21 @@ const commandHelp = `geminus commands
   /new [DIR]             start a new conversation (optionally in DIR there)
   /sessions              list your conversations with this persona
   /resume [ID|N]         reopen a conversation (default: the latest)
+  /model [NAME]          model for this conversation (/model default: the
+                         agent program's own choice)
+  /effort [LEVEL]        effort for this conversation (/effort default)
   /status                show persona, harness, bridge and conversation
   /default               show your defaults; /default save keeps the current
                          persona, harness and directory;
                          /default persona|harness|cwd VALUE (or none)
   /quit                  leave geminus
-  //TEXT                 send a line that starts with a slash to the agent
-  While an answer is arriving, Ctrl-C stops watching it; the agent keeps
-  working and the rest appears when it arrives. At the prompt, Ctrl-C quits.`
+  /anything else         goes to the agent as typed, for the agent program's
+                         own slash commands; //help sends /help
+  On a terminal the box takes the next prompt while an answer is still
+  arriving. Enter sends, Alt+Enter (or a backslash before Enter) starts a
+  new line, Tab completes a geminus command, the up arrow brings back earlier
+  prompts, Ctrl-C clears the box and pressed twice quits. Quitting never
+  stops an agent: the answer stays in Honcho.`
 
 const (
 	// watchEvery is how often Honcho is read while an answer is expected.
@@ -96,18 +104,33 @@ type App struct {
 	cwd, session string
 	// title is the open conversation's title.
 	title string
+	// tuning is the model and effort set for the open conversation (or for
+	// the one the next prompt starts). It is never a default: a new
+	// conversation starts with the agent program's own settings.
+	tuning wire.Tuning
 	// shown holds the messages of the open conversation already on screen.
 	shown map[string]bool
 	// waiting holds the prompts whose answer has not ended yet, and state
 	// the last state seen for each.
 	waiting map[string]bool
 	state   map[string]string
+
+	// live is the prompt box at the bottom of a terminal; nil when geminus
+	// runs line by line. The rest is only used with it: the question the box
+	// is asking, when each waiting prompt was sent, whether the doorbell
+	// rang for the last one, and why Honcho could not be read, if so.
+	live   *live
+	asking string
+	sentAt map[string]time.Time
+	rang   bool
+	link   string
 }
 
 // Run is the geminus command. It returns the process exit code.
 func Run(ctx context.Context, args []string, in io.Reader, out, errw io.Writer) int {
 	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
+	// SIGTERM too: the terminal has to be put back before leaving.
+	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(interrupt)
 
 	req := parseArgs(args)
@@ -212,8 +235,17 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		a.showPersonas()
 		return 0
 	}
-	a.lines = readLines(in)
-	a.echo = !isTerminal(in)
+	// On a terminal: the prompt box. Otherwise line by line.
+	stop := func() {}
+	if a.live == nil {
+		if stopLive, ok := a.startLive(in); ok {
+			stop = stopLive
+			defer stop()
+		} else {
+			a.lines = readLines(in)
+			a.echo = !isTerminal(in)
+		}
+	}
 
 	name := req.persona
 	explicit := name != ""
@@ -242,10 +274,16 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		if explicit {
 			// Asked for one persona on the command line: either that
 			// conversation opens or the command fails.
+			stop()
 			fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
 			return 1
 		}
 		a.Out.line(a.Out.fail("✗ " + err.Error()))
+	}
+	if a.live != nil {
+		// The box and the line under it say where things stand.
+		a.loopLive()
+		return 0
 	}
 	a.Out.line(a.status())
 	a.loop()
@@ -273,6 +311,9 @@ func (a *App) readLine() (string, bool) {
 			a.Out.line("")
 			return "", false
 		}
+		if line == cancelled {
+			return "", false
+		}
 		a.entered(line)
 		return strings.TrimSpace(line), true
 	case <-a.interrupt:
@@ -283,6 +324,12 @@ func (a *App) readLine() (string, bool) {
 
 // entered accounts for a line of input on the screen.
 func (a *App) entered(line string) {
+	if a.live != nil {
+		// The box was cleared when the line was entered: say what was
+		// answered.
+		a.Out.line(a.Out.dim(a.asking+" ❯ ") + sanitize(line))
+		return
+	}
 	if a.echo {
 		a.Out.write(line + "\n")
 		return

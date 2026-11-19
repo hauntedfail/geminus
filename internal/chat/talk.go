@@ -31,7 +31,8 @@ func randomHex(n int) (string, error) {
 // meta is the signed description of the conversation with the given ID.
 func (a *App) meta(id, title string, pending bool) wire.Session {
 	return wire.SealSession(a.Profile.Secret, id, wire.Session{V: 1, Human: a.Profile.Human, Persona: a.cur.Name,
-		Harness: a.harness.ID, CWD: a.cwd, Title: title, Pending: pending, Updated: a.Now().Unix()})
+		Harness: a.harness.ID, CWD: a.cwd, Model: a.tuning.Model, Effort: a.tuning.Effort, Title: title,
+		Pending: pending, Updated: a.Now().Unix()})
 }
 
 func parseMeta(m honcho.Message) (wire.Message, bool) {
@@ -75,9 +76,9 @@ func (a *App) say(text string) error {
 		return err
 	}
 	ts := a.Now().Unix()
-	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, nonce, a.cwd)
+	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, nonce, a.cwd, a.tuning)
 	prompt := wire.Message{V: 1, Role: wire.RolePrompt, TS: ts, Nonce: nonce, State: wire.StateQueued,
-		Sig: wire.Sign(a.Profile.Secret, text, label, ts)}
+		Model: a.tuning.Model, Effort: a.tuning.Effort, Sig: wire.Sign(a.Profile.Secret, text, label, ts)}
 	stored, err := a.Honcho.Post(ctx, a.session, a.Profile.Human, text, map[string]any{wire.Kind: prompt})
 	if err != nil {
 		return fmt.Errorf("nothing was sent: %w", err)
@@ -88,9 +89,17 @@ func (a *App) say(text string) error {
 	if err := a.Honcho.SetSessionMetadata(ctx, a.session, wire.SessionMetadata(a.meta(a.session, a.title, true))); err != nil {
 		return fmt.Errorf("the prompt is stored but could not be marked for %s to pick up (%w); send it again", a.cur.Name, err)
 	}
+	a.state[stored.ID] = wire.StateQueued
 	note := "recorded in Honcho for " + a.cur.Name
-	if a.cur.endpoint != "" && wire.Ring(a.ctx, a.Honcho.HTTP(), a.cur.endpoint) == nil {
+	rang := a.cur.endpoint != "" && wire.Ring(a.ctx, a.Honcho.HTTP(), a.cur.endpoint) == nil
+	if rang {
 		note += " · doorbell rung"
+	}
+	if a.live != nil {
+		// The line above the box says how far the prompt got, and the box
+		// takes the next one meanwhile: the answer shows when it arrives.
+		a.sentAt[stored.ID], a.rang = a.Now(), rang
+		return nil
 	}
 	a.Out.line(a.Out.dim(note))
 	return a.watch(stored.ID)
@@ -168,8 +177,10 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 			a.state[m.ID] = meta.State
 			switch meta.State {
 			case wire.StateRunning:
-				a.Out.line(a.Out.dim(fmt.Sprintf("%s · %s is working…", a.cur.Name, a.harness.Name)))
-				printed = true
+				if a.live == nil { // with the box, the line above it says so
+					a.Out.line(a.Out.dim(fmt.Sprintf("%s · %s is working…", a.cur.Name, a.harness.Name)))
+					printed = true
+				}
 			case wire.StateRefused:
 				a.Out.line(a.Out.fail(fmt.Sprintf("✗ %s refused the prompt: %s", a.cur.Name, oneLine(meta.Detail))))
 				delete(a.waiting, m.ID)
@@ -205,9 +216,10 @@ func (a *App) genuine(m honcho.Message, meta wire.Message) bool {
 }
 
 // own reports whether a prompt message was signed by the owner for this
-// conversation, harness and directory.
+// conversation, harness and directory, with the settings it carries.
 func (a *App) own(m honcho.Message, meta wire.Message) bool {
-	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, meta.Nonce, a.cwd)
+	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, meta.Nonce, a.cwd,
+		wire.Tuning{Model: meta.Model, Effort: meta.Effort})
 	return m.PeerID == a.Profile.Human && wire.Verify(a.Profile.Secret, m.Content, label, meta.TS, meta.Sig)
 }
 
@@ -218,7 +230,9 @@ func (a *App) show(content string, meta wire.Message) {
 		return
 	}
 	a.Out.write(sanitize(content))
-	if meta.Final {
+	if meta.Final && a.live != nil {
+		a.Out.endLine() // the box keeps its own distance
+	} else if meta.Final {
 		a.Out.line("")
 	}
 }
@@ -355,6 +369,7 @@ func (a *App) resume(want string) error {
 		}
 	}
 	a.harness, a.session, a.cwd, a.title = &harness, picked.ID, info.CWD, info.Title
+	a.tuning = wire.Tuning{Model: info.Model, Effort: info.Effort}
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 
 	// The description was verified when the conversations were listed. As a
@@ -371,7 +386,7 @@ func (a *App) resume(want string) error {
 		}
 	}
 	if prompts > 0 && verified == 0 {
-		a.harness, a.session, a.cwd, a.title = nil, "", "", ""
+		a.harness, a.session, a.cwd, a.title, a.tuning = nil, "", "", "", wire.Tuning{}
 		return fmt.Errorf("conversation %s is not reopened: its harness or directory in Honcho does not match what its prompts were signed for", picked.ID)
 	}
 

@@ -16,8 +16,8 @@ func (a *App) handle(line string) error {
 	if !strings.HasPrefix(line, "/") {
 		return a.say(line)
 	}
-	// "//text" sends a line that starts with a slash to the agent, for the
-	// agent program's own slash commands.
+	// "//text" sends "/text" to the agent even when geminus has a command of
+	// that name.
 	if strings.HasPrefix(line, "//") {
 		return a.say(line[1:])
 	}
@@ -73,7 +73,7 @@ func (a *App) handle(line string) error {
 		if a.cur == nil || a.harness == nil {
 			return errors.New("pick a persona first (/persona)")
 		}
-		a.session, a.title = "", ""
+		a.session, a.title, a.tuning = "", "", wire.Tuning{}
 		a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 		if arg != "" {
 			a.cwd = arg
@@ -88,9 +88,69 @@ func (a *App) handle(line string) error {
 		a.Out.line(a.status())
 	case "/default":
 		return a.setDefaults(arg)
+	case "/model", "/effort":
+		return a.tune(cmd[1:], arg)
 	default:
-		return fmt.Errorf("unknown command %s (see /help; //TEXT sends a slash line to the agent)", cmd)
+		// Not one of geminus's: the agent program has slash commands of its
+		// own, so the line goes to it as typed.
+		return a.say(line)
 	}
+	return nil
+}
+
+// tune shows or sets the model or the effort (kind) of the open conversation.
+// The value travels with each prompt and the bridge passes it to the agent
+// program as an option of that one run, so the program's own configuration
+// and its other sessions are left as they are.
+func (a *App) tune(kind, value string) error {
+	if a.cur == nil || a.harness == nil {
+		return errors.New("pick a persona first (/persona)")
+	}
+	current := &a.tuning.Model
+	if kind == "effort" {
+		current = &a.tuning.Effort
+	}
+	show := func() {
+		if *current == "" {
+			a.Out.line(fmt.Sprintf("%s: %s's default  (set one for this conversation with /%s NAME)", kind, oneLine(a.harness.Name), kind))
+			return
+		}
+		a.Out.line(fmt.Sprintf("%s: %s  (this conversation only; /%s default goes back to %s's own)", kind, oneLine(*current), kind, oneLine(a.harness.Name)))
+	}
+	if value == "" {
+		show()
+		return nil
+	}
+	if value == "default" || value == "none" {
+		value = ""
+	}
+	if value != "" {
+		if len(a.harness.Options) == 0 {
+			// A bridge from before settings existed lists none for any program.
+			return fmt.Errorf("the bridge on %s's computer is too old to pass a %s: geminish 0.6 or later must be running there. Prompts without one still work", a.cur.Name, kind)
+		}
+		if !a.harness.Takes(kind) {
+			return fmt.Errorf("%s takes no %s setting from geminus on %s's computer", oneLine(a.harness.Name), kind, a.cur.Name)
+		}
+		if !wire.ValidSetting(kind, value) {
+			return fmt.Errorf("%q is not a usable %s name: it is passed to %s as an option, so it must be one word of letters, digits and . _ - (a model may also have : / @ # + [ ])",
+				oneLine(value), kind, oneLine(a.harness.Name))
+		}
+	}
+	previous := *current
+	*current = value
+	if a.session != "" {
+		// Kept in the conversation's signed description, so reopening it
+		// from any computer brings the setting back. Prompts still waiting
+		// keep the mark the bridge looks for.
+		ctx, cancel := a.call()
+		defer cancel()
+		if err := a.Honcho.SetSessionMetadata(ctx, a.session, wire.SessionMetadata(a.meta(a.session, a.title, len(a.waiting) > 0))); err != nil {
+			*current = previous
+			return fmt.Errorf("the %s was not changed: %w", kind, err)
+		}
+	}
+	show()
 	return nil
 }
 

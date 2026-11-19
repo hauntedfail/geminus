@@ -381,3 +381,36 @@ One fault was found this way and fixed: the bridge, running as a service, picked
 - pi and OpenCode as harnesses (no API key and no credit where tried).
 - Windows, for geminus and for the bridge.
 - A harness that stops to ask for permission.
+
+---
+
+## 14. The prompt box, the agent's own slash commands, model and effort (2026-11-19)
+
+Asked for by the owner after using section 13's version:
+
+- A slash line geminus does not know is sent to the agent as typed, so the agent program's own commands work through geminus. `//x` sends `/x` when geminus has a command of that name.
+- On a terminal the input is a box that stays at the bottom, with the persona, harness and locality in its edge, the connection and the conversation's settings under it, and the state of the waiting prompt above it. Sending no longer waits for the answer. Standard library only: raw mode, key parsing, width calculation and drawing are in `internal/chat`.
+- `/model` and `/effort` set the agent program's model and effort for one conversation. They are kept in the conversation's signed description and travel inside each signed prompt; the bridge (geminish 0.6.0) gives them to the program for that conversation only and never writes the program's configuration.
+
+Decisions made while building it:
+
+- A prompt without settings is signed exactly as before, and a node card's program list keeps its old signature with the options signed beside it. geminus and bridges of different ages therefore keep working together; only settings need 0.6.0 on the other side. This was chosen after the first version of the change would have cut off the two computers still on 0.5.0.
+- Hermes cannot be given a model or reasoning level as options once a session exists (it refuses, and its `--continue NAME --create-if-missing` creates the session before applying any). Its own `/model` and `/reasoning` change one session only, so the bridge sends those inside the session instead. Found by running it; the first implementation passed options and failed on the real program.
+
+### Verified by running it (chrome, real Honcho, geminish 0.6.0 on chrome)
+
+| Check | Result |
+|---|---|
+| The box in a real pseudo-terminal, screen read back through a terminal emulator | box, status, slash hints, wide text, typing while an answer is awaited, quitting leave the screen as intended |
+| Claude Code's own `/context` typed in geminus | its output came back |
+| `/model haiku`, `/effort low` on Claude Code | the prompt ran and answered |
+| `/effort low` on Codex and Grok, three conversations at once | each answered |
+| `/effort low`, then `/effort default`, on Hermes | Hermes confirmed both for the session only; `config.yaml` unchanged |
+| New geminus with the 0.5.0 bridge on sibyl; old geminus with the 0.6.0 bridge on chrome | a plain prompt ran on sibyl; `/model` there is refused with the reason; the old binary still lists chrome's programs |
+| `go test ./... -race`; bridge tests on Python 3.9 and 3.11 | pass |
+
+### Not verified
+
+- The box on Windows (compiled and vetted only) and in terminals other than the one emulated.
+- `/model` on Hermes, Codex and Grok through geminus; pi and OpenCode at all.
+- geminish 0.6.0 on sibyl and mirai: both still run 0.5.0.

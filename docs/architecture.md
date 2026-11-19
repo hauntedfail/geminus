@@ -23,7 +23,7 @@ geminus is the client for that and nothing else. It is deliberately a thin wrapp
 | Package | Responsibility |
 |---|---|
 | `cmd/geminus` | `main` only. |
-| `internal/chat` | The terminal interface: picking persona and harness, sending, showing answers as they arrive, slash commands. |
+| `internal/chat` | The terminal interface: picking persona and harness, sending, showing answers as they arrive, slash commands, and the prompt box with the status around it. |
 | `internal/wire` | The protocol: record shapes, signatures, the node card, the doorbell. |
 | `internal/honcho` | The Honcho HTTP calls geminus makes; `honchotest` is an in-memory Honcho for tests. |
 | `internal/profile` | Reads the two existing files that say who and where this computer is. |
@@ -71,7 +71,23 @@ What it also does not give: separation between member computers. Any computer ho
 
 Agent output is printed as it arrives. Nothing from outside can control the terminal: `chat.Printer` strips control characters and bidirectional overrides from everything it prints (output, error text, names, titles, IDs), keeping only the few color codes geminus writes itself, and values shown inside a line are flattened to one line.
 
-Input is read line by line in the terminal's normal mode, so the terminal's own line editing and input methods work. When stdin is not a terminal each line is echoed, which keeps piped runs and test output readable.
+On a terminal the bottom rows are a live region: the prompt box, the line above it that follows the waiting prompt, and the status and hints under it. Everything else scrolls above. The pieces:
+
+| File | Part |
+|---|---|
+| `frame.go` | `render`: a pure function from what is to be shown (`view`, the typed text, the terminal size, the time) to rows and a cursor position. The whole look is tested as text. |
+| `live.go` | The live region: prints above itself, redraws in place by moving up from the cursor and erasing downward, and applies keys to the editor. |
+| `editor.go`, `keys.go`, `width.go` | The typed text and its history; raw terminal input turned into keys (UTF-8, escape sequences, bracketed paste); column widths of wide and combining characters. |
+| `tty_*.go` | Raw mode and terminal size for macOS, Linux and Windows, with the standard library only. |
+| `rich.go` | The main loop on a terminal, and the copy of App state (`view`) the box shows. |
+
+Three goroutines touch the live region, under one lock: the keyboard reader, which also does the editing so that typing never waits for Honcho; a 100 ms timer for the spinner and the terminal size; and the main loop, which prints and updates the status. Entered lines reach the main loop through a channel, exactly as lines read from a pipe do, so commands and conversations are the same code in both modes. The one difference is that on a terminal sending does not wait for the answer.
+
+The live region writes its own cursor movement, so it cannot go through `Printer`. What it draws is safe for the same reason as the rest: every value from outside is flattened and stripped before it enters `view`, typed and pasted text loses control characters when it enters the editor, and unfinished output reaches it only through `Printer`.
+
+When stdin or stdout is not a terminal, or raw mode is not available, geminus reads line by line in the terminal's normal mode and echoes piped lines, which keeps piped runs and test output readable.
+
+Model and effort are not geminus state either. They sit in the conversation's signed description in Honcho and travel inside each signed prompt; the bridge turns them into options of that one run of the agent program and writes nothing to the program's configuration.
 
 ## Tests
 
@@ -80,7 +96,8 @@ Input is read line by line in the terminal's normal mode, so the terminal's own 
 | `internal/wire` | Signing and record parsing | Signatures equal the ones the bridge's Python code produces; each is good for one purpose only; node cards and doorbell records must be signed for their own peer |
 | `internal/honcho` | The client against the in-memory Honcho | Paging, nested metadata filters, metadata merged rather than replaced, errors without the token |
 | `internal/chat` | The interface against the in-memory Honcho and a bridge that follows the protocol | Every flow and command, asynchronous answers, forged output ignored, defaults in Honcho, no files written |
+| `internal/chat` (`live_test.go`) | The prompt box against a small terminal emulator (`vt_test.go`) | What is left on the glass: output above the box in order, wrapping of wide text, the cursor, keys, paste, questions, resize, and the whole app with the box |
 | `test` | The built binary, the real Python bridge, a fake agent program, the in-memory Honcho | That the two products agree end to end, including continuing a conversation, a failing turn, and a forged prompt being refused |
 | geminish `tests/test_bridge.py` | The bridge on its own | Runs once, verbatim, in order; refusals; output pieces; each program's command line; the owner's shell environment |
 
-The fake agent program proves the plumbing, not that a real program behaves the same; that was checked by hand for the harnesses marked so in the README.
+The fake agent program proves the plumbing, not that a real program behaves the same; that was checked by hand for the harnesses marked so in the README. The terminal emulator in the tests proves the drawing logic, not every terminal: the box was also run in a real pseudo-terminal on macOS. The Windows console code is compiled and vetted, and has not been run.

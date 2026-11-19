@@ -51,12 +51,30 @@ func build(t *testing.T) string {
 }
 
 // The agent program on the "remote" computer: it answers with what it was
-// given on stdin and the session it was asked to continue.
+// given on stdin and the session it was asked to continue. Like Hermes, it
+// takes its model and effort as lines inside the session and keeps them for
+// that session only.
 const fakeHermes = `#!/bin/sh
 # args: chat -Q --continue <session> --create-if-missing --source tool --query-file -
+session=$4
+state="$(dirname "$0")/settings-$session"
+model= effort=
+[ -f "$state" ] && . "$state"
 prompt=$(cat)
+case "$prompt" in
+"/model "*) model=${prompt#/model }; said="model set to $model (session only)" ;;
+"/reasoning reset") effort=; said="reasoning back to the default" ;;
+"/reasoning "*) effort=${prompt#/reasoning }; said="reasoning set to $effort (session only)" ;;
+esac
+if [ -n "$said" ]; then
+	printf 'model=%s\neffort=%s\n' "$model" "$effort" > "$state"
+	echo "$said"
+	exit 0
+fi
 if [ "$prompt" = "fail" ]; then echo "half done"; echo "no credit left" >&2; exit 3; fi
-printf 'in %s got: %s\n' "$4" "$prompt"
+printf 'in %s got: %s' "$session" "$prompt"
+if [ -n "$model$effort" ]; then printf ' [model=%s effort=%s]' "$model" "$effort"; fi
+printf '\n'
 `
 
 func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
@@ -203,6 +221,27 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
 	expect(out, "── conversation so far ──", "you: "+prompt, "got: second", fmt.Sprintf("in %s got: third", sid))
+
+	// Model and effort are set for this conversation and reach the agent
+	// program for each run; what the program says to a new setting is shown.
+	out, errs, code = run("/model test/model-1\n/effort low\ntuned\nagain\n/effort default\nplain\n", "persona", "mirai", "--continue")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	expect(out, "model set to test/model-1 (session only)", "reasoning set to low (session only)",
+		fmt.Sprintf("in %s got: tuned [model=test/model-1 effort=low]", sid),
+		fmt.Sprintf("in %s got: again [model=test/model-1 effort=low]", sid),
+		"reasoning back to the default",
+		fmt.Sprintf("in %s got: plain [model=test/model-1 effort=]", sid))
+	if n := strings.Count(out, "model set to test/model-1"); n != 1 {
+		t.Errorf("the program's answer to an unchanged setting was shown %d times:\n%s", n, out)
+	}
+	// They belong to the conversation, so another process gets them back.
+	out, errs, code = run("more\n", "persona", "mirai", "--continue")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	expect(out, "model test/model-1", fmt.Sprintf("in %s got: more [model=test/model-1 effort=]", sid))
 
 	// A prompt that someone with only the Honcho token wrote is not run.
 	before := len(srv.Messages(sid))

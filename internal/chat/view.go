@@ -56,7 +56,7 @@ func clip(s string, n int) string {
 }
 
 // The only escape sequences geminus writes itself; see Printer.style.
-var ownStyles = []string{"\x1b[0m", "\x1b[1m", "\x1b[2m", "\x1b[31m", "\x1b[33m"}
+var ownStyles = []string{"\x1b[0m", "\x1b[1m", "\x1b[2m", "\x1b[31m", "\x1b[33m", "\x1b[1;36m"}
 
 // Printer writes to the screen and remembers whether the cursor is at the
 // start of a line, so status lines never land in the middle of a reply.
@@ -125,6 +125,16 @@ func (p *Printer) line(s string) {
 	p.mu.Unlock()
 }
 
+// endLine ends the line being written, if one is.
+func (p *Printer) endLine() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.midLine {
+		io.WriteString(p.w, "\n")
+		p.midLine = false
+	}
+}
+
 func (p *Printer) atLineStart() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -150,6 +160,10 @@ func (p *Printer) dim(s string) string  { return p.style("2", s) }
 func (p *Printer) bold(s string) string { return p.style("1", s) }
 func (p *Printer) warn(s string) string { return p.style("33", s) }
 func (p *Printer) fail(s string) string { return p.style("31", s) }
+
+// accent marks geminus's own voice in the transcript: the banner and the
+// mark before each prompt.
+func (p *Printer) accent(s string) string { return p.style("1;36", s) }
 
 // option is one line of a list the person can choose from.
 type option struct {
@@ -212,12 +226,19 @@ func (a *App) choose(title, what string, opts []option, preferred string) (strin
 	}
 	a.Out.line(a.Out.bold(title))
 	a.Out.showOptions(opts)
+	if a.live != nil {
+		defer a.ask("")
+	}
 	for {
 		ask := what
 		if preferred != "" {
 			ask += " [" + oneLine(preferred) + "]"
 		}
-		a.Out.write(ask + " ❯ ")
+		if a.live != nil {
+			a.ask(ask) // the box asks; what is entered is echoed by readLine
+		} else {
+			a.Out.write(ask + " ❯ ")
+		}
 		typed, ok := a.readLine()
 		if !ok {
 			return "", false
