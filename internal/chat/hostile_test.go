@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hauntedfail/geminus/internal/acp"
+	"github.com/hauntedfail/geminus/internal/harness"
 	"github.com/hauntedfail/geminus/internal/persona"
 )
 
@@ -30,12 +31,16 @@ func (hostileAgent) ListSessions(context.Context, string) ([]acp.SessionInfo, er
 func (hostileAgent) Prompt(context.Context, string, string, *acp.Handler) (string, error) {
 	return "", &acp.RPCError{Method: "session/prompt", Message: "bad" + esc}
 }
+func (hostileAgent) Commands(string) []acp.Command {
+	return []acp.Command{{Name: "cmd" + esc, Description: "desc" + esc}}
+}
 func (h hostileAgent) Done() <-chan struct{} { return h.done }
 func (hostileAgent) Err() error              { return nil }
 func (hostileAgent) Close() error            { return nil }
 
 func TestNoAgentOrDirectoryStringCanControlTheTerminal(t *testing.T) {
 	out, errs := &screen{}, &bytes.Buffer{}
+	hostile := harness.Harness{ID: "hermes", Name: "Hermes" + esc, Command: "hermes acp"}
 	app := &App{
 		Out: NewPrinter(out),
 		Load: func(context.Context) (persona.Directory, error) {
@@ -43,21 +48,29 @@ func TestNoAgentOrDirectoryStringCanControlTheTerminal(t *testing.T) {
 				Workspace:  "ws" + esc,
 				Warning:    "warn" + esc,
 				ConfigPath: "/cfg",
+				Harnesses:  []harness.Harness{hostile, {ID: "other", Name: "Other", Command: "other acp", CLI: "othercli", Install: "install" + esc}},
 				Personas: []persona.Persona{
-					{Name: "sibyl", Route: &persona.Route{SSH: "host", Runtime: "hermes", CWD: "/w"}},
+					{Name: "sibyl", Node: &persona.Node{SSH: "host", CWD: "/w" + esc}},
 					{Name: "evil" + esc},
 				},
 			}, nil
 		},
-		Dial:      func(persona.Route) (Agent, error) { return hostileAgent{done: make(chan struct{})}, nil },
-		ctx:       context.Background(),
-		interrupt: make(chan os.Signal),
+		Probe: func(context.Context, persona.Node, []harness.Harness) (harness.Probe, error) {
+			return harness.Probe{Home: "/home" + esc, Have: map[string]bool{"hermes": true, "othercli": true}}, nil
+		},
+		Dial: func(persona.Node, harness.Harness) (Agent, error) {
+			return hostileAgent{done: make(chan struct{})}, nil
+		},
+		SaveDefaults: func(persona.Defaults) error { return nil },
+		SaveNode:     func(string, persona.Node) error { return nil },
+		ctx:          context.Background(),
+		interrupt:    make(chan os.Signal),
 	}
-	input := strings.Join([]string{"sibyl", "hello", "/sessions", "/resume 1", "/status", "/persona", "/persona evil" + esc, "/nope" + esc}, "\n") + "\n"
+	input := strings.Join([]string{"sibyl", "hello", "/sessions", "/resume 1", "/status", "/help", "/harness", "", "/default", "/persona evil" + esc, "/nope" + esc}, "\n") + "\n"
 	app.Main(nil, strings.NewReader(input), errs)
 
 	shown := out.String() + errs.String()
-	for _, want := range []string{"● connected", "bad", "title", "nope", "warn", "evil"} {
+	for _, want := range []string{"● connected", "bad", "title", "nope", "warn", "evil", "cmd", "desc", "install", "Harnesses on"} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("scenario did not reach %q:\n%q", want, shown)
 		}

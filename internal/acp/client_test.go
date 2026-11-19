@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -264,3 +265,63 @@ func TestCloseEndsTheAgent(t *testing.T) {
 		t.Fatal("Close did not return")
 	}
 }
+
+func TestAgentCommandsAreRemembered(t *testing.T) {
+	c := connect(t)
+	id := newSession(t, c)
+	// The list arrives as a notification after session/new; a round trip
+	// guarantees it has been read.
+	var text strings.Builder
+	if _, err := c.Prompt(ctx(t), id, "/model fast", &acp.Handler{Text: func(s string) { text.WriteString(s) }}); err != nil {
+		t.Fatal(err)
+	}
+	cmds := c.Commands(id)
+	if len(cmds) != 2 || cmds[0].Name != "model" || cmds[0].Description != "Switch the model" {
+		t.Errorf("commands = %+v", cmds)
+	}
+	if text.String() != "model set to fast" {
+		t.Errorf("reply = %q", text.String())
+	}
+	if got := c.Commands("another-session"); len(got) != 0 {
+		t.Errorf("commands of an unknown session = %+v", got)
+	}
+}
+
+func TestTraceRecordsBothDirections(t *testing.T) {
+	toAgent, fromClient := io.Pipe()
+	toClient, fromAgent := io.Pipe()
+	go func() {
+		acptest.Serve(toAgent, fromAgent, io.Discard, "")
+		fromAgent.Close()
+	}()
+	var mu sync.Mutex
+	var log strings.Builder
+	c := acp.New(fromClient, toClient, nil)
+	c.Trace(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return log.Write(p)
+	}))
+	defer c.Close()
+	id := newSession(t, c)
+	if _, err := c.Prompt(ctx(t), id, strings.Repeat("long ", 2000), nil); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := log.String()
+	mu.Unlock()
+	for _, want := range []string{` > {"id":1,"jsonrpc":"2.0","method":"initialize"`, ` < {"id":1,"jsonrpc":"2.0","result"`, `"method":"session/prompt"`, "…\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("trace lacks %q:\n%.600s", want, got)
+		}
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if len(line) > 4100 {
+			t.Errorf("a traced line has %d bytes", len(line))
+		}
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

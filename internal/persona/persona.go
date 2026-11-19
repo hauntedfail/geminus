@@ -1,5 +1,5 @@
 // Package persona answers two questions: which agents can be talked to (the
-// Honcho workspace's peers), and how to reach each one (the routes in
+// Honcho workspace's peers), and where each one's computer is (the nodes in
 // geminus's own config file).
 package persona
 
@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/hauntedfail/geminus/internal/harness"
 )
 
 const (
@@ -26,40 +28,25 @@ const (
 	// (default ~/.hermes).
 	EnvHermesHome = "HERMES_HOME"
 
-	configName   = "config.json"
+	configName = "config.json"
+
+	// SessionNew and SessionContinue are the values of Defaults.Session.
+	SessionNew      = "new"
+	SessionContinue = "continue"
+
 	listPageSize = 50
 	maxListPages = 20
 	listTimeout  = 15 * time.Second
 )
 
-// Route says how to reach a persona's agent.
-type Route struct {
-	// SSH is an ssh host alias. Empty means the agent runs on this computer.
-	SSH string `json:"ssh,omitempty"`
-	// Runtime is "hermes" or "claude".
-	Runtime string `json:"runtime"`
-	// CWD is the working directory for sessions on the agent's machine.
-	// Required for ssh routes; defaults to the current directory otherwise.
-	CWD string `json:"cwd,omitempty"`
-	// Command replaces the default agent command line (see AgentCommand).
-	Command string `json:"command,omitempty"`
-}
-
-// Describe returns a short human-readable form, such as "hermes via ssh btcvps".
-func (r Route) Describe() string {
-	if r.SSH == "" {
-		return r.Runtime + " (local)"
-	}
-	return r.Runtime + " via ssh " + r.SSH
-}
-
-// Persona is one agent that can be talked to.
+// Persona is one agent that can be talked to: a label taken from a Honcho
+// peer, plus where that agent's computer is.
 type Persona struct {
 	Name string
 	// Local means the persona is this computer's own agent.
 	Local bool
-	// Route is nil when geminus has not been told how to reach the persona.
-	Route *Route
+	// Node is nil when geminus has not been told where the persona runs.
+	Node *Node
 }
 
 // Tag returns the locality label shown next to the persona's name.
@@ -70,6 +57,17 @@ func (p Persona) Tag() string {
 	return "REMOTE"
 }
 
+// Defaults are the choices geminus makes when the person makes none.
+type Defaults struct {
+	// Persona is connected to when geminus starts without arguments.
+	Persona string `json:"persona,omitempty"`
+	// Harness is used on any persona that does not name its own.
+	Harness string `json:"harness,omitempty"`
+	// Session is "new" (the default) or "continue": whether a connection
+	// starts a new session or reopens the latest one.
+	Session string `json:"session,omitempty"`
+}
+
 // Directory is the result of Load.
 type Directory struct {
 	// Workspace is the Honcho workspace the personas were read from.
@@ -78,8 +76,11 @@ type Directory struct {
 	// Warning is set when Honcho could not be read and Personas holds only
 	// what the config file and the local profile name.
 	Warning string
-	// ConfigPath is where routes are configured.
+	// ConfigPath is where nodes and defaults are configured.
 	ConfigPath string
+	Defaults   Defaults
+	// Harnesses are the agent programs geminus knows: built in and configured.
+	Harnesses []harness.Harness
 }
 
 // Find returns the persona with the given name.
@@ -93,7 +94,9 @@ func (d Directory) Find(name string) (Persona, bool) {
 }
 
 type config struct {
-	Personas map[string]Route `json:"personas"`
+	Defaults  Defaults                   `json:"defaults"`
+	Personas  map[string]Node            `json:"personas"`
+	Harnesses map[string]harness.Harness `json:"harnesses"`
 	// Honcho overrides the connection read from the Hermes profile.
 	Honcho *struct {
 		BaseURL   string `json:"baseUrl"`
@@ -146,8 +149,8 @@ func readJSON(path string, v any) (found bool, err error) {
 	return true, nil
 }
 
-// Load reads the personas of the Honcho workspace and attaches the routes
-// from the config file. If Honcho cannot be read, it still returns the
+// Load reads the personas of the Honcho workspace and attaches the nodes and
+// defaults from the config file. If Honcho cannot be read, it still returns the
 // personas it knows locally and explains why in Directory.Warning.
 func Load(ctx context.Context) (Directory, error) {
 	home, err := homeDir(EnvHome, ".geminus")
@@ -164,10 +167,17 @@ func Load(ctx context.Context) (Directory, error) {
 	if _, err := readJSON(dir.ConfigPath, &cfg); err != nil {
 		return dir, err
 	}
-	for name, route := range cfg.Personas {
-		if err := route.validate(); err != nil {
+	for name, node := range cfg.Personas {
+		if err := node.validate(); err != nil {
 			return dir, fmt.Errorf("%s: persona %q: %w", dir.ConfigPath, name, err)
 		}
+	}
+	if s := cfg.Defaults.Session; s != "" && s != SessionNew && s != SessionContinue {
+		return dir, fmt.Errorf("%s: defaults.session must be %q or %q, not %q", dir.ConfigPath, SessionNew, SessionContinue, s)
+	}
+	dir.Defaults = cfg.Defaults
+	if dir.Harnesses, err = harness.All(cfg.Harnesses); err != nil {
+		return dir, fmt.Errorf("%s: %w", dir.ConfigPath, err)
 	}
 	var profile honchoProfile
 	if _, err := readJSON(filepath.Join(hermesHome, "honcho.json"), &profile); err != nil {
@@ -209,11 +219,11 @@ func Load(ctx context.Context) (Directory, error) {
 		}
 		seen[name] = true
 		p := Persona{Name: name, Local: name == profile.AIPeer}
-		if route, ok := cfg.Personas[name]; ok {
-			p.Route = &route
+		if node, ok := cfg.Personas[name]; ok {
+			p.Node = &node
 		} else if p.Local {
 			// This computer's own agent needs no configuration.
-			p.Route = &Route{Runtime: "hermes"}
+			p.Node = &Node{}
 		}
 		dir.Personas = append(dir.Personas, p)
 	}

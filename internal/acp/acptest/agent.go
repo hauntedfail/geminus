@@ -5,6 +5,7 @@
 //	"tool ..."  asks permission for a tool call, then reports the answer
 //	"slow ..."  streams nothing until the turn is cancelled
 //	"die ..."   writes to stderr and exits in the middle of the turn
+//	"/model X"  one of its own slash commands: replies "model set to X"
 //	anything    replies "echo: <text>", preceded by a thought
 package acptest
 
@@ -106,6 +107,14 @@ func (a *agent) update(sessionID string, update map[string]any) {
 	a.send(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": sessionID, "update": update}})
 }
 
+// announceCommands tells the client which slash commands this agent has.
+func (a *agent) announceCommands(sessionID string) {
+	a.update(sessionID, map[string]any{"sessionUpdate": "available_commands_update", "availableCommands": []map[string]any{
+		{"name": "model", "description": "Switch the model"},
+		{"name": "help", "description": "The agent's own help"},
+	}})
+}
+
 func (a *agent) chunk(sessionID, kind, text string) {
 	a.update(sessionID, map[string]any{"sessionUpdate": kind, "content": map[string]any{"type": "text", "text": text}})
 }
@@ -160,6 +169,7 @@ func (a *agent) handle(req request) (code int, exit bool) {
 		a.save()
 		a.mu.Unlock()
 		a.result(req.ID, map[string]any{"sessionId": id})
+		a.announceCommands(id)
 	case "session/load":
 		turns, ok := a.turns(sid)
 		if !ok {
@@ -171,6 +181,7 @@ func (a *agent) handle(req request) (code int, exit bool) {
 			a.chunk(sid, "agent_message_chunk", t.Agent)
 		}
 		a.result(req.ID, nil)
+		a.announceCommands(sid)
 	case "session/list":
 		sessions := []map[string]any{}
 		a.mu.Lock()
@@ -258,6 +269,10 @@ func (a *agent) prompt(id json.RawMessage, sid, text string, cancelled <-chan st
 		}
 		a.update(sid, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": status})
 		reply = "permission: " + res.Outcome.Outcome + " " + res.Outcome.OptionID
+	case strings.HasPrefix(text, "/model "):
+		reply = "model set to " + strings.TrimPrefix(text, "/model ")
+	case text == "/help":
+		reply = "the agent's own help"
 	default:
 		a.chunk(sid, "agent_thought_chunk", "thinking about it")
 	}

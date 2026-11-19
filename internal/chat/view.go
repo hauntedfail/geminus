@@ -46,7 +46,7 @@ func sanitize(s string) string {
 // oneLine is sanitize for values shown inside a line, such as a name or an
 // ID: line breaks become spaces so the value cannot imitate a status line.
 func oneLine(s string) string {
-	return strings.Join(strings.Fields(sanitize(s)), " ")
+	return strings.TrimSpace(strings.NewReplacer("\n", " ", "\t", " ").Replace(sanitize(s)))
 }
 
 // The only escape sequences geminus writes itself; see Printer.style.
@@ -264,5 +264,88 @@ func (r *replay) handler() *acp.Handler {
 func (r *replay) end() {
 	if r.any {
 		r.out.line(r.out.dim("── end of history ──"))
+	}
+}
+
+// option is one line of a list the person can choose from.
+type option struct {
+	// key is what selecting the option returns, and what can be typed.
+	key, text string
+	// disabled options are shown but cannot be chosen.
+	disabled bool
+}
+
+// showOptions prints a numbered list. Disabled options get no number.
+func (p *Printer) showOptions(opts []option) {
+	width := 0
+	for _, o := range opts {
+		width = max(width, len(oneLine(o.key)))
+	}
+	n := 0
+	for _, o := range opts {
+		mark := "-"
+		if !o.disabled {
+			n++
+			mark = fmt.Sprint(n)
+		}
+		p.line(fmt.Sprintf("  %s  %-*s  %s", mark, width, oneLine(o.key), oneLine(o.text)))
+	}
+}
+
+// match finds the option the person meant: a number, a key, or the unique
+// start of a key. It returns "" when nothing or more than one thing fits.
+func match(opts []option, typed string) string {
+	var enabled []string
+	for _, o := range opts {
+		if !o.disabled {
+			enabled = append(enabled, o.key)
+		}
+	}
+	var n int
+	if _, err := fmt.Sscanf(typed, "%d", &n); err == nil && fmt.Sprint(n) == typed && n >= 1 && n <= len(enabled) {
+		return enabled[n-1]
+	}
+	var starts []string
+	for _, key := range enabled {
+		if strings.EqualFold(key, typed) {
+			return key
+		}
+		if strings.HasPrefix(strings.ToLower(key), strings.ToLower(typed)) {
+			starts = append(starts, key)
+		}
+	}
+	if len(starts) == 1 {
+		return starts[0]
+	}
+	return ""
+}
+
+// choose shows a list and asks until one option is picked. An empty answer
+// takes preferred, when there is one. It returns false if the input ended.
+func (a *App) choose(title, what string, opts []option, preferred string) (string, bool) {
+	if match(opts, preferred) != preferred {
+		preferred = ""
+	}
+	a.Out.line(a.Out.bold(title))
+	a.Out.showOptions(opts)
+	for {
+		ask := what
+		if preferred != "" {
+			ask += " [" + oneLine(preferred) + "]"
+		}
+		a.Out.write(ask + " ❯ ")
+		typed, ok := a.readLine()
+		if !ok {
+			return "", false
+		}
+		if typed == "" && preferred != "" {
+			return preferred, true
+		}
+		if picked := match(opts, typed); picked != "" {
+			return picked, true
+		}
+		if typed != "" {
+			a.Out.line(a.Out.fail(fmt.Sprintf("✗ no %s %q here; type a number or a name from the list", what, typed)))
+		}
 	}
 }

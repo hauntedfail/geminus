@@ -326,3 +326,27 @@ The first design launched the `claude` or `hermes` already installed on the same
 - Windows on a real machine (compile and vet only).
 - mirai. It is behind NAT and this computer has no ssh route to it.
 - A tool permission prompt against a real agent. The prompt is covered by tests with the scripted agent only.
+
+### Second pass: harnesses, defaults, slash commands (2026-11-19)
+
+The first cut of the redesign only reached Hermes, took its choices from command-line arguments, and had no defaults. The owner's requirements were wider, and it was reworked:
+
+- A persona must always be selected. Bare `geminus` uses the default persona or asks; it never needs arguments.
+- After the persona, the harness is chosen from what that computer actually has installed at that moment (one ssh probe). Any ACP agent can be a harness: Hermes, Grok, OpenCode and Gemini CLI natively; Claude Code, Codex and pi through their bridge programs; others through the config file.
+- Defaults for persona, harness and session mode, set from inside geminus with `/default` and stored in `~/.geminus/config.json`. A route is asked for once and stored.
+- geminus's own slash commands, with the harness's slash commands passed through.
+
+| Check | Result |
+|---|---|
+| chrome → sibyl, Hermes over ssh, in a real terminal | persona picked from the list, harness taken without asking (only one there), one turn |
+| chrome's harness list | hermes, opencode, gemini, grok offered; claude, codex, pi shown as installed without their bridge |
+| chrome → chrome, Grok | one turn, `/sessions`, `/help` listing Grok's own commands |
+| chrome → chrome, OpenCode | connected and opened a session; the turn was refused by OpenCode for lack of credit, shown in its words, connection kept |
+| chrome → chrome, Gemini CLI | handshake succeeded; Google refused to open a session for this account type, shown in its words |
+
+| `/default save`, `/default session continue`, then bare `geminus` (chrome → sibyl) | connected without asking and reopened the latest session with its history |
+| Hermes's own `/model` typed in geminus | passed through; Hermes answered with its current model |
+
+Not verified: Claude Code, Codex and pi (no bridge installed anywhere), Windows, mirai, and a tool-permission prompt against a real harness.
+
+One run of the first check stalled: a message to sibyl got no reply within 90 seconds. It did not happen again in four further runs, and `GEMINUS_TRACE` was added afterwards so that a recurrence can be diagnosed. Its cause is unknown.

@@ -60,6 +60,13 @@ type SessionInfo struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
+// Command is a slash command the agent itself understands. It is sent as an
+// ordinary prompt whose text starts with "/" and the command's name.
+type Command struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 // ToolEvent reports the start or a status change of a tool call.
 type ToolEvent struct {
 	ID, Title, Status string
@@ -109,6 +116,32 @@ type Client struct {
 	pending map[int64]chan frame
 	session string
 	handler *Handler
+	// commands holds each session's latest list of agent commands.
+	commands map[string][]Command
+
+	// trace, when set, receives every protocol line in both directions.
+	trace   io.Writer
+	traceMu sync.Mutex
+}
+
+// traceLineBytes bounds one traced line; replies can be very long.
+const traceLineBytes = 4000
+
+// Trace makes the client log every protocol line it sends ("> ") and
+// receives ("< ") to w, for diagnosing an agent that misbehaves. The log
+// contains the conversation. Call it before the first request.
+func (c *Client) Trace(w io.Writer) { c.trace = w }
+
+func (c *Client) traced(direction string, line []byte) {
+	if c.trace == nil {
+		return
+	}
+	if len(line) > traceLineBytes {
+		line = append(append([]byte(nil), line[:traceLineBytes]...), "…"...)
+	}
+	c.traceMu.Lock()
+	defer c.traceMu.Unlock()
+	fmt.Fprintf(c.trace, "%s %s %s\n", time.Now().Format("15:04:05.000"), direction, line)
 }
 
 type frame struct {
@@ -128,7 +161,7 @@ func New(w io.WriteCloser, r io.Reader, diag func() string) *Client {
 	if diag == nil {
 		diag = func() string { return "" }
 	}
-	c := &Client{w: w, done: make(chan struct{}), diag: diag, pending: map[int64]chan frame{}}
+	c := &Client{w: w, done: make(chan struct{}), diag: diag, pending: map[int64]chan frame{}, commands: map[string][]Command{}}
 	go c.read(r)
 	return c
 }
@@ -142,6 +175,7 @@ func (c *Client) read(r io.Reader) {
 	sc.Buffer(make([]byte, 64<<10), 32<<20)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
+		c.traced("<", line)
 		var f frame
 		// A login shell may print a banner before the agent starts. Skip
 		// anything that is not a JSON-RPC message.
@@ -194,9 +228,18 @@ func (c *Client) notify(f frame) {
 			ID      string          `json:"toolCallId"`
 			Title   string          `json:"title"`
 			Status  string          `json:"status"`
+			// Commands is sent whenever the agent's command list changes,
+			// which may be outside any call.
+			Commands []Command `json:"availableCommands"`
 		} `json:"update"`
 	}
 	if json.Unmarshal(f.Params, &p) != nil {
+		return
+	}
+	if p.Update.Kind == "available_commands_update" {
+		c.mu.Lock()
+		c.commands[p.SessionID] = p.Update.Commands
+		c.mu.Unlock()
 		return
 	}
 	h := c.active(p.SessionID)
@@ -263,10 +306,18 @@ func (c *Client) send(v any) error {
 	if err != nil {
 		return err
 	}
+	c.traced(">", data)
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	_, err = c.w.Write(append(data, '\n'))
 	return err
+}
+
+// Commands returns the slash commands the agent has announced for a session.
+func (c *Client) Commands(sessionID string) []Command {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Command(nil), c.commands[sessionID]...)
 }
 
 // Err returns why the connection ended, or nil while it is open.
