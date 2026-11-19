@@ -57,15 +57,29 @@ func bit(b bool) int {
 	return 0
 }
 
-// PromptLabel binds a prompt to its conversation, target and author.
-func PromptLabel(session, persona, harness, human, nonce string) string {
-	return fmt.Sprintf("geminus-prompt:%s:%s:%s:%s:%s", session, persona, harness, human, nonce)
+// digest stands for a free-form value inside a label: hashed, it cannot run
+// into the fields around it.
+func digest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
-// OutputLabel binds a piece of output to its turn and position.
-func OutputLabel(session, turn string, seq int, final, ok bool) string {
-	return fmt.Sprintf("geminus-output:%s:%s:%d:%d:%d", session, turn, seq, bit(final), bit(ok))
+// PromptLabel binds a prompt to its conversation, target, author and the
+// directory it is to run in. The directory is part of what the owner signs:
+// session metadata alone could be rewritten by anyone holding the Honcho
+// token.
+func PromptLabel(session, persona, harness, human, nonce, cwd string) string {
+	return fmt.Sprintf("geminus-prompt:%s:%s:%s:%s:%s:%s", session, persona, harness, human, nonce, digest(cwd))
 }
+
+// OutputLabel binds a piece of output to its turn, position and the agent
+// program's own session ID.
+func OutputLabel(session, turn string, seq int, final, ok bool, native string) string {
+	return fmt.Sprintf("geminus-output:%s:%s:%d:%d:%d:%s", session, turn, seq, bit(final), bit(ok), digest(native))
+}
+
+// DefaultsLabel binds stored defaults to the person they belong to.
+func DefaultsLabel(human string) string { return "geminus-defaults:" + human }
 
 // NodeLabel binds a node card to the peer that published it.
 func NodeLabel(peer string) string { return "geminus-node:" + peer }
@@ -153,4 +167,42 @@ type Defaults struct {
 type PersonaDefaults struct {
 	Harness string `json:"harness,omitempty"`
 	CWD     string `json:"cwd,omitempty"`
+}
+
+// sealed is how defaults are stored: the defaults as JSON text, signed.
+// Unsigned defaults would let anyone holding the Honcho token choose which
+// computer, program and directory the owner's next prompt goes to.
+type sealed struct {
+	V    int    `json:"v"`
+	Data string `json:"data"`
+	TS   int64  `json:"ts"`
+	Sig  string `json:"sig"`
+}
+
+// SealDefaults returns the form in which d is stored in the owner's peer
+// metadata.
+func SealDefaults(secret []byte, human string, d Defaults, ts int64) (any, error) {
+	d.V = 1
+	data, err := json.Marshal(d)
+	if err != nil {
+		return nil, err
+	}
+	return sealed{V: 1, Data: string(data), TS: ts, Sig: Sign(secret, string(data), DefaultsLabel(human), ts)}, nil
+}
+
+// OpenDefaults returns the defaults a member computer signed for this
+// person, or false.
+func OpenDefaults(secret []byte, human string, raw json.RawMessage) (Defaults, bool) {
+	var box sealed
+	if len(raw) == 0 || json.Unmarshal(raw, &box) != nil || box.Data == "" {
+		return Defaults{}, false
+	}
+	if !Verify(secret, box.Data, DefaultsLabel(human), box.TS, box.Sig) {
+		return Defaults{}, false
+	}
+	var d Defaults
+	if json.Unmarshal([]byte(box.Data), &d) != nil {
+		return Defaults{}, false
+	}
+	return d, true
 }

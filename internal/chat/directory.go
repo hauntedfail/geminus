@@ -4,7 +4,6 @@ package chat
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -65,7 +64,8 @@ func (a *App) loadDirectory() error {
 	a.personas, a.defaults = nil, wire.Defaults{}
 	for _, peer := range peers {
 		if peer.ID == a.Profile.Human {
-			_ = json.Unmarshal(peer.Metadata[wire.DefaultsKey], &a.defaults)
+			// Defaults that this group did not sign are not used.
+			a.defaults, _ = wire.OpenDefaults(a.Profile.Secret, a.Profile.Human, peer.Metadata[wire.DefaultsKey])
 			continue
 		}
 		if !a.Profile.IsAgent(peer.ID) {

@@ -75,7 +75,7 @@ func (a *App) say(text string) error {
 		return err
 	}
 	ts := a.Now().Unix()
-	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, nonce)
+	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, nonce, a.cwd)
 	prompt := wire.Message{V: 1, Role: wire.RolePrompt, TS: ts, Nonce: nonce, State: wire.StateQueued,
 		Sig: wire.Sign(a.Profile.Secret, text, label, ts)}
 	stored, err := a.Honcho.Post(ctx, a.session, a.Profile.Human, text, map[string]any{wire.Kind: prompt})
@@ -150,11 +150,17 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 		}
 		switch meta.Role {
 		case wire.RolePrompt:
-			if !a.shown[m.ID] && m.PeerID == a.Profile.Human {
-				// Typed in geminus on another computer.
-				a.shown[m.ID], a.waiting[m.ID] = true, true
-				a.Out.line(a.Out.dim("you, from another geminus: ") + sanitize(m.Content))
+			if !a.shown[m.ID] {
+				a.shown[m.ID] = true
 				printed = true
+				if !a.own(m, meta) {
+					// Written under the owner's name without the owner's signature.
+					a.Out.line(a.Out.warn("! ignored a message in this conversation that claims to be yours but is not signed"))
+					continue
+				}
+				// Typed in geminus on another computer.
+				a.waiting[m.ID] = true
+				a.Out.line(a.Out.dim("you, from another geminus: ") + sanitize(m.Content))
 			}
 			if !a.waiting[m.ID] || a.state[m.ID] == meta.State {
 				continue
@@ -194,8 +200,15 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 // genuine reports whether an output message was written by the persona's
 // bridge: Honcho itself does not prove who wrote a message.
 func (a *App) genuine(m honcho.Message, meta wire.Message) bool {
-	label := wire.OutputLabel(a.session, meta.Turn, meta.Seq, meta.Final, meta.OK)
+	label := wire.OutputLabel(a.session, meta.Turn, meta.Seq, meta.Final, meta.OK, meta.Native)
 	return m.PeerID == a.cur.Name && wire.Verify(a.Profile.Secret, m.Content, label, meta.TS, meta.Sig)
+}
+
+// own reports whether a prompt message was signed by the owner for this
+// conversation, harness and directory.
+func (a *App) own(m honcho.Message, meta wire.Message) bool {
+	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, meta.Nonce, a.cwd)
+	return m.PeerID == a.Profile.Human && wire.Verify(a.Profile.Secret, m.Content, label, meta.TS, meta.Sig)
 }
 
 // show prints one piece of an agent's output.
@@ -319,7 +332,26 @@ func (a *App) resume(want string) error {
 	a.harness, a.session, a.cwd, a.title = &harness, picked.ID, info.CWD, info.Title
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 
+	// The harness and directory come from the session's metadata, which
+	// anyone holding the Honcho token can rewrite; the prompts were signed
+	// for the real ones. If none of them verifies, the description was
+	// changed, and the next prompt would go somewhere the owner did not choose.
+	prompts, verified := 0, 0
+	for _, m := range messages {
+		if meta, ok := parseMeta(m); ok && meta.Role == wire.RolePrompt {
+			prompts++
+			if a.own(m, meta) {
+				verified++
+			}
+		}
+	}
+	if prompts > 0 && verified == 0 {
+		a.harness, a.session, a.cwd, a.title = nil, "", "", ""
+		return fmt.Errorf("conversation %s is not reopened: its harness or directory in Honcho does not match what its prompts were signed for", picked.ID)
+	}
+
 	a.Out.line(a.Out.dim("── conversation so far ──"))
+	unsigned := 0
 	for _, m := range messages {
 		meta, ok := parseMeta(m)
 		if !ok {
@@ -327,7 +359,7 @@ func (a *App) resume(want string) error {
 		}
 		a.shown[m.ID] = true
 		switch {
-		case meta.Role == wire.RolePrompt && m.PeerID == a.Profile.Human:
+		case meta.Role == wire.RolePrompt && a.own(m, meta):
 			a.Out.line(a.Out.dim("you: ") + sanitize(m.Content))
 			a.state[m.ID] = meta.State
 			if meta.State == wire.StateQueued || meta.State == wire.StateRunning {
@@ -338,7 +370,12 @@ func (a *App) resume(want string) error {
 			if meta.Final {
 				delete(a.waiting, meta.Turn)
 			}
+		default:
+			unsigned++
 		}
+	}
+	if unsigned > 0 {
+		a.Out.line(a.Out.warn(fmt.Sprintf("! %d message(s) in this conversation are not signed and are not shown", unsigned)))
 	}
 	a.Out.line(a.Out.dim("── end of history ──"))
 	if len(a.waiting) > 0 {

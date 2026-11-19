@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -22,10 +23,12 @@ func TestSignaturesAgreeWithTheBridge(t *testing.T) {
 		ts             int64
 		want           string
 	}{
-		{"hello 日本語", PromptLabel("sess", "mirai", "claude", "h1karu", "n1"), 1795000000,
-			"a856fb25c392f505afceddbebd59d7cf5437b3188bc710455f72f4d643ebfc55"},
-		{"out", OutputLabel("sess", "t1", 2, true, false), 1795000001,
-			"ddc02e4938b08b6d4ecc38e9caef640d7080b6845aa75da3fe3381bfd598787b"},
+		{"hello 日本語", PromptLabel("sess", "mirai", "claude", "h1karu", "n1", "/home/me/project"), 1795000000,
+			"dd4d6b5ee2e6b602decc820fc986e36b87e22079f181ac4da53ae686d3eef4cc"},
+		{"out", OutputLabel("sess", "t1", 2, true, false, "native-7"), 1795000001,
+			"e58aa5fc372066fa1e61ee6976f21f846df5c9ae0a78b98ddeb32aaeef7c6eba"},
+		{"out", OutputLabel("sess", "t1", 1, false, true, ""), 1795000001,
+			"feb5333a3f863f03101a38f5c1ec535f300961a6e3222db2dd0bcab431b68127"},
 		{"hermes,claude", NodeLabel("mirai"), 1795000002,
 			"7e68ce915739878d1586115f55e92f545df07cf7a1451889c2ef40bd7e8e7a92"},
 	} {
@@ -39,19 +42,55 @@ func TestSignaturesAgreeWithTheBridge(t *testing.T) {
 }
 
 func TestASignatureIsGoodForOnePurposeOnly(t *testing.T) {
-	sig := Sign(secret(), "deploy", PromptLabel("s1", "mirai", "claude", "h1karu", "n"), 100)
+	label := func(session, persona, harness, nonce, cwd string) string {
+		return PromptLabel(session, persona, harness, "h1karu", nonce, cwd)
+	}
+	sig := Sign(secret(), "deploy", label("s1", "mirai", "claude", "n", "/work"), 100)
 	for name, ok := range map[string]bool{
-		"other conversation": Verify(secret(), "deploy", PromptLabel("s2", "mirai", "claude", "h1karu", "n"), 100, sig),
-		"other persona":      Verify(secret(), "deploy", PromptLabel("s1", "sibyl", "claude", "h1karu", "n"), 100, sig),
-		"other harness":      Verify(secret(), "deploy", PromptLabel("s1", "mirai", "codex", "h1karu", "n"), 100, sig),
-		"other nonce":        Verify(secret(), "deploy", PromptLabel("s1", "mirai", "claude", "h1karu", "m"), 100, sig),
-		"other text":         Verify(secret(), "deploy!", PromptLabel("s1", "mirai", "claude", "h1karu", "n"), 100, sig),
-		"other time":         Verify(secret(), "deploy", PromptLabel("s1", "mirai", "claude", "h1karu", "n"), 101, sig),
-		"as output":          Verify(secret(), "deploy", OutputLabel("s1", "n", 1, true, true), 100, sig),
-		"other secret":       Verify(make([]byte, 32), "deploy", PromptLabel("s1", "mirai", "claude", "h1karu", "n"), 100, sig),
+		"other conversation": Verify(secret(), "deploy", label("s2", "mirai", "claude", "n", "/work"), 100, sig),
+		"other persona":      Verify(secret(), "deploy", label("s1", "sibyl", "claude", "n", "/work"), 100, sig),
+		"other harness":      Verify(secret(), "deploy", label("s1", "mirai", "codex", "n", "/work"), 100, sig),
+		"other nonce":        Verify(secret(), "deploy", label("s1", "mirai", "claude", "m", "/work"), 100, sig),
+		"other directory":    Verify(secret(), "deploy", label("s1", "mirai", "claude", "n", "/"), 100, sig),
+		"other text":         Verify(secret(), "deploy!", label("s1", "mirai", "claude", "n", "/work"), 100, sig),
+		"other time":         Verify(secret(), "deploy", label("s1", "mirai", "claude", "n", "/work"), 101, sig),
+		"as output":          Verify(secret(), "deploy", OutputLabel("s1", "n", 1, true, true, ""), 100, sig),
+		"other secret":       Verify(make([]byte, 32), "deploy", label("s1", "mirai", "claude", "n", "/work"), 100, sig),
 	} {
 		if ok {
 			t.Errorf("signature accepted for %s", name)
+		}
+	}
+	// A directory cannot be made to look like the fields beside it.
+	if label("s1", "mirai", "claude", "n:x", "") == label("s1", "mirai", "claude", "n", "x") {
+		t.Error("label fields can run into each other")
+	}
+	out := Sign(secret(), "done", OutputLabel("s1", "t", 1, true, true, "native-a"), 100)
+	if Verify(secret(), "done", OutputLabel("s1", "t", 1, true, true, "native-b"), 100, out) {
+		t.Error("an output signature was accepted for another program session")
+	}
+}
+
+func TestDefaultsMustBeSignedForTheirOwner(t *testing.T) {
+	d := Defaults{Persona: "mirai", Personas: map[string]PersonaDefaults{"mirai": {Harness: "claude", CWD: "/work"}}}
+	stored, err := SealDefaults(secret(), "h1karu", d, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(stored)
+	got, ok := OpenDefaults(secret(), "h1karu", raw)
+	if !ok || got.Persona != "mirai" || got.Personas["mirai"] != d.Personas["mirai"] {
+		t.Fatalf("defaults = %+v, %v", got, ok)
+	}
+	if _, ok := OpenDefaults(secret(), "someone", raw); ok {
+		t.Error("defaults sealed for h1karu opened for someone else")
+	}
+	// What a token holder could write: plain defaults, or sealed ones with the data changed.
+	plain, _ := json.Marshal(d)
+	changed := []byte(strings.Replace(string(raw), "mirai", "sibyl", 1))
+	for name, forged := range map[string][]byte{"plain": plain, "changed": changed, "empty": nil, "junk": []byte(`"x"`)} {
+		if _, ok := OpenDefaults(secret(), "h1karu", forged); ok {
+			t.Errorf("%s defaults were accepted", name)
 		}
 	}
 }

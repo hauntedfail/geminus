@@ -30,9 +30,14 @@ sig = hex( HMAC-SHA256( secret, SHA256(content) || SHA256(label) || decimal(ts) 
 
 | Record | content | label |
 |---|---|---|
-| Prompt | the message content | `geminus-prompt:<session>:<persona>:<harness>:<human>:<nonce>` |
-| Output | the message content | `geminus-output:<session>:<turn>:<seq>:<final 0 or 1>:<ok 0 or 1>` |
+| Prompt | the message content | `geminus-prompt:<session>:<persona>:<harness>:<human>:<nonce>:<H(cwd)>` |
+| Output | the message content | `geminus-output:<session>:<turn>:<seq>:<final 0 or 1>:<ok 0 or 1>:<H(native)>` |
 | Node card | harness IDs joined with `,` | `geminus-node:<peer>` |
+| Defaults | the defaults as JSON text | `geminus-defaults:<human>` |
+
+`H(x)` is the hex SHA-256 of `x`, used for free-form values so that they cannot run into the fields beside them.
+
+What a signature covers decides what cannot be changed behind the signer's back. A prompt is bound to the directory it runs in, because session metadata, where the directory is written, can be rewritten by anyone holding the Honcho token. An output piece is bound to the agent program's session ID it reports, because the bridge continues that session on the next prompt.
 
 ## Session
 
@@ -60,7 +65,7 @@ metadata  {"geminus": {"v": 1, "role": "prompt", "nonce": "<uuid>", "ts": 179508
                        "state": "queued"}}
 ```
 
-The bridge runs a prompt once, when all of these hold: the session is its own; the author is a member listed as `human`; the signature verifies; `ts` is at most 7 days old and not more than 5 minutes ahead; and it has not handled that `nonce` before (it remembers handled nonces locally). It then moves `state` through `running` to `done`, `failed` or `refused`, adding `detail` when there is something to say. Anything else is left alone.
+The bridge runs a prompt once, when all of these hold: the session is its own; the author is a member listed as `human`; the signature verifies for the session's persona, harness and `cwd` as its metadata states them now; `ts` is at most 7 days old and not more than 5 minutes ahead; and it has not handled that `nonce` before (it remembers handled nonces locally). It then moves `state` through `running` to `done`, `failed` or `refused`, adding `detail` when there is something to say. Anything else is left alone.
 
 Prompts of one session run one at a time, in the order Honcho stored them.
 
@@ -76,7 +81,7 @@ metadata  {"geminus": {"v": 1, "role": "output", "turn": "<id of the prompt mess
 
 `seq` counts from 1 within a turn. The last piece has `final: true`; `ok: false` on it means the turn failed and the content says why. Pieces are written as output arrives, at most every two seconds. geminus shows a piece only if its signature verifies.
 
-`native` is the session ID inside the agent program. The bridge reads it back from the newest output of the session to continue the same conversation there, so it keeps no table of its own; a person at that computer can open the same conversation with the program's own resume command.
+`native` is the session ID inside the agent program. The bridge reads it back from the newest output of the session that carries its own valid signature, to continue the same conversation there, so it keeps no table of its own; a person at that computer can open the same conversation with the program's own resume command.
 
 ## Node card
 
@@ -90,11 +95,17 @@ The bridge publishes it when it starts and every five minutes, listing the agent
 ## Defaults
 
 ```
-human peer metadata  {"geminus": {"v": 1, "persona": "mirai",
-                                  "personas": {"mirai": {"harness": "claude", "cwd": "/home/me/project"}}}}
+human peer metadata  {"geminus": {"v": 1, "data": "<the defaults as JSON text>", "ts": 1795083000, "sig": "…"}}
+
+the defaults         {"v": 1, "persona": "mirai",
+                      "personas": {"mirai": {"harness": "claude", "cwd": "/home/me/project"}}}
 ```
 
-Not signed: it only preselects what geminus offers, and every prompt is signed on its own.
+Signed, because they choose which computer, program and directory the owner's next prompt goes to. geminus ignores defaults that do not verify and asks instead.
+
+## What geminus shows
+
+geminus shows a prompt as the owner's, and an output as the agent's, only if its signature verifies; anything else in the conversation is counted and named as unsigned, never displayed. It does not reopen a conversation in which no prompt verifies against the harness and directory in the session's metadata: that means the metadata was changed after the prompts were signed.
 
 ## Doorbell
 

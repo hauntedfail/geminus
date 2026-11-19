@@ -189,7 +189,11 @@ func (a *App) setDefaults(arg string) error {
 	}
 	ctx, cancel := a.call()
 	defer cancel()
-	if err := a.Honcho.SetPeerMetadata(ctx, a.Profile.Human, wire.DefaultsKey, d); err != nil {
+	stored, err := wire.SealDefaults(a.Profile.Secret, a.Profile.Human, d, a.Now().Unix())
+	if err != nil {
+		return err
+	}
+	if err := a.Honcho.SetPeerMetadata(ctx, a.Profile.Human, wire.DefaultsKey, stored); err != nil {
 		return fmt.Errorf("the default was not saved: %w", err)
 	}
 	a.defaults = d

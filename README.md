@@ -130,8 +130,9 @@ geminus version | help
 
 Honcho has one workspace token and does not prove who wrote a message. So:
 
-- Every prompt is signed with the group secret, bound to its conversation, persona, harness and a one-time value. A bridge runs a prompt once, only if the signature verifies and the author is a human member. Someone holding only the Honcho token cannot make any computer run anything, and cannot replay or move a signed prompt.
-- Every piece of output is signed by the bridge. geminus does not show a message that claims to be an agent's words without that signature.
+- Every prompt is signed with the group secret, bound to its conversation, persona, harness, directory and a one-time value. A bridge runs a prompt once, only if the signature verifies and the author is a human member. Someone holding only the Honcho token cannot make any computer run anything, and cannot replay or move a signed prompt.
+- Every piece of output is signed by the bridge. geminus does not show a message that claims to be an agent's words, or yours, without the matching signature.
+- Your defaults are signed too, and a conversation whose harness or directory was changed in Honcho after you signed its prompts is not reopened. Otherwise the token would be enough to redirect your next prompt.
 - The group secret is the one already on your computers for geminish. Any computer that holds it can issue prompts as you; keeping the secret off a computer you do not trust that far is the control.
 
 The wording of a prompt is never part of this. Nothing is added to what you type.
