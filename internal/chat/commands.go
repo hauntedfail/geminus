@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hauntedfail/geminus/internal/wire"
 )
@@ -121,7 +122,13 @@ func (a *App) setDefaults(arg string) error {
 		return oneLine(v)
 	}
 	if key == "" {
-		a.Out.line("defaults (kept in Honcho, on " + oneLine(a.Profile.Human) + ")")
+		head := "defaults (kept in Honcho, on " + oneLine(a.Profile.Human)
+		if a.defaultsSaved > 0 {
+			// An older signed copy can be put back by whoever holds the
+			// Honcho token; the age makes that noticeable.
+			head += ", saved " + a.ago(time.Unix(a.defaultsSaved, 0))
+		}
+		a.Out.line(head + ")")
 		a.Out.line("  persona  " + show(a.defaults.Persona))
 		names := make([]string, 0, len(a.defaults.Personas))
 		for name := range a.defaults.Personas {
@@ -196,7 +203,7 @@ func (a *App) setDefaults(arg string) error {
 	if err := a.Honcho.SetPeerMetadata(ctx, a.Profile.Human, wire.DefaultsKey, stored); err != nil {
 		return fmt.Errorf("the default was not saved: %w", err)
 	}
-	a.defaults = d
+	a.defaults, a.defaultsSaved = d, a.Now().Unix()
 	if said == "" {
 		said = fmt.Sprintf("default %s: %s", key, show(value))
 	}

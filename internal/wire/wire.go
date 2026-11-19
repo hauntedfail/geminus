@@ -96,6 +96,29 @@ type Session struct {
 	// Updated is when the last prompt was written, for "the latest
 	// conversation": Honcho only records when a session was created.
 	Updated int64 `json:"updated,omitempty"`
+	// Sig signs the description: everything above except Pending.
+	Sig string `json:"sig,omitempty"`
+}
+
+// SessionLabel binds a session's description to its ID, target, owner and
+// directory.
+func SessionLabel(session, persona, harness, human, cwd string) string {
+	return fmt.Sprintf("geminus-session:%s:%s:%s:%s:%s", session, persona, harness, human, digest(cwd))
+}
+
+// SealSession signs the description of the session with the given ID. The
+// harness and directory of a conversation decide where the owner's next
+// prompt runs, so a description is only believed with this signature.
+// Pending is left out: the bridge flips it, and it only causes a read.
+func SealSession(secret []byte, id string, s Session) Session {
+	s.Sig = Sign(secret, s.Title, SessionLabel(id, s.Persona, s.Harness, s.Human, s.CWD), s.Updated)
+	return s
+}
+
+// VerifySession reports whether s is a description the group signed for the
+// session with this ID.
+func VerifySession(secret []byte, id string, s Session) bool {
+	return s.Sig != "" && Verify(secret, s.Title, SessionLabel(id, s.Persona, s.Harness, s.Human, s.CWD), s.Updated, s.Sig)
 }
 
 // SessionMetadata is a geminus session's whole metadata.
@@ -191,18 +214,22 @@ func SealDefaults(secret []byte, human string, d Defaults, ts int64) (any, error
 }
 
 // OpenDefaults returns the defaults a member computer signed for this
-// person, or false.
-func OpenDefaults(secret []byte, human string, raw json.RawMessage) (Defaults, bool) {
+// person and when they were saved, or false.
+//
+// The signature does not prove these are the newest: someone holding the
+// Honcho token can put back an older signed copy. Telling them apart would
+// need something remembered on this computer, and geminus keeps nothing; the
+// time saved is returned so that it can be shown.
+func OpenDefaults(secret []byte, human string, raw json.RawMessage) (d Defaults, saved int64, ok bool) {
 	var box sealed
 	if len(raw) == 0 || json.Unmarshal(raw, &box) != nil || box.Data == "" {
-		return Defaults{}, false
+		return Defaults{}, 0, false
 	}
 	if !Verify(secret, box.Data, DefaultsLabel(human), box.TS, box.Sig) {
-		return Defaults{}, false
+		return Defaults{}, 0, false
 	}
-	var d Defaults
 	if json.Unmarshal([]byte(box.Data), &d) != nil {
-		return Defaults{}, false
+		return Defaults{}, 0, false
 	}
-	return d, true
+	return d, box.TS, true
 }

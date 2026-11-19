@@ -28,10 +28,10 @@ func randomHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// meta is the open conversation as its session metadata describes it.
-func (a *App) meta(title string, pending bool) wire.Session {
-	return wire.Session{V: 1, Human: a.Profile.Human, Persona: a.cur.Name, Harness: a.harness.ID,
-		CWD: a.cwd, Title: title, Pending: pending, Updated: a.Now().Unix()}
+// meta is the signed description of the conversation with the given ID.
+func (a *App) meta(id, title string, pending bool) wire.Session {
+	return wire.SealSession(a.Profile.Secret, id, wire.Session{V: 1, Human: a.Profile.Human, Persona: a.cur.Name,
+		Harness: a.harness.ID, CWD: a.cwd, Title: title, Pending: pending, Updated: a.Now().Unix()})
 }
 
 func parseMeta(m honcho.Message) (wire.Message, bool) {
@@ -65,7 +65,7 @@ func (a *App) say(text string) error {
 		}
 		id := fmt.Sprintf("geminus-%s-%s-%s", a.cur.Name, a.Now().Format("20060102"), suffix)
 		a.title = clip(oneLine(text), 60)
-		if err := a.Honcho.CreateSession(ctx, id, wire.SessionMetadata(a.meta(a.title, false)), a.Profile.Human, a.cur.Name); err != nil {
+		if err := a.Honcho.CreateSession(ctx, id, wire.SessionMetadata(a.meta(id, a.title, false)), a.Profile.Human, a.cur.Name); err != nil {
 			return fmt.Errorf("nothing was sent: the conversation could not be created: %w", err)
 		}
 		a.session = id
@@ -85,7 +85,7 @@ func (a *App) say(text string) error {
 	a.shown[stored.ID], a.waiting[stored.ID] = true, true
 	// The mark is what the bridge looks for. Without it the prompt is
 	// stored but nobody picks it up, so say exactly that.
-	if err := a.Honcho.SetSessionMetadata(ctx, a.session, wire.SessionMetadata(a.meta(a.title, true))); err != nil {
+	if err := a.Honcho.SetSessionMetadata(ctx, a.session, wire.SessionMetadata(a.meta(a.session, a.title, true))); err != nil {
 		return fmt.Errorf("the prompt is stored but could not be marked for %s to pick up (%w); send it again", a.cur.Name, err)
 	}
 	note := "recorded in Honcho for " + a.cur.Name
@@ -224,32 +224,54 @@ func (a *App) show(content string, meta wire.Message) {
 }
 
 // conversations lists the person's conversations with the current persona,
-// newest first.
-func (a *App) conversations() ([]honcho.Session, error) {
+// most recently used first, and how many sessions in Honcho claim to be such
+// a conversation without the group's signature.
+//
+// An unsigned description is not a conversation: anyone holding the Honcho
+// token can create a session that names a harness and a directory, and
+// reopening it would send the owner's next prompt there.
+func (a *App) conversations() (signed []honcho.Session, unsigned int, err error) {
 	ctx, cancel := a.call()
 	defer cancel()
 	sessions, err := a.Honcho.Sessions(ctx, map[string]any{"kind": wire.Kind,
 		wire.Kind: map[string]any{"persona": a.cur.Name, "human": a.Profile.Human}})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	updated := map[string]int64{}
+	for _, s := range sessions {
+		info, ok := sessionInfo(s)
+		if !ok || info.Persona != a.cur.Name || info.Human != a.Profile.Human || !wire.VerifySession(a.Profile.Secret, s.ID, info) {
+			unsigned++
+			continue
+		}
+		updated[s.ID] = info.Updated
+		signed = append(signed, s)
 	}
 	// Honcho lists by creation; the latest conversation is the one last
 	// written to.
-	updated := func(s honcho.Session) int64 {
-		info, _ := sessionInfo(s)
-		return info.Updated
+	sort.SliceStable(signed, func(i, j int) bool { return updated[signed[i].ID] > updated[signed[j].ID] })
+	return signed, unsigned, nil
+}
+
+// unsignedNote says that sessions were left out, when any were.
+func (a *App) unsignedNote(n int) string {
+	if n == 0 {
+		return ""
 	}
-	sort.SliceStable(sessions, func(i, j int) bool { return updated(sessions[i]) > updated(sessions[j]) })
-	return sessions, nil
+	return fmt.Sprintf("%d session(s) in Honcho claim to be your conversations with %s but are not signed; they are ignored", n, a.cur.Name)
 }
 
 func (a *App) showSessions() error {
 	if a.cur == nil {
 		return errors.New("pick a persona first (/persona)")
 	}
-	sessions, err := a.conversations()
+	sessions, unsigned, err := a.conversations()
 	if err != nil {
 		return err
+	}
+	if note := a.unsignedNote(unsigned); note != "" {
+		a.Out.line(a.Out.warn("! " + note))
 	}
 	if len(sessions) == 0 {
 		a.Out.line("  no conversations with " + a.cur.Name + " yet")
@@ -275,9 +297,12 @@ func (a *App) resume(want string) error {
 	if a.cur == nil {
 		return errors.New("pick a persona first (/persona)")
 	}
-	sessions, err := a.conversations()
+	sessions, unsigned, err := a.conversations()
 	if err != nil {
 		return err
+	}
+	if note := a.unsignedNote(unsigned); note != "" {
+		a.Out.line(a.Out.warn("! " + note))
 	}
 	if len(sessions) == 0 {
 		return fmt.Errorf("there are no conversations with %s yet", a.cur.Name)
@@ -332,10 +357,10 @@ func (a *App) resume(want string) error {
 	a.harness, a.session, a.cwd, a.title = &harness, picked.ID, info.CWD, info.Title
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 
-	// The harness and directory come from the session's metadata, which
-	// anyone holding the Honcho token can rewrite; the prompts were signed
-	// for the real ones. If none of them verifies, the description was
-	// changed, and the next prompt would go somewhere the owner did not choose.
+	// The description was verified when the conversations were listed. As a
+	// second check, the prompts were signed for the same harness and
+	// directory: if there are prompts and none verifies, something is wrong
+	// and the next prompt must not go there.
 	prompts, verified := 0, 0
 	for _, m := range messages {
 		if meta, ok := parseMeta(m); ok && meta.Role == wire.RolePrompt {
@@ -351,7 +376,7 @@ func (a *App) resume(want string) error {
 	}
 
 	a.Out.line(a.Out.dim("── conversation so far ──"))
-	unsigned := 0
+	unsigned = 0
 	for _, m := range messages {
 		meta, ok := parseMeta(m)
 		if !ok {

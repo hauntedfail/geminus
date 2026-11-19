@@ -33,6 +33,7 @@ sig = hex( HMAC-SHA256( secret, SHA256(content) || SHA256(label) || decimal(ts) 
 | Prompt | the message content | `geminus-prompt:<session>:<persona>:<harness>:<human>:<nonce>:<H(cwd)>` |
 | Output | the message content | `geminus-output:<session>:<turn>:<seq>:<final 0 or 1>:<ok 0 or 1>:<H(native)>` |
 | Node card | harness IDs joined with `,` | `geminus-node:<peer>` |
+| Session | the title | `geminus-session:<session>:<persona>:<harness>:<human>:<H(cwd)>`, with `ts` = `updated` |
 | Defaults | the defaults as JSON text | `geminus-defaults:<human>` |
 
 `H(x)` is the hex SHA-256 of `x`, used for free-form values so that they cannot run into the fields beside them.
@@ -47,10 +48,12 @@ peers     the human and the persona, neither observed (a conversation is not mem
 metadata  {"kind": "geminus",
            "geminus": {"v": 1, "human": "h1karu", "persona": "mirai", "harness": "claude",
                        "cwd": "/home/me/project", "title": "first words of the first prompt",
-                       "pending": true, "updated": 1795083503}}
+                       "pending": true, "updated": 1795083503, "sig": "…"}}
 ```
 
 `harness` and `cwd` are fixed when the session is created: a conversation belongs to one agent program in one directory. An empty `cwd` means the bridge's default directory.
+
+`sig` signs the description: persona, harness, human, `cwd`, title and `updated`, bound to the session ID. geminus treats a session as one of the owner's conversations only if it verifies; a session anyone else created, or whose description was changed, is counted and ignored, never listed or reopened. `pending` is outside the signature, because the bridge flips it and it only causes a read.
 
 `updated` is when the last prompt was written; geminus sorts conversations by it, because Honcho records only when a session was created.
 
@@ -102,6 +105,8 @@ the defaults         {"v": 1, "persona": "mirai",
 ```
 
 Signed, because they choose which computer, program and directory the owner's next prompt goes to. geminus ignores defaults that do not verify and asks instead.
+
+The signature does not prove the defaults are the newest. Someone holding the Honcho token can put back an older copy the owner once signed. Detecting that would need a record on the owner's computer, and geminus keeps none; instead `/default` shows when the defaults were saved, and the persona, harness and directory in effect are on screen before anything is sent.
 
 ## What geminus shows
 

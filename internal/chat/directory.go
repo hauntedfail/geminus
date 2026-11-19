@@ -61,11 +61,11 @@ func (a *App) loadDirectory() error {
 	if err != nil {
 		return err
 	}
-	a.personas, a.defaults = nil, wire.Defaults{}
+	a.personas, a.defaults, a.defaultsSaved = nil, wire.Defaults{}, 0
 	for _, peer := range peers {
 		if peer.ID == a.Profile.Human {
 			// Defaults that this group did not sign are not used.
-			a.defaults, _ = wire.OpenDefaults(a.Profile.Secret, a.Profile.Human, peer.Metadata[wire.DefaultsKey])
+			a.defaults, a.defaultsSaved, _ = wire.OpenDefaults(a.Profile.Secret, a.Profile.Human, peer.Metadata[wire.DefaultsKey])
 			continue
 		}
 		if !a.Profile.IsAgent(peer.ID) {

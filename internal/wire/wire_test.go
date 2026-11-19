@@ -78,20 +78,51 @@ func TestDefaultsMustBeSignedForTheirOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(stored)
-	got, ok := OpenDefaults(secret(), "h1karu", raw)
-	if !ok || got.Persona != "mirai" || got.Personas["mirai"] != d.Personas["mirai"] {
-		t.Fatalf("defaults = %+v, %v", got, ok)
+	got, saved, ok := OpenDefaults(secret(), "h1karu", raw)
+	if !ok || saved != 42 || got.Persona != "mirai" || got.Personas["mirai"] != d.Personas["mirai"] {
+		t.Fatalf("defaults = %+v, saved %d, %v", got, saved, ok)
 	}
-	if _, ok := OpenDefaults(secret(), "someone", raw); ok {
+	if _, _, ok := OpenDefaults(secret(), "someone", raw); ok {
 		t.Error("defaults sealed for h1karu opened for someone else")
 	}
 	// What a token holder could write: plain defaults, or sealed ones with the data changed.
 	plain, _ := json.Marshal(d)
 	changed := []byte(strings.Replace(string(raw), "mirai", "sibyl", 1))
 	for name, forged := range map[string][]byte{"plain": plain, "changed": changed, "empty": nil, "junk": []byte(`"x"`)} {
-		if _, ok := OpenDefaults(secret(), "h1karu", forged); ok {
+		if _, _, ok := OpenDefaults(secret(), "h1karu", forged); ok {
 			t.Errorf("%s defaults were accepted", name)
 		}
+	}
+}
+
+func TestSessionDescriptionMustBeSigned(t *testing.T) {
+	s := SealSession(secret(), "geminus-mirai-1", Session{V: 1, Human: "h1karu", Persona: "mirai", Harness: "claude",
+		CWD: "/work", Title: "fix the build", Updated: 500})
+	if !VerifySession(secret(), "geminus-mirai-1", s) {
+		t.Fatal("a sealed description does not verify")
+	}
+	// The bridge flips pending; that must not break the seal.
+	flipped := s
+	flipped.Pending = !flipped.Pending
+	if !VerifySession(secret(), "geminus-mirai-1", flipped) {
+		t.Error("pending is part of the seal")
+	}
+	change := func(f func(*Session)) Session { c := s; f(&c); return c }
+	for name, bad := range map[string]Session{
+		"other directory": change(func(c *Session) { c.CWD = "/" }),
+		"other harness":   change(func(c *Session) { c.Harness = "codex" }),
+		"other persona":   change(func(c *Session) { c.Persona = "sibyl" }),
+		"other owner":     change(func(c *Session) { c.Human = "someone" }),
+		"other title":     change(func(c *Session) { c.Title = "x" }),
+		"made newer":      change(func(c *Session) { c.Updated = 9999999999 }),
+		"no signature":    change(func(c *Session) { c.Sig = "" }),
+	} {
+		if VerifySession(secret(), "geminus-mirai-1", bad) {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if VerifySession(secret(), "geminus-mirai-2", s) {
+		t.Error("a description sealed for one session was accepted for another")
 	}
 }
 

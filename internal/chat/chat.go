@@ -87,8 +87,10 @@ type App struct {
 
 	personas []Persona
 	defaults wire.Defaults
-	cur      *Persona
-	harness  *wire.Harness
+	// defaultsSaved is when the defaults in Honcho were signed; 0 if none.
+	defaultsSaved int64
+	cur           *Persona
+	harness       *wire.Harness
 	// cwd is the directory for the next new conversation; session is the
 	// open conversation, or "" before the first prompt creates one.
 	cwd, session string
