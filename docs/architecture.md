@@ -1,309 +1,84 @@
 # geminus architecture
 
-This document describes how the code works today. The original plan is in `plans/geminus/plan.md`.
-See [Differences from the plan](#differences-from-the-plan) for discrepancies. Where the two differ, the implementation is authoritative.
+This document describes how the code works today.
 
-## Goals
+## What geminus is for
 
-geminus is a CLI that relays input and output unchanged for Claude Code and Hermes Agent. It has four design goals:
+geminus lets one person talk directly to an agent that runs on another computer. Launching an agent that is already on this computer is not the point: the agent's own app does that. So geminus starts disconnected, shows who can be reached, and makes it visible at all times which persona it is connected to and whether that persona is local or remote.
 
-1. **Transparency:** Pass the agent's output through byte for byte without interpreting it.
-2. **Continuity:** Close a session and resume the conversation later with the same geminus session ID.
-3. **Low overhead:** No daemon, database, HTTP layer, or resident process. All state lives in local files.
-4. **Portability:** Offer the same commands on macOS, Linux, and Windows. Handle PTY differences internally.
+An earlier version (commit `d8ec09f`) wrapped the local `claude` and `hermes` command lines in a pseudo-terminal. That design answered the wrong question and was removed. `plans/geminus/plan.md` is its record.
 
-geminus implements no protocol and does not communicate over the network. It wraps agent CLIs on the same host.
-
-## Layers
+## Shape
 
 ```
-            ┌───────────────────────────────────────────┐
-  terminal  │  geminus (single binary)                  │
-  ──stdin──▶│                                           │
-            │  internal/cli      commands and exit codes│
-            │      │                                    │
-            │      ├─▶ internal/agent    build argv     │
-            │      ├─▶ internal/session  persist files  │
-            │      └─▶ internal/proxy    relay PTY I/O  │
-            │                        │                  │
-            │                        ▼                  │
-            │            go-pty (Unix PTY / ConPTY)     │
-            └────────────────────────┼──────────────────┘
-                                     ▼
-                          claude / hermes / any command
+  terminal ── geminus ── ssh ─────────────── agent's ACP server (hermes acp)
+                 │        one process per     on the persona's machine;
+                 │        connection          owns sessions, tools, history
+                 │
+                 ├── Honcho: POST /v3/workspaces/<ws>/peers/list   (who exists)
+                 └── ~/.geminus/config.json                        (how to reach them)
 ```
 
-| Package | Responsibility | Dependencies |
-|---|---|---|
-| `cmd/geminus` | Contains only `main`; exits with the return value of `cli.Run` | `internal/cli` |
-| `internal/cli` | Handles subcommands, flags, `config.json`, exit codes, and session startup and shutdown | `agent`, `session`, `proxy`, `x/term` |
-| `internal/agent` | Builds backend-specific argument lists, detects agents, and redacts secrets in launch arguments | Standard library |
-| `internal/session` | Reads and writes `session.json`, `transcript.jsonl`, and `raw.log` | Standard library |
-| `internal/proxy` | Allocates the PTY, manages raw mode and resizing, forwards signals, copies data in both directions, and reports exit codes | `go-pty`, `x/term`, `x/sys` |
-| `internal/version` | Provides the version string (overridden at build time with `-ldflags -X`) | Standard library |
-
-`agent`, `session`, and `proxy` do not depend on one another. Only `cli` ties them together.
-
-There are three external modules: `github.com/aymanbagabas/go-pty`, `golang.org/x/term`, and `golang.org/x/sys`.
-The binary can be cross-compiled with `CGO_ENABLED=0`.
-
-### Why use a PTY?
-
-`claude` and `hermes chat` are terminal UIs. Connecting them to pipes breaks colors, full-screen updates, and keyboard input.
-geminus gives the child a real TTY and relays data between the master side of the PTY and the user's terminal.
-The agent sees an ordinary terminal, and the user sees the agent as usual.
-
-Only `ask` skips the PTY. It runs a single noninteractive turn, launching the agent with pipes and capturing stdout.
-
-## Session model
-
-### Storage layout
-
-```
-$GEMINUS_HOME (defaults to ~/.geminus)
-  config.json                      Optional. Set {"agent": "hermes"} to change the default backend.
-  sessions/
-    <id>/
-      session.json                 Session metadata
-      transcript.jsonl             Append-only event stream
-      raw.log                      Raw PTY output (not created with --no-record)
-```
-
-- The state directory is chosen in this order: `--home`, the `GEMINUS_HOME` environment variable, then `~/.geminus`.
-- `<id>` has the form `YYYYMMDD-HHMMSS-<4 hex digits>`. It uses local time, so sorting by name gives chronological order.
-  Because the ID forms part of a path, geminus checks its format with a regular expression before accessing any files.
-- Directories use mode `0700` and files use `0600`. geminus reapplies these permissions on creation and when opening for append, even if the umask removed permissions or an existing file's permissions were too broad.
-- Directories are not created until the first `Create`. Neither `ls` nor `doctor` writes anything.
-
-### session.json
-
-```json
-{
-  "version": 1,
-  "id": "20261119-122625-df5d",
-  "title": "first prompt",
-  "agent": "claude",
-  "agent_session": { "kind": "uuid", "value": "65f7d3f5-8641-41bf-a82d-3abb247e72bd" },
-  "cwd": "/Users/vvx/projekt/go/geminus",
-  "created_at": "2026-11-19T12:26:25.883775+09:00",
-  "updated_at": "2026-11-19T12:26:26.134521+09:00",
-  "status": "exited",
-  "exit_code": 0,
-  "turns": 0,
-  "raw_bytes": 398
-}
-```
-
-- To update metadata, geminus writes a temporary file in the same directory, calls `fsync`, then replaces the original with `rename`. Readers see either the old contents or the new ones.
-- `status` goes from `created` to `running` to `exited`. While it is `running`, `pid` holds the PID of the geminus relay process.
-- `agent_session` identifies the conversation on the agent side. claude uses `kind: "uuid"`, hermes uses `kind: "name"`, and cmd has no key.
-- `exit_code` is absent until the child exits. Zero is stored as a value, too.
-- `turns` counts `ask` exchanges. `run` does not increment it because geminus does not count turns in an interactive conversation.
-- geminus rejects files whose `version` exceeds the current format version (1).
-
-### transcript.jsonl events
-
-The transcript is append-only, with one event per line. `seq` numbers events within a session and continues where it left off when the session resumes.
-
-| `type` | Meaning | Main fields |
-|---|---|---|
-| `session.start` | Agent started | `agent`, `argv` (secrets redacted) |
-| `input` | User input: only `ask` prompts and piped input to `run` | `text` |
-| `output` | Byte range in `raw.log` | `offset`, `bytes` |
-| `note` | Note from geminus (for example, `--fresh`, unsupported resume, or the recording limit) | `text` |
-| `session.exit` | Child exited | `code` |
-
-```json
-{"seq":1,"ts":"…","type":"session.start","agent":"claude","argv":["claude","--session-id","65f7…","first prompt"]}
-{"seq":2,"ts":"…","type":"input","text":"hello\nquit\n"}
-{"seq":3,"ts":"…","type":"output","offset":0,"bytes":149}
-{"seq":4,"ts":"…","type":"session.exit","code":0}
-```
-
-### Events and offsets
-
-An `output` event does not contain the output itself. It points to the byte range `[offset, offset+bytes)` in `raw.log`.
-
-- A TUI can write dozens of times per second. Rather than creating an event for every read, geminus groups consecutive output into one `output` event per one-second window. If another event occurs during the window, geminus flushes pending output first to preserve event order.
-- On resume, the initial offset is the existing length of `raw.log`. A session's `raw.log` contains the concatenated output from all its runs.
-- Interactive keystrokes are not recorded as input events. In raw mode, input consists of fragments of escape sequences; echoed input appears in `raw.log` as PTY output.
-- Each line is appended with a single `write` (`O_APPEND`). If a crash leaves an incomplete line without a trailing newline, the next append inserts a newline first. Readers skip malformed lines and return the rest.
-- When `raw.log` reaches 64 MiB, geminus stops recording and writes a single `note`. The relay continues.
-
-### Resuming a conversation
-
-geminus does not maintain conversation history. It relies on each agent's resume mechanism.
-
-| Scenario | Behavior |
+| Package | Responsibility |
 |---|---|
-| New session | The adapter creates a key, and geminus saves it in `session.json` before launching the agent. |
-| `run --resume ID` | Resume with the saved key. |
-| `run --resume ID --fresh` | Generate a new key and start a new conversation. The geminus session, including its recording and title, stays the same. |
-| Adapter without resume support (cmd) | Record a `note` and start a new process. |
-| `ask --session ID` / `ask --continue` | Continue with a one-shot request using the saved key. |
+| `cmd/geminus` | `main` only. |
+| `internal/chat` | The terminal interface: command line, prompt, status line, slash commands, turn display, permission prompts. |
+| `internal/persona` | The persona directory (Honcho peers plus configured routes) and the command that reaches a route. |
+| `internal/acp` | An Agent Client Protocol client over a child process's stdin and stdout. |
+| `internal/acp/acptest` | A scripted ACP agent for tests. |
+| `internal/version` | The version string. |
 
-When resuming, geminus runs the child in the `cwd` where the session was created because claude stores conversations by directory.
-If that differs from the current directory, geminus reports it on stderr. A relative `cwd` or one that no longer exists is an error.
+There are no third-party dependencies.
 
-### Detecting duplicate starts
+## Decisions
 
-If `status` in `session.json` is `running` and the process identified by `pid` is alive, geminus treats the session as open and refuses to start it unless you pass `--force`. There is no lock file.
+**Talk ACP to the agent's own server.** Hermes ships `hermes acp`; Claude Code has an ACP adapter. ACP gives structured turns, streaming, tool calls, permission requests, cancellation and session listing. geminus therefore never scrapes a terminal UI and never starts a process per turn. One agent process serves the whole connection, across `/new` and `/resume`.
 
-- Two processes can both start if their read and write operations overlap.
-- If another process reuses the PID, the session can appear open when it is not. `ls` reports a session marked `running` as `stale` if its PID is no longer alive.
+**Reach remote machines with ssh.** ssh already provides authentication, encryption and host verification that the person has set up, so geminus adds no credentials and no listener of its own. The route names an ssh host alias; everything else about the connection is ssh configuration. geminus runs ssh with `BatchMode=yes` so that a missing key fails with an error instead of a password prompt fighting the conversation for the terminal.
 
-### Safeguards when reading session data
+**Honcho says who, the config file says where.** The workspace's peers are the personas. Honcho knows nothing about hosts, and guessing a host from a persona's name would be a way to talk to the wrong machine, so routes are written down explicitly in `~/.geminus/config.json`. The one exception is this computer's own persona, which is known from the Hermes profile and needs no route. If Honcho cannot be read, geminus says so and offers only the personas it knows locally.
 
-Other programs can write to session files, so geminus does not trust their contents.
+**The remote owns the session.** Sessions, their history and their IDs live with the agent. geminus stores nothing about a conversation. `/sessions`, `--continue` and `/resume` ask the agent (`session/list`, `session/load`), so the list is always the truth, and the same session can be picked up from any computer.
 
-- If `session.json`, `transcript.jsonl`, or `raw.log` is not a regular file (for example, a symbolic link, named pipe, device, or directory), geminus returns `ErrNotRegular` without reading it. Following a symbolic link could make `geminus log` display a file outside the session. Opening a named pipe could block while waiting for a writer.
-- geminus checks with `Lstat`. On Unix it opens the file with `O_NOFOLLOW` and `O_NONBLOCK` and checks the open file with `fstat` in case it was replaced between `Lstat` and `open`. Windows uses only `Lstat` and the post-open check.
-- The same checks apply when opening for append. On Unix, geminus uses `O_NOFOLLOW` and `O_NONBLOCK` and verifies that the open file is regular before setting permissions. It does not distinguish hard links: creating one requires write access to the session directory, which already allows its contents to be replaced directly.
-- If the session directory `sessions/<id>` is itself a symbolic link, geminus neither reads nor writes its target. `rm` removes only the link. `GEMINUS_HOME` and its parent directories may be symbolic links.
-- `ls` and `show` replace control characters in fields such as `title` and `cwd` with `?` before displaying them. `log` strips control sequences by default.
-- On resume, `cwd` must be an absolute path to an existing directory.
+**State is always on screen.** The prompt is `sibyl [REMOTE] ❯` when connected and `geminus (disconnected) ❯` when not. The status line (shown on every change and by `/status`) adds the agent, the route, the session and the directory. The local persona always carries `[THIS COMPUTER]`.
 
-## Adapter contract
+**Nothing is sent by accident.** Text typed while disconnected is not sent. A message in flight when the connection drops is not sent again; the person is told it may not have arrived. A tool call runs only after an explicit `y` or `a`.
 
-Each backend implements `agent.Adapter`. An adapter builds argument lists; it does not launch processes.
+## A connection
 
-```go
-type Adapter interface {
-    Name() string                 // Name passed to --agent
-    Binary() string               // Executable to look up on PATH; empty for cmd
-    Capabilities() Capabilities   // Resume / Oneshot / SessionKey
-    NewKey(geminusID string, fresh bool) (SessionKey, error)
-    Interactive(req Request) ([]string, error)            // argv for run
-    Oneshot(req Request, prompt string) ([]string, error) // argv for ask
-}
-```
+1. `persona.Route.Exec` builds the process: the agent command itself for a local route, or `ssh -T -oBatchMode=yes -oConnectTimeout=10 -- ALIAS sh -lc 'exec hermes acp'` for a remote one. The login shell is there because a non-interactive ssh command gets a minimal `PATH`, which does not include `~/.local/bin` where agents are usually installed.
+2. `acp.Start` runs it with pipes on stdin and stdout, keeps the last lines of stderr, and puts the process in its own process group (see below).
+3. `initialize` exchanges versions and capabilities. Then `session/new` starts a conversation, or `session/list` plus `session/load` reopens one; the agent replays the history, which geminus prints.
+4. Each message is one `session/prompt`. While it is in flight the agent sends `session/update` notifications (reply text, reasoning, tool calls) and may send `session/request_permission` requests, which geminus answers from the keyboard.
+5. Closing stdin ends the agent. If it does not exit within three seconds it is killed.
 
-| | claude | hermes | cmd |
-|---|---|---|---|
-| Key | UUIDv4 generated by geminus | Session name (the geminus ID) | None |
-| New | `claude --session-id <uuid> [prompt]` | `hermes chat -c <name> --create-if-missing [-q prompt]` | argv after `--`, unchanged |
-| Resume | `claude --resume <uuid> [prompt]` | Same as new | `ErrNoResume` (the CLI starts a new process) |
-| One-shot | `claude -p --session-id\|--resume <uuid> <prompt>` | Append `-q <prompt> --oneshot` to the new-session argv | `ErrNoOneshot` |
-| Key with `--fresh` | New UUID | `<ID>-<4 hex digits>` | Not applicable (error) |
+### Why the process group matters
 
-Rules:
+A terminal delivers Ctrl-C to every process in the foreground process group. If ssh shared geminus's group, interrupting a reply would kill the connection. `acp.Start` starts the child in a new group (`Setpgid` on Unix, `CREATE_NEW_PROCESS_GROUP` on Windows), so Ctrl-C reaches only geminus, which turns it into a `session/cancel` message. The agent then ends the turn with the stop reason `cancelled` and the session stays usable.
 
-- Positional arguments are joined with spaces to form a single prompt. A prompt starting with `-` is a usage error because the agent would interpret it as a flag.
-- Each adapter validates its key format (the shape of a UUID or the characters allowed in a hermes name). Even if someone edits `session.json`, an invalid key never reaches argv.
-- geminus looks up the executable on `PATH` before launch. If it is missing, geminus stops before creating a session and suggests running `doctor`.
-- If launch fails, geminus deletes a newly created session or restores an existing session's metadata to its pre-launch state.
+`acp.Client.Prompt` registers the cancel only after the prompt request has been written, so a cancel can never arrive ahead of the turn it is meant to stop.
 
-### Redacting secrets in launch arguments
+### Errors
 
-Both `argv` in `session.start` and the cmd backend's default title pass through `agent.RedactArgv`. It replaces values with `[REDACTED]` but keeps the key names.
+When the agent's output ends, every pending call fails with `acp.ErrClosed` carrying the notable tail of the process's stderr: for example `sh: 1: exec: hermes: not found`, or ssh's own `Permission denied (publickey)`. Agents log their startup at INFO level on stderr; those lines are dropped when anything else was written. The interface prints the error, switches to the disconnected prompt, and remembers the session so that `/resume` reconnects to it.
 
-- Flags and environment-style assignments: `--api-key VALUE`, `--token=VALUE`, `OPENAI_API_KEY=VALUE`. Matching uses the end of the key name, so `--max-tokens` and `--tokenizer` do not match.
-- Assignments embedded in a single argument: `NAME_TOKEN=value`, `NAME_TOKEN="value"`, `NAME_TOKEN='value'`. Quotation marks are preserved.
-- Headers: `X-Api-Key: value`, `client_secret: value`. Only compound names containing a separator match. Standalone `token:` and `password:` do not match, so text such as `Unexpected token: }` is left alone.
-- JSON keys: `"token": "value"`, `'password': 'value'`. If both key and value are quoted, even a single-word key matches.
-- `Authorization: Bearer value` (the scheme name is preserved), `Authorization: value`, and `scheme://user:pass@host`. An unquoted `Authorization:` value is redacted only if it consists of one or two words, so prose such as `authorization: handled by the middleware` is left alone.
+An error reply from the agent (`acp.RPCError`) is shown with the agent's message and does not end the connection.
 
-Redaction cannot identify every secret in arbitrary text. It can miss `--token value` inside a single argument or `password: value` in prose, for example. With `--no-record`, all arguments except the command name are hidden.
-Redaction applies only to argv; it does not modify `raw.log`.
+Hermes answers `session/load` for an unknown ID with a null result, which the protocol also uses for success. geminus therefore resolves the ID against `session/list` first whenever the agent can list sessions.
 
-## PTY relay and raw mode
+## What goes on the screen
 
-`proxy.Run` handles one relay session. The terminal (`Terminal`) and child launcher (`Spawner`) are interfaces; tests can substitute in-memory implementations.
+Agent text is printed as it arrives, with control characters removed so that a reply cannot move the cursor, change colors or set the window title. Reasoning is reduced to one `… thinking` line. A tool call is one dim line with its title; a failed one gets a second line. `internal/chat.Printer` tracks whether the cursor is in the middle of a line so that these side notes and the status line always start on a line of their own.
 
-Sequence of operations:
+Input is read line by line in the terminal's normal mode, so the terminal's own line editing and input methods work. When stdin is not a terminal, each line is echoed, which keeps piped runs and test output readable. Color is used only on a terminal and is turned off by `NO_COLOR`.
 
-1. Start handling signals (SIGINT, SIGTERM, SIGHUP, SIGQUIT, and SIGPIPE on Unix).
-2. If the input is a TTY, enter raw mode. Use `defer` to restore the terminal.
-3. Read the terminal size, allocate a PTY of that size, and launch the child. If the size is unavailable, use 80x24.
-4. Use separate goroutines to copy output (PTY to terminal and `raw.log`) and input (terminal to PTY).
-5. Forward resize events and signals to the child.
-6. Wait for the child to exit, drain the remaining output, then close the PTY.
-7. Restore the terminal and stop handling signals.
+## Tests
 
-Key details:
-
-- **Signal handling begins before raw mode and ends after restoration.** Otherwise, the default action for SIGTERM could leave the terminal in raw mode. geminus forwards signals to the child's process group and waits for the child before exiting normally. It handles SIGPIPE without forwarding it: writing to a closed stdout returns EPIPE, allowing geminus to restore the terminal before exiting.
-- **In raw mode, Ctrl-C is not a signal at the user's terminal.** The byte `0x03` passes through the PTY, and the terminal driver on the child's side sends SIGINT to the child.
-- **Non-TTY input does not trigger raw mode.** At EOF, geminus sends EOT (`0x04`) to the child once. EOT in the middle of a line does not signal EOF, so geminus first adds a newline if the input did not end with one. The child still gets a PTY, which echoes the input.
-- **Failure to allocate a PTY is an error.** geminus does not silently fall back to pipes because that would break the TUI.
-- **Recording failures do not stop the relay.** If a write to `raw.log` fails, geminus stops recording but continues relaying and issues a warning after the session ends.
-- **Exit codes** come directly from the child. On Unix, if a signal terminates the child, the code is 128 + the signal number.
-- **After the child exits,** geminus reads until PTY EOF. EOF may never arrive if a grandchild holds the PTY open or when using ConPTY, so draining stops after 100 ms without output or two seconds overall.
-
-Platform differences:
-
-| | Unix | Windows |
+| Level | What runs | What it shows |
 |---|---|---|
-| PTY | `openpty` via go-pty | ConPTY via go-pty |
-| Resize detection | SIGWINCH | Compare sizes every 250 ms |
-| Signal forwarding | `kill` the child's process group with the signal | Send Ctrl-C as the input byte `0x03`; force termination for other signals |
-| Terminal setup | Raw mode | Raw mode with VT input and output enabled |
-| Echo check (`doctor`) | Read the termios `ECHO` flag | Not supported |
+| `internal/acp` | The client against the scripted agent, in process and as a child process | Handshake, streaming, permissions, cancel, load and list, stderr in errors, process group |
+| `internal/persona` | `Load` against a stub Honcho server and temporary profiles | Filtering to agents, locality, routes, fallback when Honcho is down, invalid routes rejected |
+| `internal/chat` | The interface against in-process scripted agents | Every command, the prompts and status lines, disconnect and reconnect, interrupt, output sanitizing |
+| `test` | The built binary with a fake `ssh`, the scripted agent and a stub Honcho | The pieces together, including the exact ssh command line and continuing a session from a second process |
 
-### Terminal checks in doctor
-
-`geminus doctor` reports whether stdin is a TTY, the terminal size, and whether echo is disabled.
-
-Raw mode disables echo. If echo is off while geminus is not relaying, a process may have exited without restoring the terminal. This can happen to geminus itself because it cannot catch `SIGKILL`.
-If echo is off, `doctor` reports `warn` and suggests `stty sane` in a one-line message. It does not change the terminal settings.
-
-With `--json`, the output includes a `terminal` object:
-
-```json
-"terminal": { "tty": true, "cols": 120, "rows": 40, "echo": true, "echo_supported": true }
-```
-
-- `tty` indicates whether stdin is a terminal.
-- `cols` and `rows` are 0 if the size is unavailable.
-- `echo_supported` indicates whether the echo setting could be read. It is `false` on Windows or when none of stdin, stdout, and stderr is a terminal. In that case `echo` has no meaning.
-
-## Failure modes
-
-| Condition | Behavior |
-|---|---|
-| Agent executable missing | Stop before creating a session, suggest `doctor`, and exit with code 1. |
-| Unknown `--agent` | Usage error (exit code 2). |
-| Cannot allocate a PTY | Stop with an error; do not fall back to pipes. Delete any session created for this run. |
-| Cannot launch the child | Delete a newly created session. For an existing session, restore the metadata and record a `note`. |
-| Agent no longer has the conversation to resume | geminus does not detect this. The user sees the agent's error, and geminus returns its exit code. Use `--fresh` to start over. |
-| Cannot write to `raw.log` or `transcript.jsonl` | Continue relaying and warn on stderr after exit. |
-| `raw.log` reaches 64 MiB | Stop recording, but keep relaying. Record a `note`. |
-| Session already open | Refuse to start unless `--force` is given. |
-| Corrupt `session.json` | Return `ErrCorrupt`. `ls` lists the remaining sessions and warns on stderr; `rm` can still delete the corrupt session. |
-| Malformed line in `transcript.jsonl` | Skip that line. `log --json` prints the readable events and exits with code 1. |
-| Session file is not a regular file | Return `ErrNotRegular` without reading it. |
-| geminus receives SIGTERM or SIGHUP | Forward the signal to the child, wait for it to exit, and restore the terminal. |
-| geminus receives SIGKILL | The terminal stays in raw mode. `doctor` detects it; `stty sane` restores it. |
-| Secrets in recordings | Protections include `0600` files, `0700` directories, redaction of launch argument values, and `--no-record`. |
-
-geminus does not read, store, or forward credentials. The agent simply inherits its environment unchanged.
-
-## Non-goals
-
-The following are out of scope for v0.1:
-
-- **Attach:** Connecting to a running session from another terminal (tmux-style multiplexing). Reopen with `--resume` to continue instead.
-- **Daemon, backend service, or relay service:** There is no resident process or IPC.
-- **History reinjection:** Summarizing a conversation and feeding it back to the agent. geminus does not maintain history; it relies on the agent to resume conversations.
-- Agent-to-agent communication, sending to multiple agents at once, and push notifications.
-- Credential management.
-- A GUI or TUI dashboard.
-
-## Differences from the plan
-
-Where `plans/geminus/plan.md` differs from the implementation, the implementation is authoritative.
-
-| Plan | Implementation |
-|---|---|
-| Two external dependencies: `go-pty` and `x/term` | `golang.org/x/sys` is also a direct dependency so `doctor` can read the termios `ECHO` flag. `x/term` already uses that module, so `go.sum` did not change. |
-| `run` selects a session by `--resume`, new session, or most recent session | `run` only resumes an explicit session or starts a new one. `ask --continue` selects the most recent session. |
-| Missing conversation on resume: error and a hint to use `--fresh` | geminus does not detect this; the agent reports its own error. The README explains `--fresh`. |
-| On non-TTY EOF, send `\x04` once | If the input does not end in a newline, send `\n\x04` (EOT in the middle of a line does not signal EOF). |
-| One `output` event per read | Group output into one event per one-second window. |
-| No `pid` in the `session.json` example | While `running`, the session has a `pid` for detecting duplicate starts. |
-| No `run --force` in the CLI listing | Both `run --force` and `rm --force` are available. |
-| No description of `ls --all` | `ls` lists the 20 newest sessions first by default; `--all` lists them all. |
-| Redact values for flags like `--api-key`, `--token`, and `--password` | Also redact environment-style values, embedded assignments (including quoted ones), headers, values of JSON keys, and URL userinfo. |
-| No mention of symbolic links | Session files and directories are read or written only if they are regular files and real directories, respectively. |
-| Use `doctor` to check whether the terminal was restored | Read the echo setting and warn if it is off. Not supported on Windows. |
-| Windows: guarantee only that ConPTY compiles | As planned. Runtime behavior on Windows has not been verified. |
+The scripted agent proves the client and the interface. It does not prove that a real agent behaves the same way; that was checked by hand against Hermes (see the README's runtime table) and has not been checked for Claude Code or on Windows.

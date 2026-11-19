@@ -1,6 +1,6 @@
 # geminus — Implementation plan for a lightweight agent client
 
-- Status: **Implementation complete and verified (2026-11-19)**
+- Status: **Superseded on 2026-11-19.** Sections 1–11 record the first design, a local PTY wrapper, which was removed. Section 12 and `docs/architecture.md` describe what geminus is now.
 - Repository: `/Users/vvx/projekt/go/geminus`
 - Language: Go (single static binary, CGO disabled)
 - Created: 2026-11-19
@@ -293,3 +293,36 @@ All seven units are complete. The single-binary Go implementation is in `/Users/
 1. Whether to start using Git (`git init` + initial commit, following the signed-commit policy). **Not executed**.
 2. Whether to create `hauntedfail/geminus` on GitHub (publication and push require owner approval). **Not executed**.
 3. Acceptance testing on Windows hardware (mirai). The Linux test suite passed in a container. Testing with real agents on sibyl would access the VPS, so wait for the owner's instructions.
+
+---
+
+## 12. Redesign: remote personas (2026-11-19)
+
+The first design launched the `claude` or `hermes` already installed on the same computer. That is not what geminus is for: the purpose is to talk directly to an agent on another computer. The owner rejected the local wrapper, and its code (`internal/cli`, `internal/proxy`, `internal/session`, `internal/agent`) was deleted. It remains in git history at `d8ec09f`.
+
+### What replaced it
+
+- `geminus` starts disconnected and lists the personas of the Honcho workspace. `geminus persona NAME` connects to one.
+- geminus speaks ACP to the agent's own ACP server (`hermes acp`) over one ssh connection per conversation. No per-turn process, no terminal scraping, no daemon.
+- Honcho says who exists; `~/.geminus/config.json` says how to reach each persona. This computer's own persona is tagged `THIS COMPUTER` and needs no route.
+- The persona and the connection state are always visible in the prompt and the status line.
+- Sessions live with the agent. geminus stores no conversation.
+
+### Verified by running it
+
+| Check | Result |
+|---|---|
+| `go vet ./...`, `go test ./... -count=1 -race` (macOS) | pass |
+| Same tests in a Linux container (`scripts/test-linux.sh`) | pass |
+| Cross-build, 6 targets | pass |
+| chrome → sibyl (Hermes 0.23.0 over ssh), in a real terminal | two turns with memory across them; Ctrl-C stopped a long reply and the connection survived; `/status`, `/sessions`, `/quit` |
+| chrome → sibyl, `--continue` from a second process | history replayed; the agent recalled a code word from the first process |
+| chrome → chrome (local Hermes 0.22.5) | one turn, tagged `THIS COMPUTER` |
+| `geminus persona mirai` (no route) | exit 1 with the config entry to add |
+
+### Not verified
+
+- Claude Code through `claude-agent-acp`. No machine here has the adapter.
+- Windows on a real machine (compile and vet only).
+- mirai. It is behind NAT and this computer has no ssh route to it.
+- A tool permission prompt against a real agent. The prompt is covered by tests with the scripted agent only.

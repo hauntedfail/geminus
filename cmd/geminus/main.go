@@ -1,12 +1,13 @@
-// Command geminus relays Claude Code and Hermes Agent I/O through a PTY.
+// Command geminus talks to agents on other computers.
 package main
 
 import (
+	"context"
 	"os"
 
-	"github.com/hauntedfail/geminus/internal/cli"
+	"github.com/hauntedfail/geminus/internal/chat"
 )
 
 func main() {
-	os.Exit(cli.Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	os.Exit(chat.Run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
