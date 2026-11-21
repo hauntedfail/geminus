@@ -242,7 +242,11 @@ func (a *App) status() string {
 	if a.tuning.Effort != "" {
 		tuned += "  effort " + oneLine(a.tuning.Effort)
 	}
-	return fmt.Sprintf("● %s  %s%s  %s  %s%s", who(p), oneLine(a.harness.Name), tuned, bridge, conversation, where)
+	update := ""
+	if v := a.newerRelease(); v != "" {
+		update = "  update " + v + " available (/update)"
+	}
+	return fmt.Sprintf("● %s  %s%s  %s  %s%s%s", who(p), oneLine(a.harness.Name), tuned, bridge, conversation, where, update)
 }
 
 // where names the directory on the persona's computer that the conversation

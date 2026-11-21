@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/hauntedfail/geminus/internal/honcho"
 	"github.com/hauntedfail/geminus/internal/profile"
+	"github.com/hauntedfail/geminus/internal/updates"
 	"github.com/hauntedfail/geminus/internal/version"
 	"github.com/hauntedfail/geminus/internal/wire"
 )
@@ -31,6 +33,7 @@ Usage:
   geminus                  talk to the default persona, or pick one
   geminus persona          list personas and exit
   geminus persona NAME     talk to NAME
+  geminus update           install the latest release of geminus
   geminus version | help
 
 Options:
@@ -56,6 +59,8 @@ const commandHelp = `geminus commands
                          agent program's own choice)
   /effort [LEVEL]        effort for this conversation (/effort default)
   /status                show persona, harness, bridge and conversation
+  /update                install the latest release of geminus and carry on
+                         in this conversation
   /default               show your defaults; /default save keeps the current
                          persona, harness and directory;
                          /default persona|harness|cwd VALUE (or none)
@@ -127,6 +132,24 @@ type App struct {
 	sentAt map[string]time.Time
 	rang   bool
 	link   string
+
+	// Updates is the server geminus releases come from, Exe this program's
+	// own file, and Restart what starts it again in this process's place
+	// (it returns the exit code to leave with where it has to wait). Without
+	// Updates nothing about updates is done or shown.
+	Updates *updates.Client
+	Exe     string
+	Restart func(exe string, args []string) (int, error)
+	// newer is the version of a release newer than this program, once
+	// newerFound has delivered it. restarting is set by /update when the
+	// new program is to take over, with restartWith as its arguments.
+	newer       string
+	newerFound  <-chan string
+	restarting  bool
+	restartWith []string
+	// readOn tells the keyboard reader, which stops after an /update line,
+	// to read on.
+	readOn chan<- struct{}
 }
 
 // Run is the geminus command. It returns the process exit code.
@@ -150,6 +173,18 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errw io.Writer) 
 			return 1
 		}
 		app.Profile, app.Honcho = prof, client
+		app.Updates = &updates.Client{Base: updates.Base(os.Getenv), Secret: prof.Secret, Now: time.Now,
+			Agent: "geminus/" + version.Version,
+			// A signed request is for one address: it does not follow a
+			// redirect to another.
+			HTTP: &http.Client{Timeout: updateLimit, CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			}}}
+		app.Restart = restart
+		if exe, err := updates.Executable(); err == nil {
+			app.Exe = exe
+			updates.Sweep(exe)
+		}
 	}
 	return app.main(req, in, errw)
 }
@@ -161,6 +196,9 @@ type request struct {
 	resume                  string
 	latest                  bool
 	version, help, badUsage bool
+	// update is `geminus update`; release is `geminus release VERSION DIR`.
+	update              bool
+	release, releaseDir string
 }
 
 func parseArgs(args []string) request {
@@ -180,6 +218,11 @@ func parseArgs(args []string) request {
 			r.version = true
 		case len(args) == 1 && (arg == "help" || arg == "--help" || arg == "-h"):
 			r.help = true
+		case arg == "update" && len(args) == 1:
+			r.update = true
+		case arg == "release" && i == 0 && len(args) == 3:
+			r.release, r.releaseDir = args[1], args[2]
+			i = 2
 		case arg == "persona" && i == 0:
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
@@ -223,6 +266,10 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 	case req.help:
 		a.Out.write(usage)
 		return 0
+	case req.update:
+		return a.updateCommand(errw)
+	case req.release != "":
+		return a.releaseCommand(req.release, req.releaseDir, errw)
 	}
 	if err := validDir(req.cwd); err != nil {
 		fmt.Fprintln(errw, "geminus: --cwd:", err)
@@ -253,6 +300,8 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 			a.echo = !isTerminal(in)
 		}
 	}
+
+	a.lookForRelease()
 
 	name := req.persona
 	explicit := name != ""
@@ -290,6 +339,12 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 	if a.live != nil {
 		// The box and the line under it say where things stand.
 		a.loopLive()
+		if a.restarting {
+			// The new program draws its own box.
+			a.live.close()
+			stop()
+			return a.relaunch(errw)
+		}
 		return 0
 	}
 	a.Out.line(a.status())
@@ -321,6 +376,8 @@ func (a *App) readLine() (string, bool) {
 		if line == cancelled {
 			return "", false
 		}
+		// The line answered a question; it was not the command.
+		a.goOnReading(line)
 		a.entered(line)
 		return strings.TrimSpace(line), true
 	case <-a.interrupt:

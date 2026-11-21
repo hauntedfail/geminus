@@ -2,6 +2,8 @@
 
 How geminus (the client) and the bridge (a part of geminish that runs on each computer) talk. Everything goes through Honcho. Neither side listens on a port, and geminus keeps no state of its own.
 
+One exchange is not with the bridge and not through Honcho: geminus fetching a newer release of itself. It is at the end, under [Releases](#releases).
+
 geminus and geminish are separate products that share a Honcho workspace. A record belongs to geminus when its metadata says so (below); geminish's mail (`kind: geminise` sessions, `geminise` message metadata) is never read as a geminus record, and the reverse.
 
 ## Where things live
@@ -166,3 +168,45 @@ For `claude` the UUID is derived from the Honcho session ID, so it is the same o
 Options go before the positional arguments. Which names and levels exist is the program's business: geminus passes the value through and the program's own error comes back.
 
 Hermes fixes model and reasoning when a session is created and rejects them as options on every later run, but its `/model` and `/reasoning` commands change them for that session only. The bridge sends the line as a turn of its own before every prompt that carries the setting (Hermes keeps it in the memory of its gateway process, which may have restarted), and `/reasoning reset` before a prompt without an effort once the conversation has had one. What Hermes answers to the line is written to the conversation when the setting differs from the previous prompt's, so a model name Hermes does not know is seen at once; Hermes reports that in words with a zero exit status, so the bridge cannot tell and runs the prompt. Hermes has no line that returns a session to its default model: after a model was set, a prompt without one fails and says so.
+
+## Releases
+
+geminus updates itself from a server that only hands out files (`cmd/geminus-latest-channel`). Base address: `https://sibyl.haunted.fail/geminus/updates`, or `GEMINUS_UPDATES_URL`.
+
+| Method and path | What it is |
+|---|---|
+| `GET <base>/latest` | The manifest of the newest release |
+| `GET <base>/<version>` | The manifest of that release |
+| `GET <base>/<version>/<target>` | The program for one target |
+| `PUT <base>/<version>/<target>` | Upload one program (at most 32 MiB) |
+| `PUT <base>/<version>` | Publish: upload the manifest (at most 64 KiB) |
+
+`<version>` is `X.Y.Z`, digits only, without leading zeros. `<target>` is `<os>-<arch>` in Go's names, lower case (`windows-amd64`).
+
+A manifest:
+
+```json
+{"version": "0.5.0", "ts": 1795300000,
+ "files": {"windows-amd64": {"sha256": "<64 hex digits>", "size": 7478784}},
+ "sig": "<signature>"}
+```
+
+Both records are signed as every other record is (see [Signatures](#signatures)):
+
+| Record | content | label |
+|---|---|---|
+| Manifest | one line per file, `<target> <sha256> <size>`, sorted by target, joined with a newline | `geminus-release:<version>`, with `ts` = the manifest's `ts` |
+| Request | empty | `geminus-updates-request:<METHOD>:<path>:<sha256 of the body>` |
+
+A request carries three headers: `Geminus-Time` (the `ts` it was signed with), `Geminus-Body-SHA256` (the hex SHA-256 of its body; of nothing for a read) and `Geminus-Signature`. `<path>` is the escaped path as sent, from the first slash. The server refuses a request without them (401), with a signature that does not verify (401), or signed more than 300 seconds from its own clock (401, and the text says the clocks differ). It checks the signature before reading a body, and the body against the signed digest after.
+
+Rules the server keeps:
+
+- A release is visible, and its programs can be fetched, once its manifest is published. Until then an uploaded program may be replaced.
+- A manifest is accepted only if its signature verifies, its version is the one in the path and greater than the latest, and every file it names was uploaded with that size and digest.
+- A published release never changes. The same bytes again are answered 200; anything else 409.
+
+Rules geminus keeps:
+
+- It believes a manifest only if the signature verifies, and installs a file only if its size and SHA-256 are the ones the manifest names.
+- It moves only to a version greater than its own. A program whose version is not a plain `X.Y.Z` counts as older than the release `X.Y.Z`; one that has no version at all takes any release.

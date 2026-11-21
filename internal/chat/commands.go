@@ -93,6 +93,8 @@ func (a *App) handle(line string) error {
 		a.Out.line(a.status())
 	case "/default":
 		return a.setDefaults(arg)
+	case "/update":
+		return a.slashUpdate()
 	case "/model", "/effort":
 		return a.tune(cmd[1:], arg)
 	default:

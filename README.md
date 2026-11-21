@@ -35,12 +35,13 @@ Three properties define it:
 |---|---|
 | geminus | This repository: the client. One static binary, no dependencies outside the Go standard library. |
 | The bridge | A part of [geminish](docs/architecture.md#the-bridge) 0.5 or later, the resident poller that already runs on each computer. It picks prompts up from Honcho and runs them. |
+| geminus-latest-channel | Also this repository (`cmd/geminus-latest-channel`): the small server on sibyl that hands out geminus releases. See [Updating](#updating). |
 
 geminus and geminish are separate products that share a Honcho workspace. geminish's agent-to-agent mail and geminus's conversations are told apart by their metadata and never mix. `docs/protocol.md` is the contract between the two.
 
 ## Install
 
-Go 1.23 or later.
+Go 1.25 or later.
 
 ```sh
 go build -o geminus ./cmd/geminus
@@ -51,6 +52,26 @@ go build -o geminus ./cmd/geminus
 geminus needs nothing set up. It reads two files that a computer with Hermes and geminish already has, and writes neither: `~/.hermes/honcho.json` (the Honcho connection and who you are) and `~/.hermes/geminise.json` (the group's members and signing secret). `HERMES_HOME` moves `~/.hermes`. On Windows, without `HERMES_HOME`, the two files are read from `%LOCALAPPDATA%\hermes`, where Hermes keeps its profile on Windows, and from `%USERPROFILE%\.hermes` when that directory has no `honcho.json`.
 
 A computer can be talked to once geminish 0.5 or later runs there. Setting a model or an effort for it needs geminish 0.6 or later there.
+
+## Updating
+
+A computer gets geminus by hand once. After that it updates itself:
+
+```sh
+geminus update        # geminus 0.4.0 → 0.5.0, or: already the latest (0.5.0)
+```
+
+Inside geminus, `/update` does the same and then the new program takes over the open conversation, so nothing is lost and nothing has to be reopened. When a newer release exists, the status under the box says `update 0.5.0 · /update`; geminus never installs one unasked.
+
+Releases come from `https://sibyl.haunted.fail/geminus/updates` (`GEMINUS_UPDATES_URL` names another address). Every request is signed with the group secret, so only the group's computers can read them. A release is signed where it is built, and geminus replaces itself only with a file whose size and SHA-256 that signature covers, and only with a version greater than its own. The program is swapped by a rename beside it, so its directory must be writable; a failed download leaves the old program as it was.
+
+Publishing one, on the build computer:
+
+```sh
+bash scripts/release.sh 0.5.0     # tests, builds every target, uploads, tags v0.5.0
+```
+
+`deploy/README.md` says how the server was put on sibyl.
 
 ## Personas and harnesses
 
@@ -123,6 +144,7 @@ Inside geminus, a line starting with `/` is a command.
 | `/model [NAME]` | Model for this conversation. `/model default` goes back to the agent program's own. |
 | `/effort [LEVEL]` | Effort for this conversation. `/effort default` goes back. |
 | `/status` | Show persona, harness, bridge and conversation. |
+| `/update` | Install the latest release of geminus and carry on in this conversation with it. |
 | `/default …` | Show or change your defaults (below). |
 | `/help`, `/quit` | |
 
@@ -156,6 +178,7 @@ geminus persona NAME     talk to NAME
   --cwd DIR              directory there for the new conversation
   --continue, -c         reopen the latest conversation
   --resume ID            reopen a conversation by ID
+geminus update           install the latest release of geminus
 geminus version | help
 ```
 
@@ -176,7 +199,7 @@ The wording of a prompt is never part of this. Nothing is added to what you type
 
 - **Output arrives in pieces every couple of seconds**, not character by character, and a harness that prints only at the end (Grok, Hermes) shows its answer at once when it finishes.
 - **A harness's own permission questions cannot be answered from geminus.** A program that would stop to ask in its interactive mode follows its own non-interactive behaviour instead.
-- **Windows is compile-checked only**, for geminus and for the bridge.
+- **Windows is compile-checked only**, for geminus and for the bridge. That includes `/update` there: moving the running program aside and handing the console to the new one have not been run on Windows.
 - **Input is line-based.** There is no multi-line editor.
 - **Replies are shown as plain text.** Control characters are removed, so a reply cannot restyle or clear the terminal. Markdown is not rendered.
 
@@ -189,5 +212,7 @@ go test ./... -count=1 -race
 bash scripts/test-linux.sh        # the same tests in a Linux container
 bash scripts/crossbuild.sh
 ```
+
+`bash scripts/release.sh X.Y.Z` publishes a release (see [Updating](#updating)).
 
 Unit tests use an in-memory Honcho (`internal/honcho/honchotest`) and never call a model. `test/` runs the built binary against the real bridge (the geminish installed on this computer, or `GEMINISH_SRC`) with that in-memory Honcho between them; it is skipped where no geminish with the bridge is found.

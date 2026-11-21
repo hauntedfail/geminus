@@ -61,6 +61,9 @@ type view struct {
 
 	// ask is the question the box is answering instead of taking a prompt.
 	ask string
+
+	// update is the version of a geminus release newer than this program.
+	update string
 }
 
 // frameInput is one moment of the screen's bottom.
@@ -97,6 +100,7 @@ var slashCommands = []struct{ name, args, what string }{
 	{"/sessions", "", "list your conversations"},
 	{"/resume", "[ID|N]", "reopen a conversation"},
 	{"/status", "", "show where things stand"},
+	{"/update", "", "install the latest geminus, stay in this conversation"},
 	{"/default", "…", "show or change your defaults"},
 	{"/help", "", "list geminus commands"},
 	{"/quit", "", "leave geminus"},
@@ -329,6 +333,10 @@ func statusRows(in frameInput, width int) []string {
 			text, color = text+" (it may be off)", colorYellow
 		}
 		add("● "+text, pal.sgr(color, "●")+" "+text)
+	}
+	if v.update != "" {
+		// Second, so that a narrow terminal drops other items before it.
+		add("update "+v.update+" · /update", pal.sgr(colorYellow, "update "+v.update)+pal.dim(" · /update"))
 	}
 	if v.harness != "" {
 		// A long path keeps its end and never takes the whole line.

@@ -1,0 +1,14 @@
+# systemd user unit for the geminus update server on sibyl.
+# Install: see deploy/README.md.
+[Unit]
+Description=geminus latest channel: hands out geminus releases at sibyl.haunted.fail/geminus/updates
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/geminus-latest-channel -listen 127.0.0.1:8651 -dir %h/.local/share/geminus/updates
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

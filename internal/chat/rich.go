@@ -52,6 +52,24 @@ func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
 	a.attach(lv, lines)
 
 	done := make(chan struct{})
+	// After /update another program may take over this terminal, and what
+	// is typed from then on is for it. So the reader stops after that line
+	// until the main loop says the conversation goes on here (resume), or
+	// for good when the box is closed. Where the old process has to stay
+	// behind (Windows), it would otherwise take keys from the new one.
+	resume := make(chan struct{}, 1)
+	a.readOn = resume
+	lv.park = func(line string) (goOn bool) {
+		if !isUpdateLine(line) {
+			return true
+		}
+		select {
+		case <-resume:
+			return true
+		case <-done:
+			return false
+		}
+	}
 	go func() {
 		ticker := time.NewTicker(frameEvery)
 		defer ticker.Stop()
@@ -92,13 +110,17 @@ func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
 	}, true
 }
 
-// feed applies keys and passes entered lines on. It reports that the person
-// asked to leave.
-func (l *live) feed(keys []key, lines chan<- string) (quit bool) {
+// feed applies keys and passes entered lines on. It reports that no more
+// input is to be read: the person asked to leave, or the terminal now
+// belongs to another program (park).
+func (l *live) feed(keys []key, lines chan<- string) (stop bool) {
 	for _, k := range keys {
 		line, entered, quit := l.key(k)
 		if entered {
 			lines <- line
+			if l.park != nil && !l.park(line) {
+				return true
+			}
 		}
 		if quit {
 			return true
@@ -125,7 +147,8 @@ func (a *App) sync() {
 		return
 	}
 	v := view{ask: a.asking, link: a.link, cwd: oneLine(a.cwd), session: oneLine(a.session),
-		model: oneLine(a.tuning.Model), effort: oneLine(a.tuning.Effort), slow: a.SlowAfter, rang: a.rang}
+		model: oneLine(a.tuning.Model), effort: oneLine(a.tuning.Effort), slow: a.SlowAfter, rang: a.rang,
+		update: a.newerRelease()}
 	if a.cur != nil {
 		v.persona, v.local, v.reported, v.seen = oneLine(a.cur.Name), a.cur.Local, a.cur.Reported, a.cur.Seen
 		v.home = oneLine(a.cur.Home)
@@ -183,6 +206,10 @@ func (a *App) loopLive() {
 			if err := a.handle(line); err != nil {
 				a.Out.line(a.Out.fail("✗ " + err.Error()))
 			}
+			if a.restarting {
+				return
+			}
+			a.goOnReading(line)
 		case <-ticker.C:
 			if len(a.waiting) > 0 && a.session != "" {
 				_, _, err := a.poll("")

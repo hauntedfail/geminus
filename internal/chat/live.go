@@ -28,6 +28,10 @@ const (
 )
 
 type live struct {
+	// park, when set, is asked after each entered line whether input is to
+	// be read on. It may wait before it answers.
+	park func(line string) (goOn bool)
+
 	mu  sync.Mutex
 	out io.Writer
 	pal palette
