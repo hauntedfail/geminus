@@ -8,13 +8,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 // EnvHermesHome overrides where the Hermes profile is read from (default
-// ~/.hermes).
+// ~/.hermes; on Windows %LOCALAPPDATA%\hermes, then %USERPROFILE%\.hermes).
 const EnvHermesHome = "HERMES_HOME"
+
+// Where Windows keeps the profile when HERMES_HOME is not set.
+const (
+	envLocalAppData = "LOCALAPPDATA"
+	envUserProfile  = "USERPROFILE"
+)
 
 // minSecretBytes is the shortest signing secret geminish accepts.
 const minSecretBytes = 32
@@ -47,16 +56,65 @@ func readJSON(path string, v any) error {
 	return nil
 }
 
+// hermesHome is the directory of this computer's Hermes profile.
+func hermesHome() (string, error) { return hermesHomeFor(runtime.GOOS, os.Getenv) }
+
+// hermesHomeFor resolves the Hermes home for the given operating system from
+// the given environment. HERMES_HOME is taken as given everywhere, without
+// looking at the disk, as Hermes and the geminish bridge take it. Without it
+// the home is ~/.hermes, except on Windows.
+func hermesHomeFor(goos string, getenv func(string) string) (string, error) {
+	if home := getenv(EnvHermesHome); home != "" {
+		return home, nil
+	}
+	if goos == "windows" {
+		return windowsHermesHome(getenv)
+	}
+	user := getenv("HOME")
+	if user == "" {
+		var err error
+		if user, err = os.UserHomeDir(); err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+	}
+	return filepath.Join(user, ".hermes"), nil
+}
+
+// windowsHermesHome returns the first of %LOCALAPPDATA%\hermes and
+// %USERPROFILE%\.hermes that holds a honcho.json. Hermes on Windows lives in
+// the first, and a shell that sets no HERMES_HOME must still find it. An
+// unset variable is skipped, so no candidate is ever a relative path.
+func windowsHermesHome(getenv func(string) string) (string, error) {
+	var tried []string
+	for _, c := range [][2]string{{getenv(envLocalAppData), "hermes"}, {getenv(envUserProfile), ".hermes"}} {
+		if c[0] == "" {
+			continue
+		}
+		dir := filepath.Join(c[0], c[1])
+		// A file the user may not reach is still this computer's profile:
+		// stop there and let Load say why, rather than read another one.
+		if _, err := os.Stat(filepath.Join(dir, "honcho.json")); err == nil || errors.Is(err, fs.ErrPermission) {
+			return dir, nil
+		}
+		tried = append(tried, dir)
+	}
+	if len(tried) == 0 {
+		return "", fmt.Errorf("no Hermes profile found: none of %s, %s and %s is set", EnvHermesHome, envLocalAppData, envUserProfile)
+	}
+	return "", fmt.Errorf("no Hermes profile found: no honcho.json in %s", strings.Join(tried, " or "))
+}
+
 // Load reads the Hermes profile's honcho.json and geminise.json.
 func Load() (Profile, error) {
-	home := os.Getenv(EnvHermesHome)
-	if home == "" {
-		user, err := os.UserHomeDir()
-		if err != nil {
-			return Profile{}, fmt.Errorf("resolve home directory: %w", err)
-		}
-		home = filepath.Join(user, ".hermes")
+	home, err := hermesHome()
+	if err != nil {
+		return Profile{}, err
 	}
+	return loadFrom(home)
+}
+
+// loadFrom reads both files from the one directory home.
+func loadFrom(home string) (Profile, error) {
 	var honcho struct {
 		BaseURL   string `json:"baseUrl"`
 		Workspace string `json:"workspace"`

@@ -48,7 +48,7 @@ go build -o geminus ./cmd/geminus
 
 `bash scripts/crossbuild.sh` builds darwin, linux and windows binaries for amd64 and arm64 into `dist/`.
 
-geminus needs nothing set up. It reads two files that a computer with Hermes and geminish already has, and writes neither: `~/.hermes/honcho.json` (the Honcho connection and who you are) and `~/.hermes/geminise.json` (the group's members and signing secret). `HERMES_HOME` moves `~/.hermes`.
+geminus needs nothing set up. It reads two files that a computer with Hermes and geminish already has, and writes neither: `~/.hermes/honcho.json` (the Honcho connection and who you are) and `~/.hermes/geminise.json` (the group's members and signing secret). `HERMES_HOME` moves `~/.hermes`. On Windows, without `HERMES_HOME`, the two files are read from `%LOCALAPPDATA%\hermes`, where Hermes keeps its profile on Windows, and from `%USERPROFILE%\.hermes` when that directory has no `honcho.json`.
 
 A computer can be talked to once geminish 0.5 or later runs there. Setting a model or an effort for it needs geminish 0.6 or later there.
 
