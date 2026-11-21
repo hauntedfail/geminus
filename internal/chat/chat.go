@@ -34,6 +34,7 @@ Usage:
   geminus persona          list personas and exit
   geminus persona NAME     talk to NAME
   geminus update           install the latest release of geminus
+  geminus keygen           generate an Ed25519 human signing key on this computer
   geminus version | help
 
 Options:
@@ -161,7 +162,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errw io.Writer) 
 
 	req := parseArgs(args)
 	app := &App{Out: newPrinter(out, isTerminal(out) && os.Getenv("NO_COLOR") == ""), ctx: ctx, interrupt: interrupt}
-	if !req.badUsage && !req.version && !req.help {
+	if !req.badUsage && !req.version && !req.help && !req.keygen {
 		prof, err := profile.Load()
 		if err != nil {
 			fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
@@ -197,8 +198,9 @@ type request struct {
 	latest                  bool
 	version, help, badUsage bool
 	// update is `geminus update`; release is the version of
-	// `geminus release VERSION`.
+	// `geminus release VERSION`; keygen is `geminus keygen`.
 	update  bool
+	keygen  bool
 	release string
 }
 
@@ -221,6 +223,8 @@ func parseArgs(args []string) request {
 			r.help = true
 		case arg == "update" && len(args) == 1:
 			r.update = true
+		case arg == "keygen" && len(args) == 1:
+			r.keygen = true
 		case arg == "release" && i == 0 && len(args) == 2:
 			r.release = args[1]
 			i = 1
@@ -269,6 +273,17 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		return 0
 	case req.update:
 		return a.updateCommand(errw)
+	case req.keygen:
+		keyPath, pubHex, err := profile.GenerateHumanKey()
+		if err != nil {
+			fmt.Fprintln(errw, "geminus: keygen:", sanitize(err.Error()))
+			return 1
+		}
+		a.Out.line("wrote Ed25519 human key: " + keyPath + " (0600)")
+		a.Out.line("public key: " + pubHex)
+		a.Out.line("add to geminise.json on every bridge host:")
+		a.Out.line(`  "human_pubkeys": {"<your-human-peer>": "` + pubHex + `"}`)
+		return 0
 	case req.release != "":
 		return a.releaseCommand(req.release, errw)
 	}

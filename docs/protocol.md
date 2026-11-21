@@ -30,6 +30,25 @@ sig = hex( HMAC-SHA256( secret, SHA256(content) || SHA256(label) || decimal(ts) 
 
 `ts` is the Unix time of signing. The label names the kind of record and what it is bound to, so a signature made for one purpose never verifies for another. No geminish record uses a label that starts with `geminus-`.
 
+### Asymmetric human signing (Ed25519)
+
+To separate human prompt authority from the shared group secret (so a compromised peer computer cannot forge human prompts), the owner may generate an Ed25519 key on their own computer (`geminus keygen` writes `<HERMES_HOME>/geminus_human.key` mode `0600`) and distribute only the 64-hex public key in every bridge's `geminise.json`:
+
+```json
+{
+  "human_pubkeys": {"h1karu": "<64-hex-ed25519-pubkey>"},
+  "geminus": {"human_auth": "ed25519_only"}
+}
+```
+
+When `<HERMES_HOME>/geminus_human.key` is present, geminus signs human-authored records (prompts, session descriptions, and defaults) with Ed25519 and sets `"sig_alg": "ed25519"`:
+
+```
+sig = hex( Ed25519.Sign( human_priv, "geminus-ed25519:" || SHA256(content) || SHA256(label) || decimal(ts) ) )
+```
+
+Bridges support `"human_auth": "dual"` (default during migration: verifies Ed25519 when `sig_alg == "ed25519"` and still accepts legacy HMAC) and `"ed25519_only"` (refuses all HMAC-signed prompts).
+
 | Record | content | label |
 |---|---|---|
 | Prompt | the message content | `geminus-prompt:<session>:<persona>:<harness>:<human>:<nonce>:<H(cwd)>[:<H(model)>:<H(effort)>]` |

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hauntedfail/geminus/internal/honcho/honchotest"
+	"github.com/hauntedfail/geminus/internal/wire"
 )
 
 const secretHex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
@@ -282,4 +283,139 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	expect(out, "directory: sub on mirai", "working in sub",
 		"this conversation runs in sub on mirai and stays there",
 		"The working directory nowhere ("+filepath.Join(work, "nowhere")+") does not exist on mirai.")
+}
+
+func TestEd25519OnlyBridgeAcceptsHumanKeyAndRefusesGroupHMAC(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake agent program is a shell script")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3")
+	}
+	source := bridgeSource(t)
+	geminus := build(t)
+
+	srv := honchotest.New("h1karu", "chrome", "mirai")
+	defer srv.Close()
+
+	here, there, work := t.TempDir(), t.TempDir(), t.TempDir()
+
+	// 1. Generate the human Ed25519 key on "here" (chrome) via `geminus keygen`.
+	kcmd := exec.Command(geminus, "keygen")
+	kcmd.Env = append(os.Environ(), "HERMES_HOME="+here, "NO_COLOR=1")
+	kout, err := kcmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("geminus keygen failed: %v\n%s", err, kout)
+	}
+	var pubHex string
+	for _, line := range strings.Split(string(kout), "\n") {
+		if strings.HasPrefix(line, "public key: ") {
+			pubHex = strings.TrimSpace(strings.TrimPrefix(line, "public key: "))
+		}
+	}
+	if len(pubHex) != 64 {
+		t.Fatalf("could not parse public key from keygen output:\n%s", kout)
+	}
+
+	write := func(dir, name string, v any) {
+		data, _ := json.Marshal(v)
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	members := map[string]string{"h1karu": "human", "chrome": "agent", "mirai": "agent"}
+	agent := filepath.Join(there, "hermes")
+	if err := os.WriteFile(agent, []byte(fakeHermes), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for dir, self := range map[string]string{here: "chrome", there: "mirai"} {
+		write(dir, "honcho.json", map[string]string{"baseUrl": srv.URL, "workspace": srv.Workspace, "apiKey": srv.Key,
+			"aiPeer": self, "peerName": "h1karu"})
+	}
+	pubMap := map[string]string{"h1karu": pubHex}
+	write(here, "geminise.json", map[string]any{"from": "chrome", "members": members, "secret": secretHex,
+		"human_pubkeys": pubMap, "geminus": map[string]any{"human_auth": "ed25519_only"}})
+	write(there, "geminise.json", map[string]any{"from": "mirai", "members": members, "secret": secretHex,
+		"human_pubkeys": pubMap, "hermes_bin": agent, "poll_seconds": 2, "push": false, "wake": false,
+		"state_dir": filepath.Join(there, "state"),
+		"geminus":   map[string]any{"cwd": work, "human_auth": "ed25519_only"}})
+
+	var bridgeLog bytes.Buffer
+	bridge := exec.Command(python, filepath.Join(source, "cli.py"), "poll", "--foreground")
+	bridge.Env = append(os.Environ(), "HERMES_HOME="+there, "GEMINISE_CONFIG="+filepath.Join(there, "geminise.json"),
+		"SHELL=/bin/sh", "PYTHONDONTWRITEBYTECODE=1")
+	bridge.Stdout, bridge.Stderr = &bridgeLog, &bridgeLog
+	if err := bridge.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = bridge.Process.Kill()
+		_ = bridge.Wait()
+		if t.Failed() {
+			t.Logf("bridge log:\n%s", bridgeLog.String())
+		}
+	}()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for len(srv.PeerMetadata("mirai", "geminus_node")) < 10 {
+		if time.Now().After(deadline) {
+			t.Fatalf("bridge never published node card\n%s", bridgeLog.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// 2. Real geminus with Ed25519 key succeeds end-to-end against real Python bridge.
+	cmd := exec.Command(geminus, "persona", "mirai", "--harness", "hermes")
+	cmd.Env = append(os.Environ(), "HERMES_HOME="+here, "HOME="+t.TempDir(), "NO_COLOR=1")
+	cmd.Stdin = strings.NewReader("ed25519 works\n")
+	var out, errs bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errs
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ed25519 geminus run failed: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), errs.String())
+	}
+	if !strings.Contains(out.String(), "got: ed25519 works") {
+		t.Fatalf("expected agent reply, got:\n%s", out.String())
+	}
+	sessions := srv.Sessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	sid := sessions[0].ID
+
+	// 3. A compromised peer that holds the shared group HMAC secret (but NOT the human Ed25519 key)
+	// signs a valid HMAC prompt and posts it: the ed25519_only bridge MUST refuse it.
+	secretBytes := make([]byte, 32)
+	for i := range secretBytes {
+		secretBytes[i] = byte(i)
+	}
+	nowTS := time.Now().Unix()
+	label := wire.PromptLabel(sid, "mirai", "hermes", "h1karu", "hmac-spoof", "", wire.Tuning{})
+	hmacSig := wire.Sign(secretBytes, "spoofed via group secret", label, nowTS)
+	before := len(srv.Messages(sid))
+	srv.Append(sid, "h1karu", "spoofed via group secret", map[string]any{"geminus": map[string]any{
+		"v": 1, "role": "prompt", "nonce": "hmac-spoof", "ts": nowTS, "sig": hmacSig, "state": "queued"}})
+	info, _ := srv.Sessions()[0].Metadata["geminus"].(map[string]any)
+	info["pending"] = true
+	srv.SetMetadata(sid, "", map[string]any{"kind": "geminus", "geminus": info})
+
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		spoofed := srv.Messages(sid)[before]
+		meta, _ := spoofed.Metadata["geminus"].(map[string]any)
+		if meta["state"] == "refused" {
+			detail, _ := meta["detail"].(string)
+			if !strings.Contains(detail, "Ed25519") {
+				t.Errorf("unexpected refusal detail: %q", detail)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("HMAC-spoofed prompt was not refused under ed25519_only: %v\n%s", meta, bridgeLog.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := len(srv.Messages(sid)); got != before+1 {
+		t.Errorf("bridge ran or emitted output for HMAC-spoofed prompt (%d extra messages)", got-before-1)
+	}
 }

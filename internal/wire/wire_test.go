@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -281,5 +282,75 @@ func TestNodeCardSaysWhereAPromptRunsWhenNoDirectoryIsChosen(t *testing.T) {
 	// A card from a bridge that does not say (geminish 0.6 and older).
 	if c, ok := ParseNodeCard(secret(), "mirai", card("mirai", "claude")); !ok || c.CWD != "" {
 		t.Errorf("an older card: %+v, %v", c, ok)
+	}
+}
+
+func TestEd25519HumanAuthSeparatesTrustFromGroupSecret(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPub, otherPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := HumanAuth{Secret: secret(), Priv: priv, Pub: pub, RequireEd25519: true}
+	verifier := HumanAuth{Secret: secret(), Pub: pub, RequireEd25519: true}
+	legacy := HumanAuth{Secret: secret()}
+
+	label := PromptLabel("s1", "chrome", "claude", "h1karu", "n1", "/work", Tuning{Model: "opus", Effort: "high"})
+	sig, alg := signer.Sign("run tests", label, 1795000000)
+	if alg != AlgEd25519 || len(sig) != 128 {
+		t.Fatalf("unexpected ed25519 signature: alg=%q len=%d", alg, len(sig))
+	}
+	if !verifier.Verify("run tests", label, 1795000000, sig, alg) {
+		t.Fatal("valid ed25519 signature rejected")
+	}
+	// Wrong key, wrong content, wrong label, wrong ts, or stripped sig_alg must fail.
+	if verifier.Verify("run tests!", label, 1795000000, sig, alg) {
+		t.Error("tampered content accepted")
+	}
+	if verifier.Verify("run tests", label+"x", 1795000000, sig, alg) {
+		t.Error("tampered label accepted")
+	}
+	if verifier.Verify("run tests", label, 1795000001, sig, alg) {
+		t.Error("tampered ts accepted")
+	}
+	if verifier.Verify("run tests", label, 1795000000, sig, "") {
+		t.Error("ed25519 signature accepted as HMAC")
+	}
+	otherSig, _ := (HumanAuth{Priv: otherPriv, Pub: otherPub}).Sign("run tests", label, 1795000000)
+	if verifier.Verify("run tests", label, 1795000000, otherSig, AlgEd25519) {
+		t.Error("signature from another Ed25519 key accepted")
+	}
+
+	// A peer holding only the shared HMAC secret cannot forge a prompt when RequireEd25519 is true.
+	hmacSig, hmacAlg := legacy.Sign("rm -rf ~", label, 1795000000)
+	if verifier.Verify("rm -rf ~", label, 1795000000, hmacSig, hmacAlg) {
+		t.Error("HMAC signature accepted under RequireEd25519")
+	}
+	dual := HumanAuth{Secret: secret(), Pub: pub, RequireEd25519: false}
+	if !dual.Verify("rm -rf ~", label, 1795000000, hmacSig, hmacAlg) {
+		t.Error("HMAC signature rejected under dual mode")
+	}
+
+	// Session and defaults round-trip with Ed25519.
+	sess := SealSessionWith(signer, "s1", Session{V: 1, Human: "h1karu", Persona: "chrome", Harness: "claude", Title: "hi", Updated: 42})
+	if sess.SigAlg != AlgEd25519 || !VerifySessionWith(verifier, "s1", sess) {
+		t.Fatalf("ed25519 session failed verification: %+v", sess)
+	}
+	hmacSess := SealSession(secret(), "s1", Session{V: 1, Human: "h1karu", Persona: "chrome", Harness: "claude", Title: "hi", Updated: 42})
+	if VerifySessionWith(verifier, "s1", hmacSess) {
+		t.Error("HMAC session accepted under RequireEd25519")
+	}
+
+	rawBox, err := SealDefaultsWith(signer, "h1karu", Defaults{Persona: "chrome"}, 99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawJSON, _ := json.Marshal(rawBox)
+	gotD, saved, ok := OpenDefaultsWith(verifier, "h1karu", rawJSON)
+	if !ok || saved != 99 || gotD.Persona != "chrome" {
+		t.Fatalf("ed25519 defaults failed: %+v %d %v", gotD, saved, ok)
 	}
 }

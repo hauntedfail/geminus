@@ -4,6 +4,9 @@
 package profile
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +21,10 @@ import (
 // EnvHermesHome overrides where the Hermes profile is read from (default
 // ~/.hermes; on Windows %LOCALAPPDATA%\hermes, then %USERPROFILE%\.hermes).
 const EnvHermesHome = "HERMES_HOME"
+
+// HumanKeyFile is the optional Ed25519 seed file kept only on the owner's
+// signing computer(s), inside HERMES_HOME (mode 0600, 64 hex characters).
+const HumanKeyFile = "geminus_human.key"
 
 // Where Windows keeps the profile when HERMES_HOME is not set.
 const (
@@ -38,8 +45,15 @@ type Profile struct {
 	Local string
 	// Members maps every peer of the group to "agent" or "human".
 	Members map[string]string
-	// Secret signs prompts and verifies what the bridges write.
+	// Secret signs legacy prompts and verifies what the bridges write.
 	Secret []byte
+	// HumanKey is the optional Ed25519 private key held only on the owner's computer(s).
+	HumanKey ed25519.PrivateKey
+	// HumanPubKey is the owner's configured Ed25519 public key (from geminise.json human_pubkeys,
+	// or derived from HumanKey when present).
+	HumanPubKey ed25519.PublicKey
+	// RequireEd25519 is true when geminise.json sets geminus.human_auth = "ed25519_only".
+	RequireEd25519 bool
 }
 
 // IsAgent reports whether name is an agent of the group.
@@ -126,9 +140,11 @@ func loadFrom(home string) (Profile, error) {
 		return Profile{}, fmt.Errorf("the Honcho connection of this computer's Hermes profile is not readable: %w", err)
 	}
 	var group struct {
-		From    string            `json:"from"`
-		Members map[string]string `json:"members"`
-		Secret  string            `json:"secret"`
+		From         string            `json:"from"`
+		Members      map[string]string `json:"members"`
+		Secret       string            `json:"secret"`
+		HumanPubKeys map[string]string `json:"human_pubkeys"`
+		Geminus      json.RawMessage   `json:"geminus"`
 	}
 	if err := readJSON(filepath.Join(home, "geminise.json"), &group); err != nil {
 		return Profile{}, fmt.Errorf("the group settings (members and signing secret) are not readable: %w", err)
@@ -150,5 +166,86 @@ func loadFrom(home string) (Profile, error) {
 	case p.Members[p.Human] != "human":
 		return Profile{}, fmt.Errorf("the owner's peer %q is not listed as a human in geminise.json", p.Human)
 	}
+	if rawPub, ok := group.HumanPubKeys[p.Human]; ok && strings.TrimSpace(rawPub) != "" {
+		pub, err := hex.DecodeString(strings.TrimSpace(rawPub))
+		if err != nil || len(pub) != ed25519.PublicKeySize {
+			return Profile{}, fmt.Errorf("geminise.json human_pubkeys[%q] must be 64 hex characters", p.Human)
+		}
+		p.HumanPubKey = ed25519.PublicKey(pub)
+	}
+	if len(group.Geminus) > 0 {
+		var gOpts struct {
+			HumanAuth string `json:"human_auth"`
+		}
+		if json.Unmarshal(group.Geminus, &gOpts) == nil && strings.EqualFold(strings.TrimSpace(gOpts.HumanAuth), "ed25519_only") {
+			p.RequireEd25519 = true
+		}
+	}
+	keyPath := filepath.Join(home, HumanKeyFile)
+	if info, err := os.Stat(keyPath); err == nil {
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+			return Profile{}, fmt.Errorf("%s holds a private key and must be mode 0600 (is %04o)", keyPath, info.Mode().Perm())
+		}
+		rawKey, err := os.ReadFile(keyPath)
+		if err != nil {
+			return Profile{}, fmt.Errorf("%s: %w", keyPath, err)
+		}
+		seed, err := hex.DecodeString(strings.TrimSpace(string(rawKey)))
+		if err != nil || len(seed) != ed25519.SeedSize {
+			return Profile{}, fmt.Errorf("%s must contain a 32-byte Ed25519 seed in hex (64 hex chars)", keyPath)
+		}
+		priv := ed25519.NewKeyFromSeed(seed)
+		derived := priv.Public().(ed25519.PublicKey)
+		if len(p.HumanPubKey) > 0 && !bytes.Equal(p.HumanPubKey, derived) {
+			return Profile{}, fmt.Errorf("%s does not match human_pubkeys[%q] in geminise.json", keyPath, p.Human)
+		}
+		p.HumanKey = priv
+		if len(p.HumanPubKey) == 0 {
+			p.HumanPubKey = derived
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return Profile{}, fmt.Errorf("%s: %w", keyPath, err)
+	}
 	return p, nil
+}
+
+// GenerateHumanKey creates a new Ed25519 human signing key in the default
+// Hermes profile directory. It never overwrites an existing key.
+func GenerateHumanKey() (keyPath, pubHex string, err error) {
+	home, err := hermesHome()
+	if err != nil {
+		return "", "", err
+	}
+	return GenerateHumanKeyIn(home)
+}
+
+// GenerateHumanKeyIn creates a new Ed25519 human signing key at <home>/geminus_human.key
+// (mode 0600). Refuses to overwrite an existing key file.
+func GenerateHumanKeyIn(home string) (keyPath, pubHex string, err error) {
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return "", "", err
+	}
+	keyPath = filepath.Join(home, HumanKeyFile)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", fmt.Errorf("generate ed25519 key: %w", err)
+	}
+	f, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return "", "", fmt.Errorf("%s already exists; refusing to overwrite an existing human key", keyPath)
+		}
+		return "", "", err
+	}
+	_, werr := f.WriteString(hex.EncodeToString(priv.Seed()) + "\n")
+	cerr := f.Close()
+	if werr != nil {
+		_ = os.Remove(keyPath)
+		return "", "", werr
+	}
+	if cerr != nil {
+		_ = os.Remove(keyPath)
+		return "", "", cerr
+	}
+	return keyPath, hex.EncodeToString(pub), nil
 }

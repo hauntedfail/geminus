@@ -4,6 +4,7 @@
 package wire
 
 import (
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,7 +34,85 @@ const (
 	StateDone    = "done"
 	StateFailed  = "failed"
 	StateRefused = "refused"
+
+	// AlgHMAC is the legacy shared-secret signature algorithm (also implied when sig_alg is empty).
+	AlgHMAC = "hmac-sha256"
+	// AlgEd25519 is the asymmetric human signature algorithm.
+	AlgEd25519 = "ed25519"
 )
+
+const ed25519Domain = "geminus-ed25519:"
+
+// ed25519Payload builds the domain-separated input signed by a human Ed25519 key.
+func ed25519Payload(content, label string, ts int64) []byte {
+	c, l := sha256.Sum256([]byte(content)), sha256.Sum256([]byte(label))
+	tsBytes := []byte(strconv.FormatInt(ts, 10))
+	buf := make([]byte, 0, len(ed25519Domain)+len(c)+len(l)+len(tsBytes))
+	buf = append(buf, ed25519Domain...)
+	buf = append(buf, c[:]...)
+	buf = append(buf, l[:]...)
+	buf = append(buf, tsBytes...)
+	return buf
+}
+
+// SignEd25519 returns a hex-encoded Ed25519 signature of (content, label, ts).
+func SignEd25519(priv ed25519.PrivateKey, content, label string, ts int64) string {
+	return hex.EncodeToString(ed25519.Sign(priv, ed25519Payload(content, label, ts)))
+}
+
+// VerifyEd25519 reports whether sig is a valid hex-encoded Ed25519 signature of (content, label, ts).
+func VerifyEd25519(pub ed25519.PublicKey, content, label string, ts int64, sig string) bool {
+	if len(pub) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize*2 {
+		return false
+	}
+	raw, err := hex.DecodeString(sig)
+	if err != nil || len(raw) != ed25519.SignatureSize {
+		return false
+	}
+	return ed25519.Verify(pub, ed25519Payload(content, label, ts), raw)
+}
+
+// HumanAuth signs and verifies human-authored records (prompts, sessions, defaults).
+// When Priv is present, records are signed with Ed25519; otherwise they fall back
+// to the legacy group HMAC secret. When RequireEd25519 is true, verification rejects
+// HMAC signatures so a compromised peer holding only the shared secret cannot forge
+// human records.
+type HumanAuth struct {
+	Secret         []byte
+	Priv           ed25519.PrivateKey
+	Pub            ed25519.PublicKey
+	RequireEd25519 bool
+}
+
+// Sign produces a signature and optional sig_alg for a human-authored record.
+func (h HumanAuth) Sign(content, label string, ts int64) (sig, alg string) {
+	if len(h.Priv) == ed25519.PrivateKeySize {
+		return SignEd25519(h.Priv, content, label, ts), AlgEd25519
+	}
+	return Sign(h.Secret, content, label, ts), ""
+}
+
+// Verify checks a signature and sig_alg on a human-authored record.
+func (h HumanAuth) Verify(content, label string, ts int64, sig, alg string) bool {
+	if sig == "" {
+		return false
+	}
+	switch alg {
+	case AlgEd25519:
+		pub := h.Pub
+		if len(pub) == 0 && len(h.Priv) == ed25519.PrivateKeySize {
+			pub = h.Priv.Public().(ed25519.PublicKey)
+		}
+		return VerifyEd25519(pub, content, label, ts, sig)
+	case "", AlgHMAC:
+		if h.RequireEd25519 {
+			return false
+		}
+		return len(h.Secret) > 0 && Verify(h.Secret, content, label, ts, sig)
+	default:
+		return false
+	}
+}
 
 // Sign returns the signature of content for one purpose (label) at time ts.
 // Each field is hashed on its own first, so none can run into its neighbour.
@@ -151,7 +230,8 @@ type Session struct {
 	// conversation": Honcho only records when a session was created.
 	Updated int64 `json:"updated,omitempty"`
 	// Sig signs the description: everything above except Pending.
-	Sig string `json:"sig,omitempty"`
+	Sig    string `json:"sig,omitempty"`
+	SigAlg string `json:"sig_alg,omitempty"`
 }
 
 // SessionLabel binds a session's description to its ID, target, owner,
@@ -164,19 +244,26 @@ func (s Session) label(id string) string {
 	return SessionLabel(id, s.Persona, s.Harness, s.Human, s.CWD, Tuning{Model: s.Model, Effort: s.Effort})
 }
 
-// SealSession signs the description of the session with the given ID. The
-// harness and directory of a conversation decide where the owner's next
-// prompt runs, so a description is only believed with this signature.
-// Pending is left out: the bridge flips it, and it only causes a read.
+// SealSession signs the description of the session with the given ID using the group HMAC secret.
 func SealSession(secret []byte, id string, s Session) Session {
-	s.Sig = Sign(secret, s.Title, s.label(id), s.Updated)
+	return SealSessionWith(HumanAuth{Secret: secret}, id, s)
+}
+
+// SealSessionWith signs the description of the session using auth (Ed25519 when configured, else HMAC).
+func SealSessionWith(auth HumanAuth, id string, s Session) Session {
+	s.Sig, s.SigAlg = auth.Sign(s.Title, s.label(id), s.Updated)
 	return s
 }
 
 // VerifySession reports whether s is a description the group signed for the
 // session with this ID.
 func VerifySession(secret []byte, id string, s Session) bool {
-	return s.Sig != "" && Verify(secret, s.Title, s.label(id), s.Updated, s.Sig)
+	return VerifySessionWith(HumanAuth{Secret: secret}, id, s)
+}
+
+// VerifySessionWith reports whether s verifies under auth for this session ID.
+func VerifySessionWith(auth HumanAuth, id string, s Session) bool {
+	return auth.Verify(s.Title, s.label(id), s.Updated, s.Sig, s.SigAlg)
 }
 
 // SessionMetadata is a geminus session's whole metadata.
@@ -186,10 +273,11 @@ func SessionMetadata(s Session) map[string]any {
 
 // Message is the "geminus" object in a message's metadata.
 type Message struct {
-	V    int    `json:"v"`
-	Role string `json:"role"`
-	TS   int64  `json:"ts"`
-	Sig  string `json:"sig"`
+	V      int    `json:"v"`
+	Role   string `json:"role"`
+	TS     int64  `json:"ts"`
+	Sig    string `json:"sig"`
+	SigAlg string `json:"sig_alg,omitempty"`
 
 	// Prompt fields. Model and Effort are what the owner set for this run;
 	// empty means the agent program's default.
@@ -310,36 +398,44 @@ type PersonaDefaults struct {
 // Unsigned defaults would let anyone holding the Honcho token choose which
 // computer, program and directory the owner's next prompt goes to.
 type sealed struct {
-	V    int    `json:"v"`
-	Data string `json:"data"`
-	TS   int64  `json:"ts"`
-	Sig  string `json:"sig"`
+	V      int    `json:"v"`
+	Data   string `json:"data"`
+	TS     int64  `json:"ts"`
+	Sig    string `json:"sig"`
+	SigAlg string `json:"sig_alg,omitempty"`
 }
 
 // SealDefaults returns the form in which d is stored in the owner's peer
-// metadata.
+// metadata, signed with the group HMAC secret.
 func SealDefaults(secret []byte, human string, d Defaults, ts int64) (any, error) {
+	return SealDefaultsWith(HumanAuth{Secret: secret}, human, d, ts)
+}
+
+// SealDefaultsWith returns the form in which d is stored in the owner's peer
+// metadata, signed with auth (Ed25519 when configured, else HMAC).
+func SealDefaultsWith(auth HumanAuth, human string, d Defaults, ts int64) (any, error) {
 	d.V = 1
 	data, err := json.Marshal(d)
 	if err != nil {
 		return nil, err
 	}
-	return sealed{V: 1, Data: string(data), TS: ts, Sig: Sign(secret, string(data), DefaultsLabel(human), ts)}, nil
+	sig, alg := auth.Sign(string(data), DefaultsLabel(human), ts)
+	return sealed{V: 1, Data: string(data), TS: ts, Sig: sig, SigAlg: alg}, nil
 }
 
 // OpenDefaults returns the defaults a member computer signed for this
 // person and when they were saved, or false.
-//
-// The signature does not prove these are the newest: someone holding the
-// Honcho token can put back an older signed copy. Telling them apart would
-// need something remembered on this computer, and geminus keeps nothing; the
-// time saved is returned so that it can be shown.
 func OpenDefaults(secret []byte, human string, raw json.RawMessage) (d Defaults, saved int64, ok bool) {
+	return OpenDefaultsWith(HumanAuth{Secret: secret}, human, raw)
+}
+
+// OpenDefaultsWith verifies and decodes stored defaults using auth.
+func OpenDefaultsWith(auth HumanAuth, human string, raw json.RawMessage) (d Defaults, saved int64, ok bool) {
 	var box sealed
 	if len(raw) == 0 || json.Unmarshal(raw, &box) != nil || box.Data == "" {
 		return Defaults{}, 0, false
 	}
-	if !Verify(secret, box.Data, DefaultsLabel(human), box.TS, box.Sig) {
+	if !auth.Verify(box.Data, DefaultsLabel(human), box.TS, box.Sig, box.SigAlg) {
 		return Defaults{}, 0, false
 	}
 	if json.Unmarshal([]byte(box.Data), &d) != nil {

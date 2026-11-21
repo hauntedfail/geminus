@@ -28,9 +28,19 @@ func randomHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// humanAuth builds the signer/verifier for human-authored records.
+func (a *App) humanAuth() wire.HumanAuth {
+	return wire.HumanAuth{
+		Secret:         a.Profile.Secret,
+		Priv:           a.Profile.HumanKey,
+		Pub:            a.Profile.HumanPubKey,
+		RequireEd25519: a.Profile.RequireEd25519,
+	}
+}
+
 // meta is the signed description of the conversation with the given ID.
 func (a *App) meta(id, title string, pending bool) wire.Session {
-	return wire.SealSession(a.Profile.Secret, id, wire.Session{V: 1, Human: a.Profile.Human, Persona: a.cur.Name,
+	return wire.SealSessionWith(a.humanAuth(), id, wire.Session{V: 1, Human: a.Profile.Human, Persona: a.cur.Name,
 		Harness: a.harness.ID, CWD: a.cwd, Model: a.tuning.Model, Effort: a.tuning.Effort, Title: title,
 		Pending: pending, Updated: a.Now().Unix()})
 }
@@ -77,8 +87,9 @@ func (a *App) say(text string) error {
 	}
 	ts := a.Now().Unix()
 	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, nonce, a.cwd, a.tuning)
+	sig, sigAlg := a.humanAuth().Sign(text, label, ts)
 	prompt := wire.Message{V: 1, Role: wire.RolePrompt, TS: ts, Nonce: nonce, State: wire.StateQueued,
-		Model: a.tuning.Model, Effort: a.tuning.Effort, Sig: wire.Sign(a.Profile.Secret, text, label, ts)}
+		Model: a.tuning.Model, Effort: a.tuning.Effort, Sig: sig, SigAlg: sigAlg}
 	stored, err := a.Honcho.Post(ctx, a.session, a.Profile.Human, text, map[string]any{wire.Kind: prompt})
 	if err != nil {
 		return fmt.Errorf("nothing was sent: %w", err)
@@ -220,7 +231,7 @@ func (a *App) genuine(m honcho.Message, meta wire.Message) bool {
 func (a *App) own(m honcho.Message, meta wire.Message) bool {
 	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, meta.Nonce, a.cwd,
 		wire.Tuning{Model: meta.Model, Effort: meta.Effort})
-	return m.PeerID == a.Profile.Human && wire.Verify(a.Profile.Secret, m.Content, label, meta.TS, meta.Sig)
+	return m.PeerID == a.Profile.Human && a.humanAuth().Verify(m.Content, label, meta.TS, meta.Sig, meta.SigAlg)
 }
 
 // show prints one piece of an agent's output.
@@ -255,7 +266,7 @@ func (a *App) conversations() (signed []honcho.Session, unsigned int, err error)
 	updated := map[string]int64{}
 	for _, s := range sessions {
 		info, ok := sessionInfo(s)
-		if !ok || info.Persona != a.cur.Name || info.Human != a.Profile.Human || !wire.VerifySession(a.Profile.Secret, s.ID, info) {
+		if !ok || info.Persona != a.cur.Name || info.Human != a.Profile.Human || !wire.VerifySessionWith(a.humanAuth(), s.ID, info) {
 			unsigned++
 			continue
 		}

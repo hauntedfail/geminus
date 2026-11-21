@@ -263,7 +263,7 @@ func (a *App) setDefaults(arg string) error {
 	}
 	ctx, cancel := a.call()
 	defer cancel()
-	stored, err := wire.SealDefaults(a.Profile.Secret, a.Profile.Human, d, a.Now().Unix())
+	stored, err := wire.SealDefaultsWith(a.humanAuth(), a.Profile.Human, d, a.Now().Unix())
 	if err != nil {
 		return err
 	}
