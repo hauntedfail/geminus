@@ -1,8 +1,8 @@
 package updates
 
 import (
-	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -20,9 +19,32 @@ import (
 const (
 	// maxAnswer bounds a manifest or an error text read from the server.
 	maxAnswer = 64 << 10
-	// maxReason is how much of an error text is repeated.
-	maxReason = 200
+	// maxReason is how much of an error text is repeated, and maxBuildReason
+	// how much of what a failed build said.
+	maxReason      = 200
+	maxBuildReason = 1000
+	// defaultPoll is how often Release asks how a build is going, and
+	// pollTries how many questions in a row may go unanswered (a tunnel
+	// that hiccups, a server being restarted) before it gives up.
+	defaultPoll = 2 * time.Second
+	pollTries   = 5
 )
+
+// The states of a release that was asked for.
+const (
+	Building  = "building"
+	Published = "published"
+	Failed    = "failed"
+)
+
+// Build is how the server answers a request to release a version, and a
+// question about it.
+type Build struct {
+	Version string `json:"version"`
+	State   string `json:"state"`
+	// Error is why the build failed.
+	Error string `json:"error,omitempty"`
+}
 
 // ErrNoRelease means the server has no release yet.
 var ErrNoRelease = errors.New("no release has been published")
@@ -39,29 +61,34 @@ func Base(getenv func(string) string) string {
 // Client talks to the server that hands out releases.
 type Client struct {
 	// Base is the address of the releases, without a trailing slash.
-	Base   string
+	Base string
+	// Secret is the group's secret; every request is signed with it.
 	Secret []byte
-	HTTP   *http.Client
-	Now    func() time.Time
+	// Key is the key a release must be signed with.
+	Key  ed25519.PublicKey
+	HTTP *http.Client
+	Now  func() time.Time
+	// Poll is how often Release asks how a build is going; two seconds if
+	// zero.
+	Poll time.Duration
 	// Agent is what the client calls itself to the server; "geminus" if
 	// empty.
 	Agent string
 }
 
-// do sends one signed request. body may be nil; bodySHA is then EmptySHA.
-func (c *Client) do(ctx context.Context, method, path string, body io.Reader, size int64, bodySHA string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, body)
+// do sends one signed request. No request has a body.
+func (c *Client) do(ctx context.Context, method, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.ContentLength = size
 	// Some front ends refuse a client that does not say what it is.
 	agent := c.Agent
 	if agent == "" {
 		agent = "geminus"
 	}
 	req.Header.Set("User-Agent", agent)
-	SignRequest(req, c.Secret, bodySHA, c.Now())
+	SignRequest(req, c.Secret, EmptySHA, c.Now())
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -88,25 +115,48 @@ func (e *StatusError) Error() string {
 // control characters or characters that reorder text, cut to maxReason.
 func oneLine(text string) string {
 	text, _, _ = strings.Cut(strings.TrimSpace(text), "\n")
+	return printable(text, maxReason)
+}
+
+// printable is text without control characters or characters that reorder
+// text, cut to limit characters.
+func printable(text string, limit int) string {
 	text = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || r == utf8.RuneError || r >= 0x202A && r <= 0x202E || r >= 0x2066 && r <= 0x2069 {
 			return -1
 		}
 		return r
 	}, text)
-	if runes := []rune(text); len(runes) > maxReason {
-		text = string(runes[:maxReason]) + "…"
+	if runes := []rune(text); len(runes) > limit {
+		text = string(runes[:limit]) + "…"
 	}
 	return text
 }
 
+// buildReason is what a failed build said, on one line: its last lines are
+// the ones that say what went wrong.
+func buildReason(text string) string {
+	lines := strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' })
+	text = strings.Join(lines, " | ")
+	if runes := []rune(text); len(runes) > maxBuildReason {
+		text = "…" + string(runes[len(runes)-maxBuildReason:])
+	}
+	return printable(text, maxBuildReason+1)
+}
+
 // Latest returns the manifest of the newest release, verified.
 func (c *Client) Latest(ctx context.Context) (Manifest, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/latest", nil, 0, EmptySHA)
+	m, err := c.manifest(ctx, "/latest")
 	var status *StatusError
 	if errors.As(err, &status) && status.Status == http.StatusNotFound {
 		return Manifest{}, ErrNoRelease
 	}
+	return m, err
+}
+
+// manifest reads the manifest at path and verifies it.
+func (c *Client) manifest(ctx context.Context, path string) (Manifest, error) {
+	resp, err := c.do(ctx, http.MethodGet, path)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -115,8 +165,8 @@ func (c *Client) Latest(ctx context.Context) (Manifest, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAnswer)).Decode(&m); err != nil {
 		return Manifest{}, fmt.Errorf("the update server's answer is not a manifest: %w", err)
 	}
-	if !m.Verify(c.Secret) {
-		return Manifest{}, errors.New("the manifest of the latest release is not signed by this group")
+	if !m.Verify(c.Key) {
+		return Manifest{}, errors.New("the manifest the update server sent is not signed with the release key")
 	}
 	return m, nil
 }
@@ -129,7 +179,7 @@ func (c *Client) Fetch(ctx context.Context, m Manifest, target string, w io.Writ
 	if !listed {
 		return fmt.Errorf("release %s has no program for %s", m.Version, target)
 	}
-	resp, err := c.do(ctx, http.MethodGet, "/"+m.Version+"/"+target, nil, 0, EmptySHA)
+	resp, err := c.do(ctx, http.MethodGet, "/"+m.Version+"/"+target)
 	if err != nil {
 		return err
 	}
@@ -146,55 +196,68 @@ func (c *Client) Fetch(ctx context.Context, m Manifest, target string, w io.Writ
 	return nil
 }
 
-// Publish uploads the programs in files (target → path on this computer)
-// as release version, then the manifest that makes it the latest. A program
-// must not change while this runs: it is read once for its digest and once
-// to send it, and the server refuses a body other than the signed one.
-func (c *Client) Publish(ctx context.Context, version string, files map[string]string) (Manifest, error) {
+// Release asks the server to build version from its tag in the source, sign
+// it and publish it, and waits until that is done or has failed. A version
+// that is published already is returned as it is.
+func (c *Client) Release(ctx context.Context, version string) (Manifest, error) {
 	if !IsRelease(version) {
 		return Manifest{}, fmt.Errorf("%q is not a release version: use X.Y.Z", version)
 	}
-	listed := make(map[string]File, len(files))
-	for target, path := range files {
-		f, err := c.upload(ctx, version, target, path)
-		if err != nil {
-			return Manifest{}, err
+	b, err := c.build(ctx, http.MethodPost, "/"+version)
+	if err != nil {
+		return Manifest{}, err
+	}
+	poll := c.Poll
+	if poll <= 0 {
+		poll = defaultPoll
+	}
+	for unanswered := 0; b.State == Building; {
+		select {
+		case <-ctx.Done():
+			return Manifest{}, fmt.Errorf("release %s is still being built: %w", version, ctx.Err())
+		case <-time.After(poll):
 		}
-		listed[target] = f
+		next, err := c.build(ctx, http.MethodGet, "/"+version+"/build")
+		var status *StatusError
+		switch {
+		case err == nil:
+			b, unanswered = next, 0
+		case ctx.Err() != nil:
+			return Manifest{}, fmt.Errorf("release %s is still being built: %w", version, ctx.Err())
+		case errors.As(err, &status) && status.Status == http.StatusNotFound:
+			// The server keeps a build in memory only.
+			return Manifest{}, fmt.Errorf("the update server no longer knows the build of release %s (it was restarted?); run the release again", version)
+		case errors.As(err, &status) && status.Status < 500:
+			return Manifest{}, err
+		default:
+			if unanswered++; unanswered >= pollTries {
+				return Manifest{}, fmt.Errorf("lost touch with the build of release %s; it may still finish: %w", version, err)
+			}
+		}
 	}
-	m := Seal(c.Secret, version, listed, c.Now().Unix())
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return Manifest{}, err
+	switch {
+	case b.State == Failed:
+		return Manifest{}, fmt.Errorf("the build of release %s failed: %s", version, buildReason(b.Error))
+	case b.State != Published:
+		return Manifest{}, fmt.Errorf("the update server says release %s is %q", version, printable(b.State, maxReason))
 	}
-	sum := sha256.Sum256(raw)
-	resp, err := c.do(ctx, http.MethodPut, "/"+version, bytes.NewReader(raw), int64(len(raw)), hex.EncodeToString(sum[:]))
-	if err != nil {
-		return Manifest{}, err
+	m, err := c.manifest(ctx, "/"+version)
+	if err == nil && m.Version != version {
+		err = fmt.Errorf("the update server sent release %s for %s", m.Version, version)
 	}
-	resp.Body.Close()
-	return m, nil
+	return m, err
 }
 
-func (c *Client) upload(ctx context.Context, version, target, path string) (File, error) {
-	f, err := os.Open(path)
+// build sends one request about a build and reads the answer.
+func (c *Client) build(ctx context.Context, method, path string) (Build, error) {
+	resp, err := c.do(ctx, method, path)
 	if err != nil {
-		return File{}, err
+		return Build{}, err
 	}
-	defer f.Close()
-	sum := sha256.New()
-	size, err := io.Copy(sum, f)
-	if err != nil {
-		return File{}, err
+	defer resp.Body.Close()
+	var b Build
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAnswer)).Decode(&b); err != nil {
+		return Build{}, fmt.Errorf("the update server's answer is not about a build: %w", err)
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return File{}, err
-	}
-	file := File{SHA256: hex.EncodeToString(sum.Sum(nil)), Size: size}
-	resp, err := c.do(ctx, http.MethodPut, "/"+version+"/"+target, f, size, file.SHA256)
-	if err != nil {
-		return File{}, fmt.Errorf("upload %s: %w", target, err)
-	}
-	resp.Body.Close()
-	return file, nil
+	return b, nil
 }

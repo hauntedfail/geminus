@@ -1,6 +1,6 @@
 # geminus updates: design
 
-Status: approved by the owner on 2026-11-21 (address, tech stack, and the name `geminus-latest-channel` are theirs).
+Status: approved by the owner on 2026-11-21 (address, tech stack, and the name `geminus-latest-channel` are theirs). Revised with the owner on 2026-11-22: a release is built on sibyl and signed with sibyl's own key (see Trust and Publishing); the first version, which signed with the group secret on the build computer and uploaded, is described under Approaches as D.
 
 ## Why
 
@@ -9,8 +9,8 @@ A fix to geminus reaches another computer only when someone copies a binary ther
 ## Goals
 
 - `geminus update` and `/update` replace the running program with the latest release and carry on in the same conversation.
-- Publishing a release is one command on the build computer (chrome). No ssh, no step on sibyl.
-- No new open port, no new key or token, no configuration file, no state kept by geminus.
+- Releasing is one command on a computer with the repository (chrome). No ssh, no step on sibyl.
+- No new open port, no configuration file, no state kept by geminus. One new key, which exists on sibyl only and signs releases.
 - The server is a small file service: easy to read in one sitting, standard library only.
 
 ## Not in this work
@@ -33,6 +33,14 @@ A fix to geminus reaches another computer only when someone copies a binary ther
 | B | A small Go file service on sibyl behind the existing tunnel, modelled on the idea of Flipper's update server (a directory of releases, an index, a "latest") | One more small process on sibyl, one tunnel rule | **Chosen** |
 | C | GitHub releases of the private repository | A GitHub token on every computer; not central on sibyl | Not considered further |
 
+How a release comes to be, within B:
+
+| | Approach | Trade-off | |
+|---|---|---|---|
+| D | chrome builds, signs the manifest with the group secret and uploads | No new key; but every member computer holds that secret, so each could make a release for all the others | First version; replaced |
+| E | chrome builds and uploads, sibyl signs what arrives with its own key | sibyl would sign whatever a holder of the group secret uploads, so the signature adds nothing | Rejected |
+| F | sibyl fetches the tag from the repository, builds, and signs what it built | Go and read access to the repository on sibyl, and a release takes a minute or two on the server | **Chosen by the owner**: only the signature made at build time is trusted, and the build is on sibyl |
+
 From Flipper's server only the concept is taken. Its stack (gin, a GitHub client) is not.
 
 ## Address
@@ -44,8 +52,8 @@ Base: `https://sibyl.haunted.fail/geminus/updates`
 | `GET /geminus/updates/latest` | The manifest of the newest release |
 | `GET /geminus/updates/{version}` | The manifest of that release |
 | `GET /geminus/updates/{version}/{target}` | The program for one target, e.g. `0.5.0/windows-amd64` |
-| `PUT /geminus/updates/{version}/{target}` | Upload one program |
-| `PUT /geminus/updates/{version}` | Publish: upload the manifest, which makes the release visible and the latest |
+| `POST /geminus/updates/{version}` | Build the tag `v{version}`, sign it and publish it; answers at once |
+| `GET /geminus/updates/{version}/build` | How that build is going: `building`, `published`, or `failed` with the reason |
 
 `{version}` is `X.Y.Z`, digits only. `{target}` is `<os>-<arch>` as Go names them. No file extensions and no `files/` level: the path says product, purpose, release, target and nothing else.
 
@@ -57,41 +65,46 @@ geminus has the base built in and `GEMINUS_UPDATES_URL` replaces it (tests, a mo
 |---|---|
 | HTTP | `net/http` of the standard library; method and wildcard patterns of `ServeMux`. No framework |
 | Dependencies | None outside the standard library, as in geminus |
-| Where the code lives | This repository, `cmd/geminus-latest-channel` (server) and `internal/updates` (manifest, request signing, shared by server and client) |
+| Where the code lives | This repository, `cmd/geminus-latest-channel` (server), `internal/updates` (manifest, request signing, shared by server and client) and `internal/updates/build` (git and the Go toolchain) |
+| Release signature | Ed25519 from the standard library (`crypto/ed25519`); the key is a file of 64 hex digits, mode 0600. Not the SSH key sibyl signs commits with: that format needs code outside the standard library to verify, and one key would serve two purposes |
+| Building | `git` and `go` as subprocesses with fixed arguments; a Go toolchain in `~/.local/go` on sibyl; `GOTOOLCHAIN=local`, `GOPROXY=off`, `-trimpath` |
+| Source access | A deploy key on sibyl that can read this one repository |
 | Storage | A directory: `<dir>/<version>/<target>`, `<dir>/<version>/manifest.json`, `<dir>/latest`. No database |
 | File access | `os.Root`, so no path leaves the directory |
 | Logs | `log/slog` to stderr, collected by journald |
-| Settings | Two flags, `-listen` (default `127.0.0.1:8651`) and `-dir`. The signing secret comes from the Hermes profile already on sibyl |
+| Settings | Flags: `-listen` (default `127.0.0.1:8651`), `-dir`, `-key`, `-repo`, `-go`, `-git`, `-targets`, and `-keygen` to make the key. The group secret comes from the Hermes profile already on sibyl |
 | Running it | systemd user unit, `Restart=always` (no sudo; same as the geminish poller) |
 | Replacing the program | Own code, rename in place. No self-update library |
 | Go version | `go.mod` goes from 1.23 to 1.25: `os.Root` came with 1.24, its `Rename` and `ReadFile` with 1.25 |
 
 ## Trust
 
-Everything is signed with the group secret that geminus and the bridge already use (`internal/wire.Sign`), under new labels:
+Two signatures, with different keys:
 
-| Record | content | label |
+| Record | Signed with | What is signed |
 |---|---|---|
-| Request | empty | `geminus-updates-request:<METHOD>:<path>:<sha256 of the body>`, `ts` in header `Geminus-Time`, the body digest in `Geminus-Body-SHA256`, signature in `Geminus-Signature` |
-| Manifest | one line per file, `<target> <sha256> <size>`, sorted, joined with newlines | `geminus-release:<version>`, `ts` = time of release |
+| Request | The group secret (`internal/wire.Sign`) | content empty, label `geminus-updates-request:<METHOD>:<path>:<sha256 of the body>`, `ts` in header `Geminus-Time`, the body digest in `Geminus-Body-SHA256`, signature in `Geminus-Signature` |
+| Manifest | sibyl's release key (Ed25519) | the lines `geminus-release`, `<version>`, `<ts>`, then one line per file, `<target> <sha256> <size>`, sorted |
 
 - Every request is signed, reads too: the programs are private and the address is public. The server accepts a `ts` within 5 minutes of its clock.
-- The manifest is signed on the build computer. geminus verifies that signature, then the size and SHA-256 of what it downloaded, before anything is replaced. TLS ends at Cloudflare, so the transport alone is not trusted.
+- The release key is made on sibyl (`geminus-latest-channel -keygen`) and never leaves it. Its public half is compiled into geminus, and sibyl links its own public key into every program it builds, so a program trusts the key that signed it.
+- geminus verifies the manifest's signature, then the size and SHA-256 of what it downloaded, before anything is replaced. TLS ends at Cloudflare, so the transport alone is not trusted.
 - geminus only moves to a version greater than its own, so an old signed manifest cannot be replayed to push a release back.
-- A release cannot be changed once published: a second `PUT` of a version or file with different bytes is refused.
-- Who can publish: whoever holds the group secret. That holder can already send prompts to the agents on every computer, so this adds no new power. A stolen secret is as bad as before, not worse.
-- The server refuses a manifest unless its signature verifies, its version is greater than the latest, and every file it lists is present with the stated size and hash.
+- A release cannot be changed once published, and nothing can be uploaded.
+- Who can release: whoever can push a tag to the repository decides what a release contains; a holder of the group secret can only ask sibyl to build a tag that is there. Holding the group secret alone, which every member computer does, no longer allows replacing geminus on the other computers.
+- If the release key is lost, no geminus in use accepts a new release, and each computer needs one copy by hand again.
 
 ## Server
 
 - Listens on `127.0.0.1` only. The existing cloudflared tunnel gets one rule above the current `sibyl.haunted.fail` rule: `hostname: sibyl.haunted.fail`, `path: ^/geminus/updates(/.*)?$`, `service: http://127.0.0.1:8651`.
-- The signature is checked before a body is read, so nobody outside the group can make the server store anything. Uploads are then streamed to a temporary file while hashed, checked against the signed body hash, and renamed into place. Limits: 32 MiB per program, 64 KiB per manifest. Read, write and header timeouts set.
+- No request has a body. Read, write and header timeouts set.
+- A build runs beside the requests, one at a time, with a time limit of fifteen minutes: fetch the tag (a tag, not a branch) into a temporary directory, `go build` each target, then copy the programs into the directory while hashing them (at most 32 MiB each), sign the manifest and write `latest`. Nothing from the source is run. A failed build leaves nothing visible and keeps the end of what git or the compiler said for whoever asks.
 - Downloads go through `http.ServeContent`.
 - `latest` is a one-line file replaced by rename.
 
 ## Publishing
 
-`scripts/release.sh X.Y.Z`, on chrome: refuses a tree with uncommitted changes, runs the tests, cross-builds with that version, uploads the six programs, signs and uploads the manifest, tags `vX.Y.Z` and pushes the tag. The upload is done by a hidden `geminus release` subcommand so signing lives in one place.
+`scripts/release.sh X.Y.Z`, on chrome: refuses a tree with uncommitted changes, runs the tests, tags `vX.Y.Z`, pushes the tag, then asks the server for the release with the hidden `geminus release X.Y.Z` (so request signing lives in one place) and waits until the build is published or has failed. Run again after a failed build, it uses the tag that is already there.
 
 ## geminus
 
@@ -105,17 +118,18 @@ Everything is signed with the group secret that geminus and the bridge already u
 
 ## One-time steps that need the owner
 
-1. sibyl: place `geminus-latest-channel` and its unit `geminus-latest-channel.service`, add the tunnel rule, restart `cloudflared-honcho.service` (a system unit; Honcho is unreachable for a few seconds).
+1. sibyl: place `geminus-latest-channel` and its unit `geminus-latest-channel.service`, add the tunnel rule, restart `cloudflared-honcho.service` (a system unit; Honcho is unreachable for a few seconds). Install Go in `~/.local/go`, make the release key, and make a deploy key that is registered read-only on the repository.
 2. mirai: copy one geminus that has `update`. Every later version arrives through it.
 
 After these, no step of an update needs an approval.
 
 ## Tests
 
-- `internal/updates`: manifest signing and verification, version order, request signatures, refusals (bad signature, old `ts`, wrong hash, wrong size, older version).
-- `cmd/geminus-latest-channel` with `httptest`: every route, paths that try to leave the directory, a release that cannot be overwritten, size limits.
+- `internal/updates`: manifest signing and verification, that the group secret cannot sign a release, version order, request signatures, refusals (bad signature, old `ts`, wrong hash, wrong size, older version).
+- `internal/updates/server` with `httptest` and a stand-in for the build: every route, paths that try to leave the directory, a release that is never built twice, a failed build, what a build may leave behind, the key file.
+- `internal/updates/build`: real git and the real Go toolchain on a small repository.
 - Replacing a program: on a temporary directory, for the Unix and the Windows rule.
-- `test/`: the built server and the built geminus, a release published and fetched, the program on disk replaced and reporting the new version.
+- `test/`: the built server and the built geminus, a release built from this source as a tagged repository, signed and fetched, the program on disk replaced and reporting the new version.
 - Not testable here: the Windows console hand-over and the rename of a running `.exe`. They are checked on mirai.
 
 ## Left to the builder

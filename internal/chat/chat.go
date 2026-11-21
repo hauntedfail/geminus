@@ -173,7 +173,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errw io.Writer) 
 			return 1
 		}
 		app.Profile, app.Honcho = prof, client
-		app.Updates = &updates.Client{Base: updates.Base(os.Getenv), Secret: prof.Secret, Now: time.Now,
+		app.Updates = &updates.Client{Base: updates.Base(os.Getenv), Secret: prof.Secret, Key: updates.ReleaseKey(), Now: time.Now,
 			Agent: "geminus/" + version.Version,
 			// A signed request is for one address: it does not follow a
 			// redirect to another.
@@ -196,9 +196,10 @@ type request struct {
 	resume                  string
 	latest                  bool
 	version, help, badUsage bool
-	// update is `geminus update`; release is `geminus release VERSION DIR`.
-	update              bool
-	release, releaseDir string
+	// update is `geminus update`; release is the version of
+	// `geminus release VERSION`.
+	update  bool
+	release string
 }
 
 func parseArgs(args []string) request {
@@ -220,9 +221,9 @@ func parseArgs(args []string) request {
 			r.help = true
 		case arg == "update" && len(args) == 1:
 			r.update = true
-		case arg == "release" && i == 0 && len(args) == 3:
-			r.release, r.releaseDir = args[1], args[2]
-			i = 2
+		case arg == "release" && i == 0 && len(args) == 2:
+			r.release = args[1]
+			i = 1
 		case arg == "persona" && i == 0:
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
@@ -269,7 +270,7 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 	case req.update:
 		return a.updateCommand(errw)
 	case req.release != "":
-		return a.releaseCommand(req.release, req.releaseDir, errw)
+		return a.releaseCommand(req.release, errw)
 	}
 	if err := validDir(req.cwd); err != nil {
 		fmt.Fprintln(errw, "geminus: --cwd:", err)

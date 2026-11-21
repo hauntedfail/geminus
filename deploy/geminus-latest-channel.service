@@ -1,11 +1,17 @@
-# systemd user unit for the geminus update server on sibyl.
+# systemd user unit for the geminus release server on sibyl.
 # Install: see deploy/README.md.
 [Unit]
-Description=geminus latest channel: hands out geminus releases at sibyl.haunted.fail/geminus/updates
+Description=geminus latest channel: builds, signs and hands out geminus releases at sibyl.haunted.fail/geminus/updates
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/geminus-latest-channel -listen 127.0.0.1:8651 -dir %h/.local/share/geminus/updates
+# github-geminus is a host of ~/.ssh/config: github.com with the deploy key
+# that can read this one repository.
+ExecStart=%h/.local/bin/geminus-latest-channel -listen 127.0.0.1:8651 \
+    -dir %h/.local/share/geminus/updates \
+    -key %h/.config/geminus/release.key \
+    -repo git@github-geminus:hauntedfail/geminus.git \
+    -go %h/.local/go/bin/go
 Restart=always
 RestartSec=2
 NoNewPrivileges=true

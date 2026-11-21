@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -23,6 +21,8 @@ import (
 const (
 	// updateLimit bounds a whole update, download included.
 	updateLimit = 5 * time.Minute
+	// releaseLimit bounds the wait for the server to build a release.
+	releaseLimit = 20 * time.Minute
 	// noticeLimit bounds the look at the start. It runs beside everything
 	// else, and a server that does not answer is not mentioned.
 	noticeLimit = 2 * time.Second
@@ -182,37 +182,27 @@ func (a *App) newerRelease() string {
 	return a.newer
 }
 
-// releaseCommand is `geminus release VERSION DIR`, used by
-// scripts/release.sh: it publishes the programs of a build, the files
-// DIR/geminus-<os>-<arch>[.exe].
-func (a *App) releaseCommand(v, dir string, errw io.Writer) int {
+// releaseCommand is `geminus release VERSION`, used by scripts/release.sh:
+// it asks the server to build the tag vVERSION, sign it and publish it, and
+// waits for that.
+func (a *App) releaseCommand(v string, errw io.Writer) int {
 	fail := func(err error) int {
 		fmt.Fprintln(errw, "geminus: release:", sanitize(err.Error()))
 		return 1
 	}
 	if a.Updates == nil {
-		return fail(errors.New("this geminus has no update server to publish to"))
+		return fail(errors.New("this geminus has no update server to ask"))
 	}
-	paths, err := filepath.Glob(filepath.Join(dir, "geminus-*"))
-	if err != nil {
-		return fail(err)
+	if !updates.IsRelease(v) {
+		return fail(fmt.Errorf("%q is not a release version: use X.Y.Z", v))
 	}
-	files := map[string]string{}
-	for _, path := range paths {
-		target := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "geminus-"), ".exe")
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && updates.ValidTarget(target) {
-			files[target] = path
-		}
-	}
-	if len(files) == 0 {
-		return fail(fmt.Errorf("no geminus-<os>-<arch> programs in %s", dir))
-	}
-	ctx, cancel := context.WithTimeout(a.ctx, time.Duration(len(files)+1)*updateLimit)
+	ctx, cancel := context.WithTimeout(a.ctx, releaseLimit)
 	defer cancel()
-	m, err := a.Updates.Publish(ctx, v, files)
+	a.Out.line(fmt.Sprintf("building %s at %s …", v, sanitize(a.Updates.Base)))
+	m, err := a.Updates.Release(ctx, v)
 	if err != nil {
 		return fail(err)
 	}
-	a.Out.line(fmt.Sprintf("published %s: %d programs at %s", m.Version, len(m.Files), sanitize(a.Updates.Base)))
+	a.Out.line(fmt.Sprintf("released %s: %d programs", m.Version, len(m.Files)))
 	return 0
 }

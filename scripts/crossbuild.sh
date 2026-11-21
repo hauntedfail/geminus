@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Build geminus for six targets as dist/geminus-<os>-<arch>[.exe], and the
-# update server as dist/geminus-latest-channel-linux-amd64.
+# release server as dist/geminus-latest-channel-linux-amd64.
+#
+# These builds are for copying by hand and for trying things out. A release
+# is not made here: the release server builds it from the tag
+# (scripts/release.sh).
 #
 #   bash scripts/crossbuild.sh
 #   VERSION=0.1.0 bash scripts/crossbuild.sh   # Set the version string
@@ -62,8 +66,7 @@ for target in $TARGETS; do
 		go build -trimpath -ldflags "$ldflags" -o "$out" ./cmd/geminus
 done
 
-# The update server runs on one computer (sibyl, Linux on amd64). Its name is
-# not a target, so `geminus release` leaves it out of a release.
+# The release server runs on one computer (sibyl, Linux on amd64).
 echo "build dist/geminus-latest-channel-linux-amd64"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 	go build -trimpath -ldflags "$ldflags" -o dist/geminus-latest-channel-linux-amd64 ./cmd/geminus-latest-channel

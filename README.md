@@ -35,7 +35,7 @@ Three properties define it:
 |---|---|
 | geminus | This repository: the client. One static binary, no dependencies outside the Go standard library. |
 | The bridge | A part of [geminish](docs/architecture.md#the-bridge) 0.5 or later, the resident poller that already runs on each computer. It picks prompts up from Honcho and runs them. |
-| geminus-latest-channel | Also this repository (`cmd/geminus-latest-channel`): the small server on sibyl that hands out geminus releases. See [Updating](#updating). |
+| geminus-latest-channel | Also this repository (`cmd/geminus-latest-channel`): the small server on sibyl that builds, signs and hands out geminus releases. See [Updating](#updating). |
 
 geminus and geminish are separate products that share a Honcho workspace. geminish's agent-to-agent mail and geminus's conversations are told apart by their metadata and never mix. `docs/protocol.md` is the contract between the two.
 
@@ -63,13 +63,15 @@ geminus update        # geminus 0.4.0 → 0.5.0, or: already the latest (0.5.0)
 
 Inside geminus, `/update` does the same and then the new program takes over the open conversation, so nothing is lost and nothing has to be reopened. When a newer release exists, the status under the box says `update 0.5.0 · /update`; geminus never installs one unasked.
 
-Releases come from `https://sibyl.haunted.fail/geminus/updates` (`GEMINUS_UPDATES_URL` names another address). Every request is signed with the group secret, so only the group's computers can read them. A release is signed where it is built, and geminus replaces itself only with a file whose size and SHA-256 that signature covers, and only with a version greater than its own. The program is swapped by a rename beside it, so its directory must be writable; a failed download leaves the old program as it was.
+Releases come from `https://sibyl.haunted.fail/geminus/updates` (`GEMINUS_UPDATES_URL` names another address). Every request is signed with the group secret, so only the group's computers can read them. A release is built on sibyl from the tag of its version and signed there with a key that exists on sibyl only; the group secret cannot sign one. geminus replaces itself only with a file whose size and SHA-256 that signature covers, and only with a version greater than its own. The program is swapped by a rename beside it, so its directory must be writable; a failed download leaves the old program as it was.
 
-Publishing one, on the build computer:
+Releasing one, on a computer of the group with the repository:
 
 ```sh
-bash scripts/release.sh 0.5.0     # tests, builds every target, uploads, tags v0.5.0
+bash scripts/release.sh 0.5.0     # tests, tags v0.5.0, pushes the tag, has sibyl build and sign it
 ```
+
+Nothing is built or uploaded from that computer. A release is whatever the tag holds, so the right to push a tag to the repository is the right to release.
 
 `deploy/README.md` says how the server was put on sibyl.
 
@@ -213,6 +215,6 @@ bash scripts/test-linux.sh        # the same tests in a Linux container
 bash scripts/crossbuild.sh
 ```
 
-`bash scripts/release.sh X.Y.Z` publishes a release (see [Updating](#updating)).
+`bash scripts/release.sh X.Y.Z` makes a release (see [Updating](#updating)).
 
 Unit tests use an in-memory Honcho (`internal/honcho/honchotest`) and never call a model. `test/` runs the built binary against the real bridge (the geminish installed on this computer, or `GEMINISH_SRC`) with that in-memory Honcho between them; it is skipped where no geminish with the bridge is found.

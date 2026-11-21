@@ -1,7 +1,10 @@
 package chat
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +32,31 @@ type releases struct {
 	exe    string
 	// restarted holds the arguments geminus started itself again with.
 	restarted chan []string
+
+	mu sync.Mutex
+	// targets is what a version builds into on the server: programs for
+	// these targets. failing, when set, is why every build fails.
+	targets map[string][]string
+	failing error
+}
+
+// releaseKey stands in for the key of the computer that builds releases.
+var releaseKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+
+// build stands in for building a release from source.
+func (r *releases) build(_ context.Context, v, dir string) error {
+	r.mu.Lock()
+	targets, failing := r.targets[v], r.failing
+	r.mu.Unlock()
+	if failing != nil {
+		return failing
+	}
+	for _, target := range targets {
+		if err := os.WriteFile(filepath.Join(dir, target), []byte("the program of "+v), 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // running makes this build call itself version v for the test.
@@ -44,11 +73,14 @@ func newReleases(t *testing.T, w *world) *releases {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { root.Close() })
-	r := &releases{t: t, w: w, exe: filepath.Join(t.TempDir(), "geminus"), restarted: make(chan []string, 1)}
-	r.srv = httptest.NewServer(server.New(root, w.prof.Secret, time.Now, slog.New(slog.DiscardHandler)))
-	t.Cleanup(r.srv.Close)
-	r.client = &updates.Client{Base: r.srv.URL + updates.Path, Secret: w.prof.Secret, HTTP: r.srv.Client(), Now: time.Now}
+	r := &releases{t: t, w: w, exe: filepath.Join(t.TempDir(), "geminus"), restarted: make(chan []string, 1),
+		targets: map[string][]string{}}
+	channel := server.New(server.Config{Root: root, Secret: w.prof.Secret, Key: releaseKey, Build: r.build,
+		Now: time.Now, Log: slog.New(slog.DiscardHandler)})
+	r.srv = httptest.NewServer(channel)
+	t.Cleanup(func() { r.srv.Close(); channel.Close(); root.Close() })
+	r.client = &updates.Client{Base: r.srv.URL + updates.Path, Secret: w.prof.Secret,
+		Key: releaseKey.Public().(ed25519.PublicKey), HTTP: r.srv.Client(), Now: time.Now, Poll: 5 * time.Millisecond}
 	if err := os.WriteFile(r.exe, []byte("the old program"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -73,11 +105,10 @@ func (r *releases) publish(v string, forThisComputer bool) {
 	if !forThisComputer {
 		target = "plan9-mips"
 	}
-	built := filepath.Join(r.t.TempDir(), "built")
-	if err := os.WriteFile(built, []byte("the program of "+v), 0o755); err != nil {
-		r.t.Fatal(err)
-	}
-	if _, err := r.client.Publish(context.Background(), v, map[string]string{target: built}); err != nil {
+	r.mu.Lock()
+	r.targets[v] = []string{target}
+	r.mu.Unlock()
+	if _, err := r.client.Release(context.Background(), v); err != nil {
 		r.t.Fatal(err)
 	}
 }
@@ -427,39 +458,49 @@ func TestTheStartNeverWaitsForTheUpdateServer(t *testing.T) {
 	}
 }
 
-func TestReleasePublishesTheProgramsOfABuild(t *testing.T) {
+func TestReleaseAsksTheServerToBuildAndWaits(t *testing.T) {
 	w := newWorld(t)
 	r := newReleases(t, w)
-	dist := t.TempDir()
-	for name, body := range map[string]string{
-		"geminus-linux-amd64":                "linux",
-		"geminus-windows-amd64.exe":          "windows",
-		"geminus-latest-channel-linux-amd64": "the server, not a geminus",
-		"notes.txt":                          "not a program",
-	} {
-		if err := os.WriteFile(filepath.Join(dist, name), []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if code := w.run([]string{"release", "0.5.0", dist}); code != 0 {
+	r.targets["0.5.0"] = []string{"linux-amd64", "windows-amd64"}
+	if code := w.run([]string{"release", "0.5.0"}); code != 0 {
 		t.Fatalf("exit %d: %s", code, w.errs)
 	}
-	w.expect("published 0.5.0: 2 programs")
+	w.expect("building 0.5.0 at ")
+	w.expect("released 0.5.0: 2 programs")
 	m, err := r.client.Latest(context.Background())
-	if err != nil || m.Version != "0.5.0" || len(m.Files) != 2 || m.Files["windows-amd64"].Size != 7 {
+	if err != nil || m.Version != "0.5.0" || len(m.Files) != 2 || m.Files["windows-amd64"].Size != int64(len("the program of 0.5.0")) {
 		t.Fatalf("latest = %+v, %v", m, err)
 	}
-	// The same version again with other programs, a version that is not a
-	// release, and a directory without programs are refused.
-	os.WriteFile(filepath.Join(dist, "geminus-linux-amd64"), []byte("another linux"), 0o755)
-	for _, args := range [][]string{{"release", "0.5.0", dist}, {"release", "0.6.0-dev", dist}, {"release", "0.6.0", t.TempDir()}} {
+	// Asked for again, the release is there already.
+	w.newApp()
+	r.attach()
+	if code := w.run([]string{"release", "0.5.0"}); code != 0 {
+		t.Fatalf("a second release of the same version: exit %d: %s", code, w.errs)
+	}
+	w.expect("released 0.5.0: 2 programs")
+
+	// A build that fails says why; a version that is not a release, or not
+	// newer than the latest, is refused.
+	r.failing = errors.New("fetch the tag v0.6.0: git: exit status 128\nfatal: could not find remote ref refs/tags/v0.6.0")
+	for args, want := range map[string]string{
+		"release 0.6.0":     "could not find remote ref",
+		"release 0.6.0-dev": "X.Y.Z",
+		"release 0.4.0":     "not newer than the latest, 0.5.0",
+	} {
 		w.newApp()
 		r.attach()
-		if code := w.run(args); code != 1 || !strings.Contains(w.errs.String(), "geminus: release:") {
-			t.Errorf("%v: exit %d, stderr %q", args, code, w.errs)
+		code := w.run(strings.Fields(args))
+		if got := w.errs.String(); code != 1 || !strings.Contains(got, "geminus: release:") || !strings.Contains(got, want) {
+			t.Errorf("%s: exit %d, stderr %q", args, code, got)
 		}
 	}
-	if code := w.run([]string{"release", "0.6.0"}); code != 2 {
-		t.Errorf("release without a directory: exit %d", code)
+	for _, args := range [][]string{{"release"}, {"release", "0.6.0", "dist"}} {
+		if code := w.run(args); code != 2 {
+			t.Errorf("%v: exit %d", args, code)
+		}
+	}
+	w.newApp()
+	if code := w.run([]string{"release", "0.6.0"}); code != 1 || !strings.Contains(w.errs.String(), "no update server") {
+		t.Errorf("release without a server: exit %d, stderr %q", code, w.errs)
 	}
 }

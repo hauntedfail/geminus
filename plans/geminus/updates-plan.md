@@ -83,3 +83,17 @@ Tests: the commands against the server of task 2 with a stand-in program file; t
 ### 6. Putting it on sibyl (needs the owner)
 
 Copy the server and unit, start it, add the tunnel rule, restart cloudflared, publish the first release, check `geminus update` on chrome.
+
+## Revision of 2026-11-22: built and signed on sibyl
+
+The owner decided that only a signature made at build time is trusted and that the build moves to sibyl (design: Approaches F, Trust, Publishing). What changed against the tasks above:
+
+- **Task 1.** `Seal(key ed25519.PrivateKey, version, files, ts)` and `(Manifest).Verify(key ed25519.PublicKey)`: Ed25519 over the lines `geminus-release`, version, ts, then the files. `internal/updates/key.go` holds `releaseKey` (hex, set by `-X` in a release build), `ReleaseKey()`, `ParsePublicKey`, `PublicKeyText`. Requests are signed as before.
+- **Task 2.** `server.New(server.Config{Root, Secret, Key, Build, Limit, Now, Log}) *Server` with `Close()`. The two `PUT` routes are gone; `POST /{version}` starts a build and `GET /{version}/build` reports it (`updates.Build{Version, State, Error}`, states `building`, `published`, `failed`). `server.CreateKey` and `server.LoadKey` handle the key file. Flags of the command: `-key`, `-repo`, `-go`, `-git`, `-targets`, `-keygen`.
+- **New: `internal/updates/build`.** `Source{Repo, Git, Go, Targets, Key}.Build(ctx, version, dir)`: fetch `refs/tags/v<version>` only, check it out, `go build -trimpath` each target with the version and the signer's public key linked in, `GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-mod=readonly GOWORK=off CGO_ENABLED=0`.
+- **Task 3.** `Client.Key`, `Client.Poll`; `Publish` is replaced by `Release(ctx, version) (Manifest, error)`, which posts, polls, and verifies the manifest.
+- **Task 4.** `geminus release VERSION` (no directory).
+- **Task 5.** `scripts/release.sh` tests, tags, pushes the tag and runs `geminus release`; it builds nothing. The end-to-end test gives the server this source as a tagged repository.
+- **Task 6.** Also on sibyl: Go in `~/.local/go`, the release key, a read-only deploy key and the `github-geminus` host in `~/.ssh/config` (`deploy/README.md`).
+
+Review focus added: a branch named like a release tag; a tag whose source does not compile; a second request while a build runs; the server stopped in the middle of a build; a geminus built with another key.

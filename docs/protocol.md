@@ -171,42 +171,54 @@ Hermes fixes model and reasoning when a session is created and rejects them as o
 
 ## Releases
 
-geminus updates itself from a server that only hands out files (`cmd/geminus-latest-channel`). Base address: `https://sibyl.haunted.fail/geminus/updates`, or `GEMINUS_UPDATES_URL`.
+geminus updates itself from one server (`cmd/geminus-latest-channel`), which builds each release from the source, signs it and hands it out. Base address: `https://sibyl.haunted.fail/geminus/updates`, or `GEMINUS_UPDATES_URL`.
 
 | Method and path | What it is |
 |---|---|
 | `GET <base>/latest` | The manifest of the newest release |
 | `GET <base>/<version>` | The manifest of that release |
 | `GET <base>/<version>/<target>` | The program for one target |
-| `PUT <base>/<version>/<target>` | Upload one program (at most 32 MiB) |
-| `PUT <base>/<version>` | Publish: upload the manifest (at most 64 KiB) |
+| `POST <base>/<version>` | Build the tag `v<version>` of the source, sign it and publish it |
+| `GET <base>/<version>/build` | How that build is going |
 
-`<version>` is `X.Y.Z`, digits only, without leading zeros. `<target>` is `<os>-<arch>` in Go's names, lower case (`windows-amd64`).
+`<version>` is `X.Y.Z`, digits only, without leading zeros. `<target>` is `<os>-<arch>` in Go's names, lower case (`windows-amd64`). No request has a body, and nothing can be uploaded.
 
 A manifest:
 
 ```json
 {"version": "0.5.0", "ts": 1795300000,
  "files": {"windows-amd64": {"sha256": "<64 hex digits>", "size": 7478784}},
- "sig": "<signature>"}
+ "sig": "<128 hex digits>"}
 ```
 
-Both records are signed as every other record is (see [Signatures](#signatures)):
+`sig` is an Ed25519 signature, in hex, over these lines joined with a newline (no newline at the end):
 
-| Record | content | label |
-|---|---|---|
-| Manifest | one line per file, `<target> <sha256> <size>`, sorted by target, joined with a newline | `geminus-release:<version>`, with `ts` = the manifest's `ts` |
-| Request | empty | `geminus-updates-request:<METHOD>:<path>:<sha256 of the body>` |
+```
+geminus-release
+<version>
+<ts>
+<target> <sha256> <size>        one line per file, sorted by target
+```
 
-A request carries three headers: `Geminus-Time` (the `ts` it was signed with), `Geminus-Body-SHA256` (the hex SHA-256 of its body; of nothing for a read) and `Geminus-Signature`. `<path>` is the escaped path as sent, from the first slash. The server refuses a request without them (401), with a signature that does not verify (401), or signed more than 300 seconds from its own clock (401, and the text says the clocks differ). It checks the signature before reading a body, and the body against the signed digest after.
+The private key is a file on the server's computer and exists nowhere else. Its public half is compiled into geminus (`internal/updates/key.go`), and the server links its own public key into every program it builds, so a released program trusts the key that signed it. This is the one signature in the protocol that the group secret cannot make.
+
+A request is signed with the group secret as every other record is (see [Signatures](#signatures)): content empty, label `geminus-updates-request:<METHOD>:<path>:<sha256 of the body>`. It carries three headers: `Geminus-Time` (the `ts` it was signed with), `Geminus-Body-SHA256` (the hex SHA-256 of its body, that is, of nothing) and `Geminus-Signature`. `<path>` is the escaped path as sent, from the first slash. The server refuses a request without them (401), with a signature that does not verify (401), or signed more than 300 seconds from its own clock (401, and the text says the clocks differ).
+
+The answer to `POST <base>/<version>` and to `GET <base>/<version>/build`:
+
+```json
+{"version": "0.5.0", "state": "building"}
+```
+
+`state` is `building`, `published`, or `failed` with `error` holding the end of what git or the compiler said. `POST` answers 202 when it started the build or the build is running, 200 when the release exists already, 409 when another release is being built or the version is not greater than the latest. A build that failed can be asked for again.
 
 Rules the server keeps:
 
-- A release is visible, and its programs can be fetched, once its manifest is published. Until then an uploaded program may be replaced.
-- A manifest is accepted only if its signature verifies, its version is the one in the path and greater than the latest, and every file it names was uploaded with that size and digest.
-- A published release never changes. The same bytes again are answered 200; anything else 409.
+- A release is built here, from the tag `v<version>` (a tag, not a branch) of the one repository the server is set up with, with the Go toolchain installed here. The source cannot choose another toolchain or fetch a module, and nothing from it is run. A program that does not hold the server's public key is not released.
+- One release is built at a time. A release is visible, and its programs can be fetched, once its manifest is written; nothing of a failed build is.
+- A version must be greater than the latest. A published release never changes and is never built again.
 
 Rules geminus keeps:
 
-- It believes a manifest only if the signature verifies, and installs a file only if its size and SHA-256 are the ones the manifest names.
+- It believes a manifest only if the signature verifies with the release key it was built with, and installs a file only if its size and SHA-256 are the ones the manifest names.
 - It moves only to a version greater than its own. A program whose version is not a plain `X.Y.Z` counts as older than the release `X.Y.Z`; one that has no version at all takes any release.

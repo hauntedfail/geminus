@@ -3,6 +3,8 @@ package updates_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -20,49 +23,90 @@ import (
 	"github.com/hauntedfail/geminus/internal/updates/server"
 )
 
-var secret = []byte("0123456789abcdef0123456789abcdef")
+var (
+	secret = []byte("0123456789abcdef0123456789abcdef")
+	// key stands in for the key of the computer that builds releases.
+	key    = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	public = key.Public().(ed25519.PublicKey)
+)
+
+// builds stands in for building from source: the test says what a version
+// builds into, or why it fails.
+type builds struct {
+	mu       sync.Mutex
+	programs map[string]map[string]string
+	fail     error
+	// hold, when set, keeps every build from finishing until it is closed.
+	hold chan struct{}
+}
+
+func (b *builds) build(ctx context.Context, version, dir string) error {
+	b.mu.Lock()
+	programs, fail, hold := b.programs[version], b.fail, b.hold
+	b.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if fail != nil {
+		return fail
+	}
+	for target, body := range programs {
+		if err := os.WriteFile(filepath.Join(dir, target), []byte(body), 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // channel is a real server over a temporary directory and a client for it.
 // wrap, when set, stands between the two.
-func channel(t *testing.T, wrap func(http.Handler) http.Handler) *updates.Client {
+func channel(t *testing.T, wrap func(http.Handler) http.Handler) (*updates.Client, *builds) {
 	t.Helper()
 	root, err := os.OpenRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { root.Close() })
-	var h http.Handler = server.New(root, secret, time.Now, slog.New(slog.DiscardHandler))
+	b := &builds{programs: map[string]map[string]string{}}
+	channel := server.New(server.Config{Root: root, Secret: secret, Key: key, Build: b.build,
+		Now: time.Now, Log: slog.New(slog.DiscardHandler)})
+	var h http.Handler = channel
 	if wrap != nil {
 		h = wrap(h)
 	}
 	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-	return &updates.Client{Base: srv.URL + updates.Path, Secret: secret, HTTP: srv.Client(), Now: time.Now}
+	t.Cleanup(func() { srv.Close(); channel.Close(); root.Close() })
+	return &updates.Client{Base: srv.URL + updates.Path, Secret: secret, Key: public, HTTP: srv.Client(),
+		Now: time.Now, Poll: 5 * time.Millisecond}, b
 }
 
-// built writes stand-ins for the programs of a build and returns target → path.
-func built(t *testing.T, programs map[string]string) map[string]string {
+// release has the server build version into programs.
+func release(t *testing.T, c *updates.Client, b *builds, version string, programs map[string]string) updates.Manifest {
 	t.Helper()
-	dir, files := t.TempDir(), map[string]string{}
-	for target, body := range programs {
-		files[target] = filepath.Join(dir, "geminus-"+target)
-		if err := os.WriteFile(files[target], []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	b.mu.Lock()
+	b.programs[version] = programs
+	b.mu.Unlock()
+	m, err := c.Release(ctx, version)
+	if err != nil {
+		t.Fatalf("Release %s: %v", version, err)
 	}
-	return files
+	return m
 }
 
 var ctx = context.Background()
 
-func TestAReleaseIsPublishedFoundAndFetched(t *testing.T) {
-	c := channel(t, nil)
+func TestAReleaseIsBuiltFoundAndFetched(t *testing.T) {
+	c, b := channel(t, nil)
 	if _, err := c.Latest(ctx); !errors.Is(err, updates.ErrNoRelease) {
 		t.Fatalf("Latest on an empty server: %v", err)
 	}
 	programs := map[string]string{"linux-amd64": "the linux program", "windows-amd64": "the windows program"}
-	if _, err := c.Publish(ctx, "0.5.0", built(t, programs)); err != nil {
-		t.Fatalf("Publish: %v", err)
+	first := release(t, c, b, "0.5.0", programs)
+	if first.Version != "0.5.0" || len(first.Files) != 2 || !first.Verify(public) {
+		t.Fatalf("Release = %+v", first)
 	}
 	m, err := c.Latest(ctx)
 	if err != nil || m.Version != "0.5.0" || len(m.Files) != 2 {
@@ -75,18 +119,116 @@ func TestAReleaseIsPublishedFoundAndFetched(t *testing.T) {
 	if err := c.Fetch(ctx, m, "darwin-arm64", io.Discard); err == nil || !strings.Contains(err.Error(), "darwin-arm64") {
 		t.Errorf("Fetch of a target the release lacks: %v", err)
 	}
-	// A published release cannot be given other programs.
-	_, err = c.Publish(ctx, "0.5.0", built(t, map[string]string{"linux-amd64": "another linux program"}))
-	if err == nil || !strings.Contains(err.Error(), "cannot be changed") {
-		t.Errorf("a release was published again with other bytes: %v", err)
+	// Asked for again, the release is the one already there, whatever the
+	// source would build into now.
+	again := release(t, c, b, "0.5.0", map[string]string{"linux-amd64": "another linux program"})
+	if again.Sig != first.Sig {
+		t.Errorf("a published release was built again: %+v", again)
+	}
+	if _, err := c.Release(ctx, "0.6.0-dev"); err == nil || !strings.Contains(err.Error(), "X.Y.Z") {
+		t.Errorf("Release of a version that is not a release: %v", err)
 	}
 }
 
-func TestAManifestNotSignedByTheGroupIsNotBelieved(t *testing.T) {
-	c := channel(t, nil)
-	if _, err := c.Publish(ctx, "0.5.0", built(t, map[string]string{"linux-amd64": "the linux program"})); err != nil {
-		t.Fatal(err)
+func TestAFailedBuildIsReportedWithItsReason(t *testing.T) {
+	c, b := channel(t, nil)
+	b.fail = errors.New("go build linux-amd64: exit status 1\n./main.go:3:1: \x1b[31mundefined: x")
+	_, err := c.Release(ctx, "0.5.0")
+	if err == nil {
+		t.Fatal("Release succeeded")
 	}
+	if text := err.Error(); !strings.Contains(text, "0.5.0") || !strings.Contains(text, "undefined: x") || strings.ContainsAny(text, "\x1b\n") {
+		t.Errorf("error = %q", text)
+	}
+	if _, err := c.Latest(ctx); !errors.Is(err, updates.ErrNoRelease) {
+		t.Errorf("Latest after a failed build: %v", err)
+	}
+}
+
+func TestReleaseWaitsNoLongerThanItsContext(t *testing.T) {
+	c, b := channel(t, nil)
+	b.hold = make(chan struct{})
+	defer close(b.hold)
+	short, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if _, err := c.Release(short, "0.5.0"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Release while the build goes on: %v", err)
+	}
+}
+
+// between answers every question about a build with status until it has
+// been asked times times; times < 0 means always.
+func between(status int, times int) (wrap func(http.Handler) http.Handler, asked func() int) {
+	var mu sync.Mutex
+	n := 0
+	wrap = func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/build") {
+				mu.Lock()
+				n++
+				fail := times < 0 || n <= times
+				mu.Unlock()
+				if fail {
+					http.Error(w, "the tunnel has a moment", status)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	return wrap, func() int { mu.Lock(); defer mu.Unlock(); return n }
+}
+
+func TestReleaseOutlastsATunnelThatHiccups(t *testing.T) {
+	wrap, asked := between(http.StatusBadGateway, 3)
+	c, b := channel(t, wrap)
+	if m := release(t, c, b, "0.5.0", map[string]string{"linux-amd64": "the linux program"}); m.Version != "0.5.0" {
+		t.Errorf("Release = %+v", m)
+	}
+	if asked() < 4 {
+		t.Errorf("the build was asked about %d times", asked())
+	}
+}
+
+func TestReleaseGivesUpOnAServerThatStaysAway(t *testing.T) {
+	wrap, asked := between(http.StatusBadGateway, -1)
+	c, b := channel(t, wrap)
+	b.programs["0.5.0"] = map[string]string{"linux-amd64": "the linux program"}
+	_, err := c.Release(ctx, "0.5.0")
+	if err == nil || !strings.Contains(err.Error(), "lost touch") || !strings.Contains(err.Error(), "502") {
+		t.Errorf("err = %v", err)
+	}
+	if asked() != 5 {
+		t.Errorf("the build was asked about %d times, want 5", asked())
+	}
+}
+
+func TestReleaseSaysWhenTheServerForgotTheBuild(t *testing.T) {
+	// As after a restart of the server in the middle of a build.
+	wrap, asked := between(http.StatusNotFound, -1)
+	c, b := channel(t, wrap)
+	b.hold = make(chan struct{})
+	defer close(b.hold)
+	_, err := c.Release(ctx, "0.5.0")
+	if err == nil || !strings.Contains(err.Error(), "run the release again") {
+		t.Errorf("err = %v", err)
+	}
+	if asked() != 1 {
+		t.Errorf("the build was asked about %d times, want 1", asked())
+	}
+	// A refusal that asking again cannot change ends the wait at once.
+	wrap, asked = between(http.StatusUnauthorized, -1)
+	c, b = channel(t, wrap)
+	b.hold = make(chan struct{})
+	defer close(b.hold)
+	if _, err := c.Release(ctx, "0.5.0"); err == nil || !strings.Contains(err.Error(), "401") || asked() != 1 {
+		t.Errorf("err = %v after %d questions", err, asked())
+	}
+}
+
+func TestAManifestNotSignedWithTheReleaseKeyIsNotBelieved(t *testing.T) {
+	c, b := channel(t, nil)
+	release(t, c, b, "0.5.0", map[string]string{"linux-amd64": "the linux program"})
 	// The same server, read by someone who trusts another secret: the
 	// request is refused before any manifest is seen.
 	other := *c
@@ -94,16 +236,33 @@ func TestAManifestNotSignedByTheGroupIsNotBelieved(t *testing.T) {
 	if _, err := other.Latest(ctx); err == nil {
 		t.Error("a stranger read the latest release")
 	}
-	// A server that answers with a manifest of its own making.
-	forged := updates.Seal([]byte("ffffffffffffffffffffffffffffffff"), "9.9.9",
-		map[string]updates.File{"linux-amd64": {SHA256: strings.Repeat("a", 64), Size: 3}}, 1)
-	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"version":"9.9.9","ts":1,"files":{"linux-amd64":{"sha256":"` + forged.Files["linux-amd64"].SHA256 + `","size":3}},"sig":"` + forged.Sig + `"}`))
+	// A geminus that trusts another key does not take sibyl's release.
+	other = *c
+	other.Key = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{8}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	if _, err := other.Latest(ctx); err == nil || !strings.Contains(err.Error(), "signed") {
+		t.Errorf("Latest with another release key: %v", err)
+	}
+	// A server that answers with a manifest of its own making. It holds the
+	// group's secret, as every member does, and still cannot sign a release.
+	forged, err := json.Marshal(updates.Seal(ed25519.NewKeyFromSeed(secret), "9.9.9",
+		map[string]updates.File{"linux-amd64": {SHA256: strings.Repeat("a", 64), Size: 3}}, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/build") || r.Method == http.MethodPost {
+			w.Write([]byte(`{"version":"9.9.9","state":"published"}`))
+			return
+		}
+		w.Write(forged)
 	}))
 	defer fake.Close()
 	c.Base, c.HTTP = fake.URL+updates.Path, fake.Client()
 	if _, err := c.Latest(ctx); err == nil || !strings.Contains(err.Error(), "signed") {
 		t.Errorf("Latest believed a forged manifest: %v", err)
+	}
+	if _, err := c.Release(ctx, "9.9.9"); err == nil || !strings.Contains(err.Error(), "signed") {
+		t.Errorf("Release believed a forged manifest: %v", err)
 	}
 }
 
@@ -114,7 +273,7 @@ func TestWhatIsFetchedMustBeTheFileTheManifestNames(t *testing.T) {
 		"other bytes": func(b []byte) []byte { return bytes.ToUpper(b) },
 		"too long":    func(b []byte) []byte { return append(b, "and more"...) },
 	} {
-		c := channel(t, func(next http.Handler) http.Handler {
+		c, b := channel(t, func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != "GET" || !strings.HasSuffix(r.URL.Path, "/linux-amd64") {
 					next.ServeHTTP(w, r)
@@ -125,10 +284,7 @@ func TestWhatIsFetchedMustBeTheFileTheManifestNames(t *testing.T) {
 				w.Write(damage(rec.Body.Bytes()))
 			})
 		})
-		m, err := c.Publish(ctx, "0.5.0", built(t, map[string]string{"linux-amd64": program}))
-		if err != nil {
-			t.Fatal(err)
-		}
+		m := release(t, c, b, "0.5.0", map[string]string{"linux-amd64": program})
 		if err := c.Fetch(ctx, m, "linux-amd64", io.Discard); err == nil {
 			t.Errorf("%s: Fetch succeeded", name)
 		}

@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# Publish a geminus release: test, build every target, upload to the update
-# server, tag. Every geminus then gets it with `geminus update` or /update.
+# Release geminus: test, tag, and have the release server build the tag.
+# Every geminus then gets it with `geminus update` or /update.
 #
 #   bash scripts/release.sh 0.5.0
 #
-# The version is X.Y.Z and must be greater than the latest release. Run it on
-# a computer of the group: the release is signed with the group secret of
-# this computer's Hermes profile. GEMINUS_UPDATES_URL names another server
-# than https://sibyl.haunted.fail/geminus/updates.
+# The version is X.Y.Z and must be greater than the latest release. Nothing
+# is built or signed here: the server (sibyl) fetches the tag vX.Y.Z from the
+# repository, builds every target and signs the release with a key only it
+# holds. Run this on a computer of the group; the request to the server is
+# signed with the group secret of this computer's Hermes profile.
+# GEMINUS_UPDATES_URL names another server than
+# https://sibyl.haunted.fail/geminus/updates.
+#
+# Run again after a failure that was not in the source (the server was
+# restarted, it could not reach the repository): a tag that is already on
+# this commit is used as it is. If the source at the tag does not build, the
+# release was never published, so either release the fix as the next version
+# or move the tag: the script says how.
 set -euo pipefail
 
 version="${1:-}"
@@ -15,12 +24,14 @@ if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; th
 	echo "usage: bash scripts/release.sh X.Y.Z" >&2
 	exit 2
 fi
+tag="v${version}"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-# What is released is what is committed. Other untracked files are left
-# alone, but an untracked Go file would be built into the release.
+# What is released is what is committed and tagged. Other untracked files are
+# left alone, but an untracked Go file would make the tests here differ from
+# the build on the server.
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 	echo "release: there are uncommitted changes; commit them first" >&2
 	exit 1
@@ -29,26 +40,33 @@ if [ -n "$(git ls-files --others --exclude-standard -- '*.go')" ]; then
 	echo "release: there are Go files that are not committed; commit or remove them first" >&2
 	exit 1
 fi
-if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null ||
-	[ -n "$(git ls-remote --tags origin "refs/tags/v${version}")" ]; then
-	echo "release: v${version} is already tagged" >&2
-	exit 1
+
+head="$(git rev-parse HEAD)"
+remote="$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}" | tail -n 1 | cut -f 1)"
+tagged=""
+if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+	tagged="$(git rev-parse "refs/tags/${tag}^{commit}")"
 fi
+for at in "$tagged" "$remote"; do
+	if [ -n "$at" ] && [ "$at" != "$head" ]; then
+		cat >&2 <<-EOM
+		release: ${tag} is already on another commit (${at})
+		release: if ${version} was never published (its build failed), remove the tag and run this again:
+		release:   git tag -d ${tag}; git push origin :refs/tags/${tag}
+		release: a published release cannot be changed; use the next version instead
+		EOM
+		exit 1
+	fi
+done
 
 go vet ./...
 go test ./... -count=1
-VERSION="$version" bash scripts/crossbuild.sh
 
-host="dist/geminus-$(go env GOOS)-$(go env GOARCH)"
-if [ "$(go env GOOS)" = "windows" ]; then
-	host="${host}.exe"
+if [ -z "$tagged" ]; then
+	git tag "$tag"
 fi
-"$host" release "$version" dist
+if [ -z "$remote" ]; then
+	git push origin "$tag"
+fi
 
-# From here on the release is out, whatever happens to the tag.
-git tag "v${version}"
-if ! git push origin "v${version}"; then
-	echo "release: ${version} is published, but the tag was not pushed; run: git push origin v${version}" >&2
-	exit 1
-fi
-echo "released ${version}"
+go run ./cmd/geminus release "$version"
