@@ -45,8 +45,8 @@ class Config:
     push: bool = True
     # Settings of the geminus bridge (see bridge.py): enabled, cwd, args, timeout, human_auth. None = defaults.
     geminus: object = None
-    # Optional Ed25519 public keys for human peers: {peer_name: 32-byte raw pubkey}.
-    human_pubkeys: dict[str, bytes] = field(default_factory=dict)
+    # Optional Ed25519 public keys for human peers: {peer_name: tuple of 32-byte raw pubkeys}.
+    human_pubkeys: dict[str, tuple[bytes, ...]] = field(default_factory=dict)
     # Settings of automatic OTA updates (see ota.py): enabled, base_url, interval_seconds, update_geminus.
     ota: object = None
 
@@ -189,22 +189,28 @@ def _ota(value: object) -> object:
     return dict(value)
 
 
-def _human_pubkeys(value: object) -> dict[str, bytes]:
+def _human_pubkeys(value: object) -> dict[str, tuple[bytes, ...]]:
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise ConfigError("geminise.json 'human_pubkeys' must be an object mapping peer names to 64-hex Ed25519 keys")
-    out: dict[str, bytes] = {}
-    for peer, raw_hex in value.items():
-        if not isinstance(peer, str) or not isinstance(raw_hex, str):
-            raise ConfigError("geminise.json 'human_pubkeys' entries must be strings")
-        try:
-            key = bytes.fromhex(raw_hex.strip())
-        except ValueError:
-            raise ConfigError(f"geminise.json 'human_pubkeys[{peer}]' must be hex") from None
-        if len(key) != 32:
-            raise ConfigError(f"geminise.json 'human_pubkeys[{peer}]' must be 32 bytes (64 hex chars)")
-        out[peer] = key
+        raise ConfigError("geminise.json 'human_pubkeys' must be an object mapping peer names to 64-hex Ed25519 key(s)")
+    out: dict[str, tuple[bytes, ...]] = {}
+    for peer, raw_val in value.items():
+        if not isinstance(peer, str):
+            raise ConfigError("geminise.json 'human_pubkeys' peer names must be strings")
+        raw_list = [raw_val] if isinstance(raw_val, str) else raw_val
+        if not isinstance(raw_list, list) or not raw_list or any(not isinstance(item, str) for item in raw_list):
+            raise ConfigError(f"geminise.json 'human_pubkeys[{peer}]' must be a hex string or non-empty list of hex strings")
+        keys: list[bytes] = []
+        for raw_hex in raw_list:
+            try:
+                key = bytes.fromhex(raw_hex.strip())
+            except ValueError:
+                raise ConfigError(f"geminise.json 'human_pubkeys[{peer}]' must be hex") from None
+            if len(key) != 32:
+                raise ConfigError(f"geminise.json 'human_pubkeys[{peer}]' must be 32 bytes (64 hex chars)")
+            keys.append(key)
+        out[peer] = tuple(keys)
     return out
 
 

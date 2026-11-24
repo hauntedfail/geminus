@@ -43,7 +43,11 @@ for at in "$tagged" "$remote"; do
 	fi
 done
 
-python3 -m unittest discover -s plugin/geminish/tests -v
+PY_BIN="python3"
+if [ "$(uname -s)" = "Darwin" ] && [ -x /usr/bin/python3 ]; then
+	PY_BIN="/usr/bin/python3"
+fi
+"$PY_BIN" -m unittest discover -s plugin/geminish/tests -v
 
 if [ -z "$tagged" ]; then
 	git tag "$tag"
@@ -52,4 +56,4 @@ if [ -z "$remote" ]; then
 	git push origin "$tag"
 fi
 
-python3 plugin/geminish/cli.py release "$version"
+"$PY_BIN" plugin/geminish/cli.py release "$version"

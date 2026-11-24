@@ -1,6 +1,7 @@
 """Unit tests for geminish OTA updates and owner-delegated cross-device execution."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -13,8 +14,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from geminish import client, ota, policy, protocol  # noqa: E402
-from geminish.config import Config  # noqa: E402
+from geminish import bridge, client, config, ota, policy, protocol  # noqa: E402
+from geminish.config import Config, ConfigError  # noqa: E402
 from geminish.store import Store  # noqa: E402
 
 
@@ -159,6 +160,38 @@ class TestDelegate(unittest.TestCase):
             payload = json.loads(env.text)
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["output"], "MIRAI_HOST_OK")
+
+
+class TestHumanPubkeys(unittest.TestCase):
+    def test_parse_single_and_multiple_pubkeys(self):
+        k1 = "11" * 32
+        k2 = "22" * 32
+        single = config._human_pubkeys({"h1karu": k1})
+        self.assertEqual(single["h1karu"], (bytes.fromhex(k1),))
+        multi = config._human_pubkeys({"h1karu": [k1, k2]})
+        self.assertEqual(multi["h1karu"], (bytes.fromhex(k1), bytes.fromhex(k2)))
+        with self.assertRaises(ConfigError):
+            config._human_pubkeys({"h1karu": []})
+        with self.assertRaises(ConfigError):
+            config._human_pubkeys({"h1karu": ["short"]})
+
+    def test_bridge_verifies_any_configured_pubkey(self):
+        secret = hashlib.sha256(b"test-group-secret").digest()
+        k1 = bytes([0x11] * 32)
+        k2 = bytes([0x22] * 32)
+        with tempfile.TemporaryDirectory() as td:
+            cfg = dataclasses.replace(_make_cfg("mirai", Path(td), secret), human_pubkeys={"h1karu": (k1, k2)})
+            cfg.state_dir.mkdir(parents=True)
+            b = bridge.Bridge(cfg, Store(cfg.store_path), _FakeMailbox())  # type: ignore[arg-type]
+            orig = bridge.verify_human_ed25519
+            try:
+                bridge.verify_human_ed25519 = lambda pub, _c, _l, _t, sig: pub == k2 and sig == "ok-sig"
+                ok, err = b._verify_human_prompt("h1karu", "hi", "lbl", 123, {"sig_alg": "ed25519", "sig": "ok-sig"})
+                self.assertTrue(ok, err)
+                ok2, _ = b._verify_human_prompt("h1karu", "hi", "lbl", 123, {"sig_alg": "ed25519", "sig": "bad-sig"})
+                self.assertFalse(ok2)
+            finally:
+                bridge.verify_human_ed25519 = orig
 
 
 if __name__ == "__main__":

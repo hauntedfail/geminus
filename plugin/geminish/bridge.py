@@ -643,10 +643,11 @@ class Bridge:
         sig = meta.get("sig")
         if sig_alg == "ed25519":
             pubkeys = getattr(self.cfg, "human_pubkeys", None) or {}
-            pub = pubkeys.get(author)
-            if not pub:
+            pubs = pubkeys.get(author)
+            if not pubs:
                 return False, "no Ed25519 public key configured for human author"
-            if not verify_human_ed25519(pub, content, label, sent_at, sig):
+            candidates = (pubs,) if isinstance(pubs, (bytes, bytearray)) else tuple(pubs)
+            if not any(verify_human_ed25519(pub, content, label, sent_at, sig) for pub in candidates):
                 return False, "the Ed25519 signature does not verify"
             return True, ""
         if sig_alg in ("", "hmac-sha256"):
