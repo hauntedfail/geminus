@@ -13,3 +13,6 @@ coverage.*
 .idea/
 .vscode/
 .serena/
+
+__pycache__/
+*.pyc
