@@ -49,9 +49,11 @@ type Profile struct {
 	Secret []byte
 	// HumanKey is the optional Ed25519 private key held only on the owner's computer(s).
 	HumanKey ed25519.PrivateKey
-	// HumanPubKey is the owner's configured Ed25519 public key (from geminise.json human_pubkeys,
+	// HumanPubKey is the owner's primary Ed25519 public key (from geminise.json human_pubkeys,
 	// or derived from HumanKey when present).
 	HumanPubKey ed25519.PublicKey
+	// HumanPubKeys holds all configured Ed25519 public keys for the owner (supports multiple devices).
+	HumanPubKeys []ed25519.PublicKey
 	// RequireEd25519 is true when geminise.json sets geminus.human_auth = "ed25519_only".
 	RequireEd25519 bool
 }
@@ -140,11 +142,11 @@ func loadFrom(home string) (Profile, error) {
 		return Profile{}, fmt.Errorf("the Honcho connection of this computer's Hermes profile is not readable: %w", err)
 	}
 	var group struct {
-		From         string            `json:"from"`
-		Members      map[string]string `json:"members"`
-		Secret       string            `json:"secret"`
-		HumanPubKeys map[string]string `json:"human_pubkeys"`
-		Geminus      json.RawMessage   `json:"geminus"`
+		From         string                     `json:"from"`
+		Members      map[string]string          `json:"members"`
+		Secret       string                     `json:"secret"`
+		HumanPubKeys map[string]json.RawMessage `json:"human_pubkeys"`
+		Geminus      json.RawMessage            `json:"geminus"`
 	}
 	if err := readJSON(filepath.Join(home, "geminise.json"), &group); err != nil {
 		return Profile{}, fmt.Errorf("the group settings (members and signing secret) are not readable: %w", err)
@@ -166,12 +168,26 @@ func loadFrom(home string) (Profile, error) {
 	case p.Members[p.Human] != "human":
 		return Profile{}, fmt.Errorf("the owner's peer %q is not listed as a human in geminise.json", p.Human)
 	}
-	if rawPub, ok := group.HumanPubKeys[p.Human]; ok && strings.TrimSpace(rawPub) != "" {
-		pub, err := hex.DecodeString(strings.TrimSpace(rawPub))
-		if err != nil || len(pub) != ed25519.PublicKeySize {
-			return Profile{}, fmt.Errorf("geminise.json human_pubkeys[%q] must be 64 hex characters", p.Human)
+	if rawEntry, ok := group.HumanPubKeys[p.Human]; ok && len(bytes.TrimSpace(rawEntry)) > 0 {
+		var hexList []string
+		var single string
+		if json.Unmarshal(rawEntry, &single) == nil {
+			if strings.TrimSpace(single) != "" {
+				hexList = []string{single}
+			}
+		} else if err := json.Unmarshal(rawEntry, &hexList); err != nil || len(hexList) == 0 {
+			return Profile{}, fmt.Errorf("geminise.json human_pubkeys[%q] must be a 64-hex string or non-empty list of 64-hex strings", p.Human)
 		}
-		p.HumanPubKey = ed25519.PublicKey(pub)
+		for _, rawPub := range hexList {
+			pub, err := hex.DecodeString(strings.TrimSpace(rawPub))
+			if err != nil || len(pub) != ed25519.PublicKeySize {
+				return Profile{}, fmt.Errorf("geminise.json human_pubkeys[%q] must be 64 hex characters", p.Human)
+			}
+			p.HumanPubKeys = append(p.HumanPubKeys, ed25519.PublicKey(pub))
+		}
+		if len(p.HumanPubKeys) > 0 {
+			p.HumanPubKey = p.HumanPubKeys[0]
+		}
 	}
 	if len(group.Geminus) > 0 {
 		var gOpts struct {
@@ -196,12 +212,22 @@ func loadFrom(home string) (Profile, error) {
 		}
 		priv := ed25519.NewKeyFromSeed(seed)
 		derived := priv.Public().(ed25519.PublicKey)
-		if len(p.HumanPubKey) > 0 && !bytes.Equal(p.HumanPubKey, derived) {
-			return Profile{}, fmt.Errorf("%s does not match human_pubkeys[%q] in geminise.json", keyPath, p.Human)
+		if len(p.HumanPubKeys) > 0 {
+			matched := false
+			for _, candidate := range p.HumanPubKeys {
+				if bytes.Equal(candidate, derived) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return Profile{}, fmt.Errorf("%s does not match human_pubkeys[%q] in geminise.json", keyPath, p.Human)
+			}
 		}
 		p.HumanKey = priv
-		if len(p.HumanPubKey) == 0 {
-			p.HumanPubKey = derived
+		p.HumanPubKey = derived
+		if len(p.HumanPubKeys) == 0 {
+			p.HumanPubKeys = []ed25519.PublicKey{derived}
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return Profile{}, fmt.Errorf("%s: %w", keyPath, err)

@@ -34,6 +34,7 @@ func (a *App) humanAuth() wire.HumanAuth {
 		Secret:         a.Profile.Secret,
 		Priv:           a.Profile.HumanKey,
 		Pub:            a.Profile.HumanPubKey,
+		Pubs:           a.Profile.HumanPubKeys,
 		RequireEd25519: a.Profile.RequireEd25519,
 	}
 }

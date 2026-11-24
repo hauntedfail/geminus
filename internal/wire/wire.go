@@ -81,6 +81,7 @@ type HumanAuth struct {
 	Secret         []byte
 	Priv           ed25519.PrivateKey
 	Pub            ed25519.PublicKey
+	Pubs           []ed25519.PublicKey
 	RequireEd25519 bool
 }
 
@@ -99,6 +100,13 @@ func (h HumanAuth) Verify(content, label string, ts int64, sig, alg string) bool
 	}
 	switch alg {
 	case AlgEd25519:
+		if len(h.Pubs) > 0 {
+			for _, pub := range h.Pubs {
+				if VerifyEd25519(pub, content, label, ts, sig) {
+					return true
+				}
+			}
+		}
 		pub := h.Pub
 		if len(pub) == 0 && len(h.Priv) == ed25519.PrivateKeySize {
 			pub = h.Priv.Public().(ed25519.PublicKey)
