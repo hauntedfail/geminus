@@ -56,8 +56,8 @@ func inHome(parts ...string) string {
 
 // settings is what the command line asked for.
 type settings struct {
-	listen, dir, key, repo, goBin, gitBin string
-	targets                               []string
+	listen, dir, pluginDir, key, repo, goBin, gitBin string
+	targets                                          []string
 }
 
 func run(ctx context.Context, args []string, out, errw io.Writer) int {
@@ -66,6 +66,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	var s settings
 	flags.StringVar(&s.listen, "listen", defaultListen, "address to listen on")
 	flags.StringVar(&s.dir, "dir", inHome(".local", "share", "geminus", "updates"), "directory the releases are kept in")
+	flags.StringVar(&s.pluginDir, "plugin-dir", inHome(".local", "share", "geminus", "geminish-updates"), "directory the geminish plugin releases are kept in")
 	flags.StringVar(&s.key, "key", inHome(".config", "geminus", "release.key"), "file of the key that signs releases")
 	flags.StringVar(&s.repo, "repo", defaultRepo, "source repository a release is built from, at the tag vX.Y.Z")
 	flags.StringVar(&s.goBin, "go", "go", "the go program a release is built with")
@@ -76,7 +77,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		return 2
 	}
 	if flags.NArg() > 0 || s.dir == "" || s.key == "" {
-		fmt.Fprintln(errw, "usage: geminus-latest-channel [-listen ADDRESS] [-dir DIRECTORY] [-key FILE] [-repo URL] [-go PROGRAM] [-git PROGRAM] [-targets LIST] [-keygen]")
+		fmt.Fprintln(errw, "usage: geminus-latest-channel [-listen ADDRESS] [-dir DIRECTORY] [-plugin-dir DIRECTORY] [-key FILE] [-repo URL] [-go PROGRAM] [-git PROGRAM] [-targets LIST] [-keygen]")
 		return 2
 	}
 	s.targets = strings.Split(*targets, ",")
@@ -125,24 +126,42 @@ func serve(ctx context.Context, s settings, log *slog.Logger) error {
 		return err
 	}
 	defer root.Close()
+	if s.pluginDir == "" {
+		s.pluginDir = filepath.Join(filepath.Dir(s.dir), "geminish-updates")
+	}
+	if err := os.MkdirAll(s.pluginDir, 0o700); err != nil {
+		return err
+	}
+	pluginRoot, err := os.OpenRoot(s.pluginDir)
+	if err != nil {
+		return err
+	}
+	defer pluginRoot.Close()
 	ln, err := net.Listen("tcp", s.listen)
 	if err != nil {
 		return err
 	}
 	source := build.Source{Repo: s.repo, Git: s.gitBin, Go: s.goBin, Targets: s.targets, Key: public}
-	channel := server.New(server.Config{Root: root, Secret: prof.Secret, Key: key, Build: source.Build, Now: time.Now, Log: log})
-	// A build in progress is stopped with the server; the release is asked
-	// for again.
+	channel := server.New(server.Config{Prefix: updates.Path, Root: root, Secret: prof.Secret, Key: key, Build: source.Build, Now: time.Now, Log: log})
 	defer channel.Close()
+
+	pluginSource := build.PluginSource{Repo: s.repo, Git: s.gitBin}
+	pluginChannel := server.New(server.Config{Prefix: build.PluginPath, Root: pluginRoot, Secret: prof.Secret, Key: key, Build: pluginSource.Build, Now: time.Now, Log: log})
+	defer pluginChannel.Close()
+
+	mux := http.NewServeMux()
+	mux.Handle(build.PluginPath+"/", pluginChannel)
+	mux.Handle(updates.Path+"/", channel)
+
 	srv := &http.Server{
-		Handler:           channel,
+		Handler:           mux,
 		ReadHeaderTimeout: headerTimeout,
 		ReadTimeout:       transferTimeout,
 		WriteTimeout:      transferTimeout,
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
-	log.Info("listening", "address", ln.Addr().String(), "dir", s.dir, "repo", s.repo, "key", public, "version", version.Version)
+	log.Info("listening", "address", ln.Addr().String(), "dir", s.dir, "plugin_dir", s.pluginDir, "repo", s.repo, "key", public, "version", version.Version)
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	select {

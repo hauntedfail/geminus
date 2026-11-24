@@ -49,6 +49,8 @@ const (
 
 // Config is what a Server works with.
 type Config struct {
+	// Prefix is the URL path prefix for this channel; updates.Path if empty.
+	Prefix string
 	// Root is the directory the releases are kept in.
 	Root *os.Root
 	// Secret is the group's secret; every request must be signed with it.
@@ -89,14 +91,18 @@ func New(c Config) *Server {
 	if c.Limit <= 0 {
 		c.Limit = defaultLimit
 	}
+	prefix := strings.TrimRight(c.Prefix, "/")
+	if prefix == "" {
+		prefix = updates.Path
+	}
 	s := &Server{cfg: c, root: c.Root, log: c.Log, mux: http.NewServeMux()}
 	s.ctx, s.stop = context.WithCancel(context.Background())
 	s.sweep()
-	s.mux.HandleFunc("GET "+updates.Path+"/latest", s.signed(s.latest))
-	s.mux.HandleFunc("GET "+updates.Path+"/{version}", s.signed(s.manifest))
-	s.mux.HandleFunc("GET "+updates.Path+"/{version}/{target}", s.signed(s.program))
-	s.mux.HandleFunc("POST "+updates.Path+"/{version}", s.signed(s.release))
-	s.mux.HandleFunc("GET "+updates.Path+"/{version}/build", s.signed(s.state))
+	s.mux.HandleFunc("GET "+prefix+"/latest", s.signed(s.latest))
+	s.mux.HandleFunc("GET "+prefix+"/{version}", s.signed(s.manifest))
+	s.mux.HandleFunc("GET "+prefix+"/{version}/{target}", s.signed(s.program))
+	s.mux.HandleFunc("POST "+prefix+"/{version}", s.signed(s.release))
+	s.mux.HandleFunc("GET "+prefix+"/{version}/build", s.signed(s.state))
 	return s
 }
 
