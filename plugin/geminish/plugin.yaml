@@ -1,5 +1,5 @@
 name: geminish
-version: 0.9.2
+version: 0.9.3
 description: "geminise client: agent-to-agent mail, owner-delegated cross-device execution, geminus bridge, push doorbell, and automatic Ed25519-verified OTA updates."
 provides_tools:
   - geminise_send
