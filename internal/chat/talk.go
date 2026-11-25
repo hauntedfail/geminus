@@ -77,7 +77,7 @@ func (a *App) say(text string) error {
 		}
 		id := fmt.Sprintf("geminus-%s-%s-%s", a.cur.Name, a.Now().Format("20060102"), suffix)
 		a.title = clip(oneLine(text), 60)
-		if err := a.Honcho.CreateSession(ctx, id, wire.SessionMetadata(a.meta(id, a.title, false)), a.Profile.Human, a.cur.Name); err != nil {
+		if err := a.backend().CreateSession(ctx, id, wire.SessionMetadata(a.meta(id, a.title, false)), a.Profile.Human, a.cur.Name); err != nil {
 			return fmt.Errorf("nothing was sent: the conversation could not be created: %w", err)
 		}
 		a.session = id
@@ -91,7 +91,7 @@ func (a *App) say(text string) error {
 	sig, sigAlg := a.humanAuth().Sign(text, label, ts)
 	prompt := wire.Message{V: 1, Role: wire.RolePrompt, TS: ts, Nonce: nonce, State: wire.StateQueued,
 		Model: a.tuning.Model, Effort: a.tuning.Effort, Sig: sig, SigAlg: sigAlg}
-	stored, err := a.Honcho.Post(ctx, a.session, a.Profile.Human, text, map[string]any{wire.Kind: prompt})
+	stored, err := a.backend().Post(ctx, a.session, a.Profile.Human, text, map[string]any{wire.Kind: prompt})
 	if err != nil {
 		return fmt.Errorf("nothing was sent: %w", err)
 	}
@@ -102,12 +102,12 @@ func (a *App) say(text string) error {
 	a.turnPrompt[stored.ID] = text
 	// The mark is what the bridge looks for. Without it the prompt is
 	// stored but nobody picks it up, so say exactly that.
-	if err := a.Honcho.SetSessionMetadata(ctx, a.session, wire.SessionMetadata(a.meta(a.session, a.title, true))); err != nil {
+	if err := a.backend().SetSessionMetadata(ctx, a.session, wire.SessionMetadata(a.meta(a.session, a.title, true))); err != nil {
 		return fmt.Errorf("the prompt is stored but could not be marked for %s to pick up (%w); send it again", a.cur.Name, err)
 	}
 	a.state[stored.ID] = wire.StateQueued
-	note := "recorded in Honcho for " + a.cur.Name
-	rang := a.cur.endpoint != "" && wire.Ring(a.ctx, a.Honcho.HTTP(), a.cur.endpoint) == nil
+	note := "recorded in " + a.backend().Name() + " for " + a.cur.Name
+	rang := a.cur.endpoint != "" && a.backend().Ring(a.ctx, a.cur.endpoint) == nil
 	if rang {
 		note += " · doorbell rung"
 	}
@@ -164,7 +164,7 @@ func (a *App) arrivals() bool {
 func (a *App) poll(turn string) (done, printed bool, err error) {
 	ctx, cancel := a.call()
 	defer cancel()
-	messages, err := a.Honcho.Latest(ctx, a.session, latestCount)
+	messages, err := a.backend().Latest(ctx, a.session, latestCount)
 	if err != nil {
 		return false, false, err
 	}
@@ -294,7 +294,7 @@ func (a *App) show(content string, meta wire.Message) {
 func (a *App) conversations() (signed []honcho.Session, unsigned int, err error) {
 	ctx, cancel := a.call()
 	defer cancel()
-	sessions, err := a.Honcho.Sessions(ctx, map[string]any{"kind": wire.Kind,
+	sessions, err := a.backend().Sessions(ctx, map[string]any{"kind": wire.Kind,
 		wire.Kind: map[string]any{"persona": a.cur.Name, "human": a.Profile.Human}})
 	if err != nil {
 		return nil, 0, err
@@ -403,7 +403,7 @@ func (a *App) resume(want string) error {
 	}
 	ctx, cancel := a.call()
 	defer cancel()
-	messages, err := a.Honcho.Messages(ctx, picked.ID)
+	messages, err := a.backend().Messages(ctx, picked.ID)
 	if err != nil {
 		return err
 	}

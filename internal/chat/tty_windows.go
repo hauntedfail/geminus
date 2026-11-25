@@ -10,6 +10,7 @@ var (
 	kernel32                       = syscall.NewLazyDLL("kernel32.dll")
 	procSetConsoleMode             = kernel32.NewProc("SetConsoleMode")
 	procGetConsoleScreenBufferInfo = kernel32.NewProc("GetConsoleScreenBufferInfo")
+	procCancelIoEx                 = kernel32.NewProc("CancelIoEx")
 )
 
 const (
@@ -68,4 +69,14 @@ func termSize(out *os.File) (cols, rows int) {
 		return 0, 0
 	}
 	return int(info.Right-info.Left) + 1, int(info.Bottom-info.Top) + 1
+}
+
+// cancelInputRead cancels any pending synchronous Read on the console input
+// handle so the keyboard reader goroutine exits before a relaunched child
+// process takes over the console.
+func cancelInputRead(in *os.File) {
+	if in == nil {
+		return
+	}
+	_, _, _ = procCancelIoEx.Call(in.Fd(), 0)
 }

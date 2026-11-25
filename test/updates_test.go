@@ -49,6 +49,11 @@ func tagged(t *testing.T, version string) string {
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), mod, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if sum, err := os.ReadFile(filepath.Join("..", "go.sum")); err == nil {
+		if err := os.WriteFile(filepath.Join(repo, "go.sum"), sum, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, args := range [][]string{
 		{"init", "-q"}, {"add", "-A"}, {"commit", "-q", "-m", "the source of " + version}, {"tag", "v" + version},
 	} {
@@ -117,8 +122,13 @@ func TestAReleaseIsBuiltByTheServerAndInstalledByTheBuiltPrograms(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
+	modCacheOut, err := exec.Command("go", "env", "GOMODCACHE").Output()
+	if err != nil {
+		t.Fatalf("go env GOMODCACHE: %v", err)
+	}
 	address := freeAddress(t)
 	env := append(os.Environ(), "HERMES_HOME="+home, "HOME="+t.TempDir(), "NO_COLOR=1",
+		"GOMODCACHE="+strings.TrimSpace(string(modCacheOut)),
 		"GEMINUS_UPDATES_URL=http://"+address+"/geminus/updates")
 
 	var serverLog bytes.Buffer

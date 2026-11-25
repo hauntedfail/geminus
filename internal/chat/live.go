@@ -28,15 +28,15 @@ const (
 	// sessions stay bounded in memory.
 	maxTranscriptLines = 20000
 
-	altScreenOn      = "\x1b[?1049h"          // switch to alternate screen buffer (isolates shell scrollback)
-	altScreenOff     = "\x1b[?1049l"          // restore original terminal screen on exit
-	cursorHide       = "\x1b[?25l"            // hide cursor while navigating a select menu
-	cursorShow       = "\x1b[?25h"            // restore cursor visibility
+	altScreenOn      = "\x1b[?1049h" // switch to alternate screen buffer (isolates shell scrollback)
+	altScreenOff     = "\x1b[?1049l" // restore original terminal screen on exit
+	cursorHide       = "\x1b[?25l"   // hide cursor while navigating a select menu
+	cursorShow       = "\x1b[?25h"   // restore cursor visibility
 	cursorHome       = "\x1b[H"
 	clearLineEnd     = "\x1b[K"
-	syncStart        = "\x1b[?2026h"          // draw the following as one update, where supported
+	syncStart        = "\x1b[?2026h" // draw the following as one update, where supported
 	syncEnd          = "\x1b[?2026l"
-	pasteModeOn      = "\x1b[?2004h"          // mark pasted text, so a pasted line break is not Enter
+	pasteModeOn      = "\x1b[?2004h" // mark pasted text, so a pasted line break is not Enter
 	pasteModeOf      = "\x1b[?2004l"
 	mouseModeOn      = "\x1b[?1000h\x1b[?1006h" // report mouse wheel & clicks in SGR format (avoids alternate-scroll arrow keys)
 	mouseModeOff     = "\x1b[?1006l\x1b[?1000l"
@@ -101,6 +101,13 @@ func (l *live) setPrompt(prompt string) {
 	defer l.mu.Unlock()
 	l.curPrompt = oneLine(prompt)
 	l.draw()
+}
+
+// hasDraft reports whether the user currently has unsent text in the prompt box.
+func (l *live) hasDraft() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.ed.text) > 0
 }
 
 // wrappedCount returns the total number of wrapped rows for the current

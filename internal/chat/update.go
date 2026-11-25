@@ -24,9 +24,12 @@ const (
 	updateLimit = 5 * time.Minute
 	// releaseLimit bounds the wait for the server to build a release.
 	releaseLimit = 20 * time.Minute
-	// noticeLimit bounds the look at the start. It runs beside everything
-	// else, and a server that does not answer is not mentioned.
+	// noticeLimit bounds each background look for a release. It runs beside
+	// everything else, and a server that does not answer is not mentioned.
 	noticeLimit = 2 * time.Second
+	// updateCheckEvery is how often a running session checks for a newer
+	// release on the update server.
+	updateCheckEvery = 30 * time.Second
 	// updatedFromEnv carries the previous version across /update relaunch so
 	// the new process can display the version transition inside its alt-screen
 	// viewport. Older binaries ignore it cleanly.
@@ -87,6 +90,124 @@ func (a *App) updateCommand(errw io.Writer) int {
 	}
 	a.Out.line(said)
 	return 0
+}
+
+// parseBoolToggle parses common boolean toggle values.
+func parseBoolToggle(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "on", "true", "enable", "enabled", "yes", "1":
+		return true, nil
+	case "off", "false", "disable", "disabled", "no", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("expected on or off, got %q", oneLine(s))
+	}
+}
+
+// autoUpdateEnabled reports whether automatic updates are active for this run.
+// Honcho signed defaults take precedence; otherwise geminise.json's
+// geminus.auto_update applies; default is off.
+func (a *App) autoUpdateEnabled() bool {
+	if a.defaults.AutoUpdate != nil {
+		return *a.defaults.AutoUpdate
+	}
+	if a.Profile.AutoUpdate != nil {
+		return *a.Profile.AutoUpdate
+	}
+	return false
+}
+
+// autoUpdateSource describes where the current auto_update setting came from.
+func (a *App) autoUpdateSource() string {
+	if a.defaults.AutoUpdate != nil {
+		return "Honcho"
+	}
+	if a.Profile.AutoUpdate != nil {
+		return "geminise.json"
+	}
+	return "default"
+}
+
+// slashUpdateCmd handles `/update` (manual update) and `/update auto [on|off]`.
+func (a *App) slashUpdateCmd(arg string) error {
+	if arg == "" {
+		return a.slashUpdate()
+	}
+	sub, rest, _ := strings.Cut(arg, " ")
+	sub, rest = strings.ToLower(strings.TrimSpace(sub)), strings.TrimSpace(rest)
+	if sub != "auto" && sub != "auto_update" {
+		return errors.New("usage: /update [auto [on|off]]")
+	}
+	if rest == "" {
+		state := "off"
+		if a.autoUpdateEnabled() {
+			state = "on"
+		}
+		a.Out.line(fmt.Sprintf("auto_update: %s (%s)", state, a.autoUpdateSource()))
+		return nil
+	}
+	d := a.cloneDefaults()
+	var said string
+	if strings.EqualFold(rest, "none") || strings.EqualFold(rest, "default") {
+		d.AutoUpdate = nil
+		said = "auto_update: default"
+	} else {
+		on, err := parseBoolToggle(rest)
+		if err != nil {
+			return errors.New("usage: /update auto on|off")
+		}
+		d.AutoUpdate = &on
+		if on {
+			said = "auto_update: on"
+		} else {
+			said = "auto_update: off"
+		}
+	}
+	if err := a.saveDefaults(d); err != nil {
+		return err
+	}
+	a.Out.line(said + " (saved in Honcho)")
+	if a.autoUpdateEnabled() {
+		a.checkAndAutoUpdateNow()
+	}
+	return nil
+}
+
+// checkAndAutoUpdateNow checks immediately for a newer release when auto_update
+// is enabled and triggers an automatic update if one is available.
+func (a *App) checkAndAutoUpdateNow() {
+	if !a.autoUpdateEnabled() || a.restarting || a.Updates == nil {
+		return
+	}
+	if a.newerRelease() == "" {
+		ctx, cancel := context.WithTimeout(a.ctx, noticeLimit)
+		m, err := a.Updates.Latest(ctx)
+		cancel()
+		if err == nil && updates.Newer(version.Version, m.Version) {
+			a.newer = m.Version
+		}
+	}
+	a.maybeAutoUpdate()
+}
+
+// maybeAutoUpdate installs and relaunches automatically when auto_update is
+// enabled and a newer release has been caught. If the user is actively typing a
+// draft in the prompt box, it defers until the draft is sent or cleared.
+func (a *App) maybeAutoUpdate() {
+	if !a.autoUpdateEnabled() || a.restarting {
+		return
+	}
+	v := a.newerRelease()
+	if v == "" || v == a.autoUpdateFailed {
+		return
+	}
+	if a.live != nil && a.live.hasDraft() {
+		return
+	}
+	if err := a.slashUpdate(); err != nil {
+		a.autoUpdateFailed = v
+		a.Out.line(a.Out.fail("✗ auto-" + err.Error()))
+	}
 }
 
 // slashUpdate is /update: the same, and on a terminal the new program then
@@ -172,20 +293,51 @@ func (a *App) relaunch(errw io.Writer) int {
 }
 
 // lookForRelease asks, beside everything else, whether a release newer than
-// this program exists. The answer is picked up by newerRelease.
+// this program exists, and continues checking periodically while the session
+// stays open. Each newly discovered version is delivered on newerFound.
 func (a *App) lookForRelease() {
 	if a.Updates == nil {
 		return
 	}
 	found := make(chan string, 1)
 	a.newerFound = found
-	// Read here, not in the goroutine: both belong to the caller.
+	// Read here, not in the goroutine: all belong to the caller.
 	client, own, parent := a.Updates, version.Version, a.ctx
+	interval := a.UpdateCheck
+	if interval <= 0 {
+		interval = updateCheckEvery
+	}
+	deliver := func(v string) {
+		// Replace any unread older version with the latest one.
+		select {
+		case <-found:
+		default:
+		}
+		select {
+		case found <- v:
+		default:
+		}
+	}
 	go func() {
-		ctx, cancel := context.WithTimeout(parent, noticeLimit)
-		defer cancel()
-		if m, err := client.Latest(ctx); err == nil && updates.Newer(own, m.Version) {
-			found <- m.Version
+		lastNotified := ""
+		check := func() {
+			ctx, cancel := context.WithTimeout(parent, noticeLimit)
+			defer cancel()
+			if m, err := client.Latest(ctx); err == nil && updates.Newer(own, m.Version) && m.Version != lastNotified {
+				lastNotified = m.Version
+				deliver(m.Version)
+			}
+		}
+		check()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-parent.Done():
+				return
+			case <-ticker.C:
+				check()
+			}
 		}
 	}()
 }

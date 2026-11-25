@@ -60,7 +60,7 @@ func (a *App) call() (context.Context, context.CancelFunc) {
 func (a *App) loadDirectory() error {
 	ctx, cancel := a.call()
 	defer cancel()
-	peers, err := a.Honcho.Peers(ctx)
+	peers, err := a.backend().Peers(ctx)
 	if err != nil {
 		return err
 	}

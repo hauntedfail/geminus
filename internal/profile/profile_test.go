@@ -281,3 +281,32 @@ func TestUnixDefaultsToDotHermesInHome(t *testing.T) {
 	writeProfile(t, filepath.Join(home, ".hermes"), honchoIn("home"), goodGroup)
 	wantWorkspace(t, "darwin", e, "home")
 }
+
+func TestProfileAutoUpdateSetting(t *testing.T) {
+	dir := t.TempDir()
+	writeProfile(t, dir, honchoIn("local"), goodGroup)
+	p, err := loadFrom(dir)
+	if err != nil {
+		t.Fatalf("loadFrom default: %v", err)
+	}
+	if p.AutoUpdate != nil {
+		t.Fatalf("default AutoUpdate = %v, want nil", *p.AutoUpdate)
+	}
+
+	for _, want := range []bool{true, false} {
+		dir := t.TempDir()
+		val := "false"
+		if want {
+			val = "true"
+		}
+		group := `{"from":"chrome","members":{"h1karu":"human","chrome":"agent"},"secret":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","geminus":{"auto_update":` + val + `}}`
+		writeProfile(t, dir, honchoIn("local"), group)
+		p, err := loadFrom(dir)
+		if err != nil {
+			t.Fatalf("loadFrom(%v): %v", want, err)
+		}
+		if p.AutoUpdate == nil || *p.AutoUpdate != want {
+			t.Fatalf("AutoUpdate = %v, want %v", p.AutoUpdate, want)
+		}
+	}
+}

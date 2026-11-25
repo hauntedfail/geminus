@@ -11,17 +11,24 @@ package chat
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/hauntedfail/geminus/internal/honcho"
 	"github.com/hauntedfail/geminus/internal/profile"
+	"github.com/hauntedfail/geminus/internal/transport"
+	"github.com/hauntedfail/geminus/internal/transport/p2p"
 	"github.com/hauntedfail/geminus/internal/updates"
 	"github.com/hauntedfail/geminus/internal/version"
 	"github.com/hauntedfail/geminus/internal/wire"
@@ -61,11 +68,11 @@ const commandHelp = `geminus commands
                          selector on a terminal; /model default resets)
   /effort [LEVEL]        effort for this conversation (/effort default)
   /status                show persona, harness, bridge and conversation
-  /update                install the latest release of geminus and carry on
-                         in this conversation
+  /update [auto on|off]  install the latest release of geminus and carry on
+                         in this conversation, or toggle automatic updates
   /default               show your defaults; /default save keeps the current
                          persona, harness, directory, model and effort;
-                         /default persona|harness|cwd|model|effort VALUE (or none)
+                         /default persona|harness|cwd|model|effort|auto_update VALUE (or none)
   /ui                    show or customize prompt box display
                          (/ui model|effort|node on|off, /ui label ID NAME, /ui reset)
   /quit                  leave geminus
@@ -92,11 +99,13 @@ type App struct {
 	Out     *Printer
 	Profile profile.Profile
 	Honcho  *honcho.Client
-	// Now and the two intervals are replaceable for tests.
-	Now       func() time.Time
-	Watch     time.Duration
-	Idle      time.Duration
-	SlowAfter time.Duration
+	Backend transport.Backend
+	// Now and the intervals are replaceable for tests.
+	Now         func() time.Time
+	Watch       time.Duration
+	Idle        time.Duration
+	SlowAfter   time.Duration
+	UpdateCheck time.Duration
 
 	ctx   context.Context
 	lines <-chan string
@@ -153,11 +162,12 @@ type App struct {
 	// newerFound has delivered it. restarting is set by /update when the
 	// new program is to take over, with restartWith as its arguments and
 	// restartNotice printed on the primary screen after leaving alt-screen.
-	newer         string
-	newerFound    <-chan string
-	restarting    bool
-	restartWith   []string
-	restartNotice string
+	newer            string
+	newerFound       <-chan string
+	autoUpdateFailed string
+	restarting       bool
+	restartWith      []string
+	restartNotice    string
 	// readOn tells the keyboard reader, which stops after an /update line,
 	// to read on.
 	readOn chan<- struct{}
@@ -184,6 +194,15 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errw io.Writer) 
 			return 1
 		}
 		app.Profile, app.Honcho = prof, client
+		honchoBackend := transport.WrapHoncho(client)
+		app.Backend = honchoBackend
+		if p2pClient, closeFn, err := dialTransportV2(req, prof); err != nil {
+			fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
+			return 1
+		} else if p2pClient != nil {
+			defer closeFn()
+			app.Backend = transport.NewFailover(p2pClient, honchoBackend)
+		}
 		app.Updates = &updates.Client{Base: updates.Base(os.Getenv), Secret: prof.Secret, Key: updates.ReleaseKey(), Now: time.Now,
 			Agent: "geminus/" + version.Version,
 			// A signed request is for one address: it does not follow a
@@ -204,6 +223,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errw io.Writer) 
 type request struct {
 	list                    bool
 	persona, harness, cwd   string
+	direct, relay, nodeID   string
 	resume                  string
 	latest                  bool
 	version, help, badUsage bool
@@ -275,6 +295,12 @@ func parseArgs(args []string) request {
 			}
 		case arg == "--cwd":
 			r.cwd = value()
+		case arg == "--direct":
+			r.direct = value()
+		case arg == "--relay":
+			r.relay = value()
+		case arg == "--node":
+			r.nodeID = value()
 		case arg == "--resume":
 			r.resume = value()
 		case arg == "--continue" || arg == "-c":
@@ -501,8 +527,20 @@ func (a *App) loop() {
 					}
 				}
 				break wait
+			case v := <-a.newerFound:
+				a.newer = v
+				if a.autoUpdateEnabled() && v != a.autoUpdateFailed {
+					a.Out.line("")
+					a.maybeAutoUpdate()
+					break wait
+				}
 			case <-idle.C:
 				// Results are asynchronous: show what arrived while idle.
+				if a.autoUpdateEnabled() && a.newerRelease() != "" && a.newerRelease() != a.autoUpdateFailed {
+					a.Out.line("")
+					a.maybeAutoUpdate()
+					break wait
+				}
 				if len(a.waiting) > 0 && a.session != "" && a.arrivals() {
 					break wait
 				}
@@ -512,4 +550,124 @@ func (a *App) loop() {
 			}
 		}
 	}
+}
+
+// backend returns the active transport.Backend, lazily wrapping a.Honcho
+// when callers (such as legacy tests) only populated a.Honcho.
+func (a *App) backend() transport.Backend {
+	if a.Backend != nil {
+		return a.Backend
+	}
+	a.Backend = transport.WrapHoncho(a.Honcho)
+	return a.Backend
+}
+
+func peerCachePath() string {
+	home := os.Getenv(profile.EnvHermesHome)
+	if home == "" {
+		if u, err := os.UserHomeDir(); err == nil {
+			home = filepath.Join(u, ".hermes")
+		}
+	}
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, p2p.PeerCacheFile)
+}
+
+// dialTransportV2 constructs an Obfuscated QUIC transport.Backend when
+// --direct / GEMINUS_DIRECT or --relay + --node / GEMINUS_RELAY + GEMINUS_NODE
+// is configured, or when a cached peer endpoint exists in geminus_peers.json.
+func dialTransportV2(req request, prof profile.Profile) (transport.Backend, func(), error) {
+	direct := req.direct
+	if direct == "" {
+		direct = os.Getenv("GEMINUS_DIRECT")
+	}
+	relay := req.relay
+	if relay == "" {
+		relay = os.Getenv("GEMINUS_RELAY")
+	}
+	nodeHex := req.nodeID
+	if nodeHex == "" {
+		nodeHex = os.Getenv("GEMINUS_NODE")
+	}
+
+	cachePath := peerCachePath()
+	if direct == "" && relay == "" && req.persona != "" && cachePath != "" {
+		if cache, err := p2p.LoadPeerCache(cachePath); err == nil {
+			if cp, ok := cache.Peers[req.persona]; ok {
+				direct = cp.DirectAddr
+				relay = cp.RelayAddr
+				if nodeHex == "" {
+					nodeHex = cp.NodeID
+				}
+			}
+		}
+	} else if (direct != "" || relay != "") && req.persona != "" && cachePath != "" {
+		if cache, err := p2p.LoadPeerCache(cachePath); err == nil {
+			cache.Upsert(p2p.CachedPeer{
+				Name:       req.persona,
+				NodeID:     strings.TrimSpace(nodeHex),
+				DirectAddr: direct,
+				RelayAddr:  relay,
+			})
+			_ = cache.Save(cachePath)
+		}
+	}
+
+	var serverPub ed25519.PublicKey
+	if nodeHex != "" {
+		b, err := hex.DecodeString(strings.TrimSpace(nodeHex))
+		if err != nil || len(b) != ed25519.PublicKeySize {
+			return nil, nil, fmt.Errorf("invalid --node Ed25519 public key %q", nodeHex)
+		}
+		serverPub = ed25519.PublicKey(b)
+	}
+
+	if direct != "" {
+		cli, err := p2p.NewClient(p2p.ClientOptions{
+			RemoteAddrStr: direct,
+			Secret:        prof.Secret,
+			ServerPubKey:  serverPub,
+			Label:         "direct",
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return cli, func() { _ = cli.Close() }, nil
+	}
+
+	if relay != "" {
+		if len(serverPub) == 0 {
+			return nil, nil, errors.New("--relay requires --node <64-hex-ed25519-pubkey>")
+		}
+		targetID, err := p2p.ParseNodeID(strings.TrimSpace(nodeHex))
+		if err != nil {
+			return nil, nil, err
+		}
+		selfPub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, nil, err
+		}
+		var selfID [ed25519.PublicKeySize]byte
+		copy(selfID[:], selfPub)
+		rc, err := p2p.NewRelayPacketConn(relay, prof.Secret, selfID)
+		if err != nil {
+			return nil, nil, err
+		}
+		cli, err := p2p.NewClient(p2p.ClientOptions{
+			RemoteAddr:   p2p.RelayAddr{NodeID: targetID},
+			PacketConn:   rc,
+			Secret:       prof.Secret,
+			ServerPubKey: serverPub,
+			Label:        "relay",
+		})
+		if err != nil {
+			_ = rc.Close()
+			return nil, nil, err
+		}
+		return cli, func() { _ = cli.Close() }, nil
+	}
+
+	return nil, nil, nil
 }
