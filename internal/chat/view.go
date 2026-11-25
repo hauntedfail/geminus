@@ -3,57 +3,10 @@ package chat
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
-	"unicode"
 	"unicode/utf8"
 )
-
-func isTerminal(w any) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
-}
-
-// unsafeRune reports whether r could make a terminal do something other than
-// show a character: control characters (escape sequences start with one) and
-// the bidirectional overrides that reorder what is displayed.
-func unsafeRune(r rune) bool {
-	if r == '\n' || r == '\t' {
-		return false
-	}
-	return unicode.IsControl(r) || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
-}
-
-// sanitize removes everything from s that could control the terminal, so
-// text from an agent, a remote shell or the directory cannot move the cursor,
-// recolor or clear the screen, or retitle the window.
-func sanitize(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unsafeRune(r) || r == utf8.RuneError {
-			return -1
-		}
-		return r
-	}, s)
-}
-
-// oneLine is sanitize for values shown inside a line, such as a name or an
-// ID: line breaks become spaces so the value cannot imitate a status line.
-func oneLine(s string) string {
-	return strings.TrimSpace(strings.NewReplacer("\n", " ", "\t", " ").Replace(sanitize(s)))
-}
-
-// clip shortens s to at most n characters.
-func clip(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n-1]) + "…"
-	}
-	return s
-}
 
 // The only escape sequences geminus writes itself; see Printer.style.
 var ownStyles = []string{"\x1b[0m", "\x1b[1m", "\x1b[2m", "\x1b[31m", "\x1b[33m", "\x1b[1;36m"}

@@ -46,7 +46,7 @@ func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.ctx = ctx
-	lv := newLive(outFile, cols, rows, palette{on: a.Out.color}, a.Now)
+	lv := newLive(outFile, cols, rows, palette{On: a.Out.color}, a.Now)
 	lv.size = func() (int, int) { return termSize(outFile) }
 	lines := make(chan string, 256)
 	a.attach(lv, lines)
@@ -98,7 +98,7 @@ func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
 				return
 			default:
 			}
-			if n > 0 && lv.feed(parser.feed(buf[:n]), lines) {
+			if n > 0 && lv.feed(parser.Feed(buf[:n]), lines) {
 				cancel() // do not wait for a request that is under way
 				return
 			}

@@ -1,6 +1,6 @@
 //go:build darwin || linux
 
-package chat
+package tui
 
 import (
 	"os"
@@ -15,10 +15,10 @@ func ioctl(fd uintptr, request uint, arg unsafe.Pointer) error {
 	return nil
 }
 
-// rawMode makes the terminal hand over each key as it is pressed, without
+// RawMode makes the terminal hand over each key as it is pressed, without
 // echoing it and without turning Ctrl-C into a signal. Output is left as it
 // is. The returned function puts the terminal back.
-func rawMode(in, _ *os.File) (restore func(), err error) {
+func RawMode(in, _ *os.File) (restore func(), err error) {
 	fd := in.Fd()
 	var old syscall.Termios
 	if err := ioctl(fd, ioctlGetTermios, unsafe.Pointer(&old)); err != nil {
@@ -34,8 +34,8 @@ func rawMode(in, _ *os.File) (restore func(), err error) {
 	return func() { _ = ioctl(fd, ioctlSetTermios, unsafe.Pointer(&old)) }, nil
 }
 
-// termSize returns the terminal's size, or zeros.
-func termSize(out *os.File) (cols, rows int) {
+// TermSize returns the terminal's size, or zeros.
+func TermSize(out *os.File) (cols, rows int) {
 	var size struct{ Row, Col, X, Y uint16 }
 	if ioctl(out.Fd(), syscall.TIOCGWINSZ, unsafe.Pointer(&size)) != nil {
 		return 0, 0
@@ -43,4 +43,5 @@ func termSize(out *os.File) (cols, rows int) {
 	return int(size.Col), int(size.Row)
 }
 
-func cancelInputRead(*os.File) {}
+// CancelInputRead is a no-op on Unix platforms.
+func CancelInputRead(*os.File) {}

@@ -218,7 +218,7 @@ func TestModelMenuScrollsWhenManyItems(t *testing.T) {
 	}
 
 	// Jump to end -> upward indicator appears.
-	m.handleKey(key{kind: keyEnd})
+	m.handleKey(key{Kind: keyEnd})
 	f = renderMenu(frameInput{v: v, cols: 70, rows: 16, now: noon}, m)
 	got = strings.Join(f.rows, "\n")
 	if !strings.Contains(got, "↑ ") || !strings.Contains(got, "more") || !strings.Contains(got, "Custom model…") {
@@ -244,7 +244,7 @@ func TestModelMenuSearchFilterRankAndLayout(t *testing.T) {
 
 	// Subsequence match: "glv" matches "group/lvmh".
 	for _, r := range "glv" {
-		m.handleKey(key{kind: keyRune, r: r})
+		m.handleKey(key{Kind: keyRune, R: r})
 	}
 	if m.matchCount != 1 || m.filtered[0].value != "group/lvmh" {
 		t.Fatalf("glv filter = count %d, first %+v; want 1, group/lvmh", m.matchCount, m.filtered[0])
@@ -254,25 +254,25 @@ func TestModelMenuSearchFilterRankAndLayout(t *testing.T) {
 	}
 
 	// Clear with Esc -> restores all items and active cursor on group/lvmh.
-	if closed := m.handleKey(key{kind: keyEsc}); closed {
+	if closed := m.handleKey(key{Kind: keyEsc}); closed {
 		t.Fatalf("first Esc while searching should clear search, not close menu")
 	}
-	if !m.search.empty() || m.cursor != 1 {
+	if !m.search.Empty() || m.cursor != 1 {
 		t.Fatalf("after Esc clear: search=%q cursor=%d, want empty and 1", m.search.String(), m.cursor)
 	}
 
 	// Description + multi-token match: "fast cod" -> qwen3-coder.
 	for _, r := range "fast cod" {
-		m.handleKey(key{kind: keyRune, r: r})
+		m.handleKey(key{Kind: keyRune, R: r})
 	}
 	if m.matchCount != 1 || m.filtered[0].value != "qwen3-coder" {
 		t.Fatalf("multi-token filter = count %d, first %+v; want 1, qwen3-coder", m.matchCount, m.filtered[0])
 	}
 
 	// Zero matches with a very long query: verify exact border width across terminal widths.
-	m.handleKey(key{kind: keyEsc})
+	m.handleKey(key{Kind: keyEsc})
 	for _, r := range "nonexistent-very-long-model-query-name-12345" {
-		m.handleKey(key{kind: keyRune, r: r})
+		m.handleKey(key{Kind: keyRune, R: r})
 	}
 	if m.matchCount != 0 {
 		t.Fatalf("matchCount = %d, want 0", m.matchCount)

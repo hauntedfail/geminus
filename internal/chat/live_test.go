@@ -11,7 +11,7 @@ func keysOf(t *testing.T, chunks ...string) []key {
 	var p keyParser
 	var out []key
 	for _, c := range chunks {
-		out = append(out, p.feed([]byte(c))...)
+		out = append(out, p.Feed([]byte(c))...)
 	}
 	return out
 }
@@ -19,7 +19,7 @@ func keysOf(t *testing.T, chunks ...string) []key {
 func kinds(keys []key) []keyKind {
 	out := make([]keyKind, len(keys))
 	for i, k := range keys {
-		out[i] = k.kind
+		out[i] = k.Kind
 	}
 	return out
 }
@@ -38,7 +38,7 @@ func sameKinds(a []keyKind, b ...keyKind) bool {
 
 func TestWhatTheTerminalSendsBecomesKeys(t *testing.T) {
 	keys := keysOf(t, "a日\r")
-	if !sameKinds(kinds(keys), keyRune, keyRune, keyEnter) || keys[1].r != '日' {
+	if !sameKinds(kinds(keys), keyRune, keyRune, keyEnter) || keys[1].R != '日' {
 		t.Errorf("typed text = %+v", keys)
 	}
 	if got := kinds(keysOf(t, "\x1b[A\x1b[B\x1b[C\x1b[D\x1b[H\x1b[F\x1b[3~\x1bOA\x1b[1;5C\x1bb")); !sameKinds(got,
@@ -56,7 +56,7 @@ func TestWhatTheTerminalSendsBecomesKeys(t *testing.T) {
 	}
 	// A character or a sequence split across two reads.
 	keys = keysOf(t, "\xe6\x97", "\xa5\x1b[", "A")
-	if !sameKinds(kinds(keys), keyRune, keyUp) || keys[0].r != '日' {
+	if !sameKinds(kinds(keys), keyRune, keyUp) || keys[0].R != '日' {
 		t.Errorf("split input = %+v", keys)
 	}
 	// Esc alone, and sequences geminus has no use for.
@@ -84,17 +84,17 @@ func TestWhatTheTerminalSendsBecomesKeys(t *testing.T) {
 
 func TestPastedTextIsOneKeyAndItsLineBreaksDoNotSend(t *testing.T) {
 	keys := keysOf(t, "\x1b[200~line one\r\nline", " two\rthree\x1b[20", "1~!")
-	if !sameKinds(kinds(keys), keyPaste, keyRune) || keys[0].text != "line one\r\nline two\rthree" {
+	if !sameKinds(kinds(keys), keyPaste, keyRune) || keys[0].Text != "line one\r\nline two\rthree" {
 		t.Fatalf("paste = %+v", keys)
 	}
 	var e editor
-	e.insert(keys[0].text)
+	e.Insert(keys[0].Text)
 	if e.String() != "line one\nline two\nthree" {
 		t.Errorf("pasted into the box = %q", e.String())
 	}
 	// What could steer a terminal never gets into the box.
-	e.clear()
-	e.insert("a\x1b[2Jb\x07c‮")
+	e.Clear()
+	e.Insert("a\x1b[2Jb\x07c‮")
 	if e.String() != "a[2Jbc" {
 		t.Errorf("control characters kept: %q", e.String())
 	}
@@ -102,58 +102,58 @@ func TestPastedTextIsOneKeyAndItsLineBreaksDoNotSend(t *testing.T) {
 
 func TestEditingTheInput(t *testing.T) {
 	var e editor
-	e.insert("hello wörld 日本")
-	e.wordLeft()
-	e.wordLeft()
-	e.insert("big ")
+	e.Insert("hello wörld 日本")
+	e.WordLeft()
+	e.WordLeft()
+	e.Insert("big ")
 	if e.String() != "hello big wörld 日本" {
 		t.Fatalf("insert in the middle = %q", e.String())
 	}
-	e.killWord()
-	e.backspace()
-	e.end()
-	e.backspace()
-	e.home()
-	e.del()
+	e.KillWord()
+	e.Backspace()
+	e.End()
+	e.Backspace()
+	e.Home()
+	e.Del()
 	if e.String() != "ellowörld 日" {
 		t.Errorf("after deletes = %q", e.String())
 	}
-	e.killEnd()
-	if !e.empty() {
+	e.KillEnd()
+	if !e.Empty() {
 		t.Errorf("kill to end left %q", e.String())
 	}
 
 	// Lines: up and down move inside the text first.
-	e.insert("first line\nsecond")
-	e.up()
-	e.insert("^")
+	e.Insert("first line\nsecond")
+	e.Up()
+	e.Insert("^")
 	if e.String() != "first ^line\nsecond" {
 		t.Errorf("up inside the text = %q", e.String())
 	}
-	e.down()
-	e.killStart()
+	e.Down()
+	e.KillStart()
 	if e.String() != "first ^line\n" {
 		t.Errorf("down then kill = %q", e.String())
 	}
 
 	// History: what was sent comes back with the up arrow, and the draft is
 	// not lost.
-	e.clear()
-	e.insert("one")
-	if e.take(true) != "one" || !e.empty() {
+	e.Clear()
+	e.Insert("one")
+	if e.Take(true) != "one" || !e.Empty() {
 		t.Fatal("take did not empty the box")
 	}
-	e.insert("two")
-	e.take(true)
-	e.insert("draft")
-	e.up()
-	e.up()
+	e.Insert("two")
+	e.Take(true)
+	e.Insert("draft")
+	e.Up()
+	e.Up()
 	if e.String() != "one" {
 		t.Errorf("two ups = %q", e.String())
 	}
-	e.up()
-	e.down()
-	e.down()
+	e.Up()
+	e.Down()
+	e.Down()
 	if e.String() != "draft" {
 		t.Errorf("back down = %q", e.String())
 	}
@@ -227,7 +227,7 @@ func TestTheBoxShowsWhoWhatAndWhere(t *testing.T) {
 		t.Errorf("local box:\n%s", got)
 	}
 	// And the color of the box says the same.
-	styled := render(frameInput{v: v, cols: 71, rows: 24, now: noon, pal: palette{on: true}})
+	styled := render(frameInput{v: v, cols: 71, rows: 24, now: noon, pal: palette{On: true}})
 	if !strings.Contains(styled.rows[1], "\x1b[33m╭─") {
 		t.Errorf("local border is not yellow: %q", styled.rows[1])
 	}
@@ -489,7 +489,7 @@ func TestEnterSendsAndOtherKeysDoNot(t *testing.T) {
 
 	// Ctrl-C clears what is typed; on an empty box it takes two.
 	lines, quit := typeKeys(t, lv, "abc\x03")
-	if len(lines) != 0 || quit || !lv.ed.empty() {
+	if len(lines) != 0 || quit || !lv.ed.Empty() {
 		t.Errorf("Ctrl-C with text: lines %q quit %v text %q", lines, quit, lv.ed.String())
 	}
 	if _, quit = typeKeys(t, lv, "\x03"); quit || !strings.Contains(lv.notice, "Press Ctrl-C again") {
@@ -530,7 +530,7 @@ func TestAQuestionTakesAnEmptyAnswerAndCanBeCancelled(t *testing.T) {
 	typeKeys(t, lv, "2\r")
 	lv.set(sibylView())
 	typeKeys(t, lv, "\x1b[A")
-	if !lv.ed.empty() {
+	if !lv.ed.Empty() {
 		t.Errorf("an answer was remembered as a prompt: %q", lv.ed.String())
 	}
 }
@@ -642,9 +642,9 @@ func TestMouseWheelScrollsViewportWithoutMovingPromptHistory(t *testing.T) {
 	lv.set(sibylView())
 
 	// Seed prompt history so an accidental arrow-key fallback would visibly change the box.
-	lv.ed.insert("older prompt")
-	lv.ed.take(true)
-	lv.ed.insert("current draft")
+	lv.ed.Insert("older prompt")
+	lv.ed.Take(true)
+	lv.ed.Insert("current draft")
 
 	lv.setPrompt("turn 1 prompt")
 	lv.Write([]byte("── you ──\n❯ turn 1 prompt\n"))

@@ -107,7 +107,7 @@ func (l *live) setPrompt(prompt string) {
 func (l *live) hasDraft() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.ed.text) > 0
+	return len(l.ed.Text()) > 0
 }
 
 // wrappedCount returns the total number of wrapped rows for the current
@@ -210,7 +210,7 @@ func (l *live) draw() {
 	if l.notice != "" && !l.now().Before(l.noticeUntil) {
 		l.notice = ""
 	}
-	in := frameInput{v: l.v, text: l.ed.text, pos: l.ed.pos, notice: l.notice,
+	in := frameInput{v: l.v, text: l.ed.Text(), pos: l.ed.Pos(), notice: l.notice,
 		cols: l.cols, rows: l.rows, now: l.now(), spin: l.spin, pal: l.pal}
 	var f frame
 	hideCursor := false
@@ -298,7 +298,7 @@ func (l *live) set(v view) {
 	defer l.mu.Unlock()
 	if v.ask != l.v.ask {
 		// A question starts with an empty box, and so does what follows it.
-		l.ed.clear()
+		l.ed.Clear()
 	}
 	l.v = v
 	l.draw()
@@ -336,7 +336,7 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 		return "", false, false
 	}
 	if l.menu != nil {
-		switch k.kind {
+		switch k.Kind {
 		case keyPageUp:
 			step := max(l.viewRows-2, 1)
 			l.scroll += step
@@ -363,46 +363,46 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 	}
 	e := &l.ed
 	asking := l.v.ask != ""
-	if k.kind != keyInterrupt {
+	if k.Kind != keyInterrupt {
 		l.notice = ""
 	}
-	switch k.kind {
+	switch k.Kind {
 	case keyRune:
-		e.insert(string(k.r))
+		e.Insert(string(k.R))
 	case keyPaste:
-		e.insert(k.text)
+		e.Insert(k.Text)
 	case keyNewline:
 		if !asking {
-			e.insert("\n")
+			e.Insert("\n")
 		}
 	case keyEnter:
 		switch {
-		case !asking && e.pos > 0 && e.text[e.pos-1] == '\\':
+		case !asking && e.Pos() > 0 && e.Text()[e.Pos()-1] == '\\':
 			// A backslash before Enter continues on a new line.
-			e.backspace()
-			e.insert("\n")
+			e.Backspace()
+			e.Insert("\n")
 		case asking || strings.TrimSpace(e.String()) != "":
-			line, entered = e.take(!asking), true
+			line, entered = e.Take(!asking), true
 			if !asking {
 				l.scroll = 0
 			}
 		}
 	case keyBackspace:
-		e.backspace()
+		e.Backspace()
 	case keyDelete:
-		e.del()
+		e.Del()
 	case keyLeft:
-		e.left()
+		e.Left()
 	case keyRight:
-		e.right()
+		e.Right()
 	case keyUp:
-		e.up()
+		e.Up()
 	case keyDown:
-		e.down()
+		e.Down()
 	case keyHome:
-		e.home()
+		e.Home()
 	case keyEnd:
-		e.end()
+		e.End()
 	case keyPageUp:
 		step := max(l.viewRows-2, 1)
 		l.scroll += step
@@ -418,15 +418,15 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 	case keyMouseScrollDown:
 		l.scroll = max(l.scroll-mouseScrollLines, 0)
 	case keyWordLeft:
-		e.wordLeft()
+		e.WordLeft()
 	case keyWordRight:
-		e.wordRight()
+		e.WordRight()
 	case keyKillWord:
-		e.killWord()
+		e.KillWord()
 	case keyKillStart:
-		e.killStart()
+		e.KillStart()
 	case keyKillEnd:
-		e.killEnd()
+		e.KillEnd()
 	case keyTab:
 		l.complete()
 	case keyEsc:
@@ -434,15 +434,15 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 	case keyRedraw:
 		l.last = ""
 	case keyEOF:
-		if e.empty() {
+		if e.Empty() {
 			quit = true
 		} else {
-			e.del()
+			e.Del()
 		}
 	case keyInterrupt:
 		switch {
-		case !e.empty():
-			e.clear()
+		case !e.Empty():
+			e.Clear()
 		case asking:
 			line, entered = cancelled, true
 		case l.now().Sub(l.interrupted) < quitWindow:
@@ -459,7 +459,7 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 // complete finishes the geminus command being typed, as far as it is
 // unambiguous.
 func (l *live) complete() {
-	word, ok := slashWord(l.ed.text)
+	word, ok := slashWord(l.ed.Text())
 	if !ok || strings.HasPrefix(word, "//") {
 		return
 	}
@@ -480,7 +480,7 @@ func (l *live) complete() {
 		common += " "
 	}
 	if len(common) > len(word) {
-		l.ed.set([]rune(common))
+		l.ed.Set([]rune(common))
 	}
 }
 

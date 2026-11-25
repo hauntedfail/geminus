@@ -200,9 +200,9 @@ func (m *selectMenu) pickIndex(idx int) (closed bool) {
 	it := m.filtered[idx]
 	if it.custom {
 		m.customMode = true
-		m.input.clear()
+		m.input.Clear()
 		if q := strings.TrimSpace(m.search.String()); q != "" {
-			m.input.set([]rune(q))
+			m.input.Set([]rune(q))
 		}
 		m.errMsg = ""
 		return false
@@ -217,68 +217,68 @@ func (m *selectMenu) handleKey(k key) (closed bool) {
 	if m.customMode {
 		return m.handleCustomKey(k)
 	}
-	switch k.kind {
+	switch k.Kind {
 	case keyUp:
 		m.move(-1)
 	case keyDown:
 		m.move(1)
 	case keyHome:
-		if m.search.empty() {
+		if m.search.Empty() {
 			m.cursor = 0
 		} else {
-			m.search.home()
+			m.search.Home()
 		}
 	case keyEnd:
-		if m.search.empty() {
+		if m.search.Empty() {
 			if len(m.filtered) > 0 {
 				m.cursor = len(m.filtered) - 1
 			}
 		} else {
-			m.search.end()
+			m.search.End()
 		}
 	case keyLeft:
-		m.search.left()
+		m.search.Left()
 	case keyRight:
-		m.search.right()
+		m.search.Right()
 	case keyWordLeft:
-		m.search.wordLeft()
+		m.search.WordLeft()
 	case keyWordRight:
-		m.search.wordRight()
+		m.search.WordRight()
 	case keyBackspace:
-		if !m.search.empty() {
-			m.search.backspace()
-			m.refreshFilter(m.search.empty())
+		if !m.search.Empty() {
+			m.search.Backspace()
+			m.refreshFilter(m.search.Empty())
 		}
 	case keyDelete:
-		if !m.search.empty() {
-			m.search.del()
-			m.refreshFilter(m.search.empty())
+		if !m.search.Empty() {
+			m.search.Del()
+			m.refreshFilter(m.search.Empty())
 		}
 	case keyKillWord:
-		if !m.search.empty() {
-			m.search.killWord()
-			m.refreshFilter(m.search.empty())
+		if !m.search.Empty() {
+			m.search.KillWord()
+			m.refreshFilter(m.search.Empty())
 		}
 	case keyKillStart:
-		if !m.search.empty() {
-			m.search.killStart()
-			m.refreshFilter(m.search.empty())
+		if !m.search.Empty() {
+			m.search.KillStart()
+			m.refreshFilter(m.search.Empty())
 		}
 	case keyKillEnd:
-		if !m.search.empty() {
-			m.search.killEnd()
-			m.refreshFilter(m.search.empty())
+		if !m.search.Empty() {
+			m.search.KillEnd()
+			m.refreshFilter(m.search.Empty())
 		}
 	case keyPaste:
-		if s := oneLine(k.text); s != "" {
-			m.search.insert(s)
+		if s := oneLine(k.Text); s != "" {
+			m.search.Insert(s)
 			m.refreshFilter(false)
 		}
 	case keyEnter:
 		return m.pickIndex(m.cursor)
 	case keyEsc, keyInterrupt:
-		if !m.search.empty() {
-			m.search.clear()
+		if !m.search.Empty() {
+			m.search.Clear()
 			m.refreshFilter(true)
 			return false
 		}
@@ -288,14 +288,14 @@ func (m *selectMenu) handleKey(k key) (closed bool) {
 		m.finish("", false)
 		return true
 	case keyRune:
-		if m.search.empty() && k.r >= '1' && k.r <= '9' {
-			idx := int(k.r - '1')
+		if m.search.Empty() && k.R >= '1' && k.R <= '9' {
+			idx := int(k.R - '1')
 			if idx < len(m.filtered) {
 				m.cursor = idx
 				return m.pickIndex(idx)
 			}
 		}
-		m.search.insert(string(k.r))
+		m.search.Insert(string(k.R))
 		m.refreshFilter(false)
 	}
 	return false
@@ -303,47 +303,47 @@ func (m *selectMenu) handleKey(k key) (closed bool) {
 
 func (m *selectMenu) handleCustomKey(k key) (closed bool) {
 	e := &m.input
-	switch k.kind {
+	switch k.Kind {
 	case keyRune:
 		m.errMsg = ""
-		e.insert(string(k.r))
+		e.Insert(string(k.R))
 	case keyPaste:
 		m.errMsg = ""
-		e.insert(oneLine(k.text))
+		e.Insert(oneLine(k.Text))
 	case keyBackspace:
 		m.errMsg = ""
-		e.backspace()
+		e.Backspace()
 	case keyDelete:
 		m.errMsg = ""
-		e.del()
+		e.Del()
 	case keyLeft:
-		e.left()
+		e.Left()
 	case keyRight:
-		e.right()
+		e.Right()
 	case keyHome:
-		e.home()
+		e.Home()
 	case keyEnd:
-		e.end()
+		e.End()
 	case keyWordLeft:
-		e.wordLeft()
+		e.WordLeft()
 	case keyWordRight:
-		e.wordRight()
+		e.WordRight()
 	case keyKillWord:
 		m.errMsg = ""
-		e.killWord()
+		e.KillWord()
 	case keyKillStart:
 		m.errMsg = ""
-		e.killStart()
+		e.KillStart()
 	case keyKillEnd:
 		m.errMsg = ""
-		e.killEnd()
+		e.KillEnd()
 	case keyEsc:
 		m.customMode = false
 		m.errMsg = ""
-		e.clear()
+		e.Clear()
 	case keyInterrupt:
-		if !e.empty() {
-			e.clear()
+		if !e.Empty() {
+			e.Clear()
 			m.errMsg = ""
 			return false
 		}
@@ -380,7 +380,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	inner := max(width-4, 16) // "│ " + inner + " │"
 	pal, v := in.pal, in.v
 	accent := v.accent()
-	border := func(s string) string { return pal.sgr(accent, s) }
+	border := func(s string) string { return pal.SGR(accent, s) }
 	boxRow := func(styled string, plainW int) string {
 		return border("│") + " " + styled + strings.Repeat(" ", max(inner-plainW, 0)) + " " + border("│")
 	}
@@ -395,7 +395,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	right, tagWidth := "", 0
 	if v.persona != "" && v.nodeShown() {
 		tag := v.persona
-		right, tagWidth = " "+pal.sgr("1;"+accent, tag)+" ", textWidth(tag)+2
+		right, tagWidth = " "+pal.SGR("1;"+accent, tag)+" ", textWidth(tag)+2
 	}
 	titleText := m.cfg.title
 	if m.customMode && m.cfg.customTitle != "" {
@@ -403,7 +403,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	}
 	room := max(width-6-tagWidth, 2)
 	plainTitle := clipWidth(titleText, room)
-	styledTitle := pal.sgr("1;"+accent, plainTitle)
+	styledTitle := pal.SGR("1;"+accent, plainTitle)
 	fill := max(width-6-textWidth(plainTitle)-tagWidth, 0)
 	f.rows = append(f.rows, border("╭─")+" "+styledTitle+" "+border(strings.Repeat("─", fill))+right+border("─╮"))
 
@@ -414,7 +414,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	}
 	if sub != "" {
 		clipped := clipWidth(sub, inner)
-		f.rows = append(f.rows, boxRow(pal.dim(clipped), textWidth(clipped)))
+		f.rows = append(f.rows, boxRow(pal.Dim(clipped), textWidth(clipped)))
 	}
 	if in.rows >= 12 {
 		f.rows = append(f.rows, boxRow("", 0))
@@ -422,7 +422,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 
 	if m.customMode {
 		inputInner := max(inner-2, 8) // "❯ " + input
-		lines, curRow, curCol := layoutInput(m.input.text, m.input.pos, inputInner)
+		lines, curRow, curCol := layoutInput(m.input.Text(), m.input.Pos(), inputInner)
 		if len(lines) > 3 {
 			first := 0
 			if curRow >= 3 {
@@ -431,18 +431,18 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 			lines, curRow = lines[first:first+3], curRow-first
 		}
 		placeholder := ""
-		if len(m.input.text) == 0 && m.cfg.customPlaceholder != "" {
+		if len(m.input.Text()) == 0 && m.cfg.customPlaceholder != "" {
 			placeholder = clipWidth(m.cfg.customPlaceholder, inputInner)
 		}
 		inputStartRow := len(f.rows)
 		for i, line := range lines {
 			mark := "  "
 			if i == 0 {
-				mark = pal.sgr("1;"+accent, "❯") + " "
+				mark = pal.SGR("1;"+accent, "❯") + " "
 			}
 			shown, used := line, textWidth(line)
 			if placeholder != "" {
-				shown, used = pal.dim(placeholder), textWidth(placeholder)
+				shown, used = pal.Dim(placeholder), textWidth(placeholder)
 			}
 			f.rows = append(f.rows, boxRow(mark+shown, 2+used))
 		}
@@ -450,21 +450,21 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 		f.curCol = 4 + curCol // "│ ❯ "
 		if m.errMsg != "" {
 			errText := clipWidth("✗ "+oneLine(m.errMsg), inner)
-			f.rows = append(f.rows, boxRow(pal.sgr(colorRed, errText), textWidth(errText)))
+			f.rows = append(f.rows, boxRow(pal.SGR(colorRed, errText), textWidth(errText)))
 		}
 		f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
 		hint := clipWidth("Enter apply · Esc back to list · Ctrl-C cancel", width-2)
-		f.rows = append(f.rows, "  "+pal.dim(hint))
+		f.rows = append(f.rows, "  "+pal.Dim(hint))
 		return f
 	}
 
 	// List mode: search bar + filtered scrollable window.
-	searching := !m.search.empty()
+	searching := !m.search.Empty()
 	searchPrefix := "Search: "
 	countPlain, countStyled, countW := "", "", 0
 	if searching {
 		countPlain = fmt.Sprintf(" %d/%d", m.matchCount, m.totalCount)
-		countStyled = pal.dim(countPlain)
+		countStyled = pal.Dim(countPlain)
 		countW = textWidth(countPlain)
 	}
 	searchRoom := inner - len(searchPrefix) - countW
@@ -478,29 +478,29 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 			ph = "Type to search…"
 		}
 		clipped := clipWidth(ph, searchRoom)
-		row := pal.sgr(accent, searchPrefix) + pal.dim(clipped)
+		row := pal.SGR(accent, searchPrefix) + pal.Dim(clipped)
 		f.curRow = len(f.rows)
 		f.curCol = 2 + len(searchPrefix)
 		f.rows = append(f.rows, boxRow(row, len(searchPrefix)+textWidth(clipped)))
 	} else {
-		shown, curCol := clipSearchWindow(m.search.text, m.search.pos, searchRoom)
+		shown, curCol := clipSearchWindow(m.search.Text(), m.search.Pos(), searchRoom)
 		shownW := textWidth(shown)
 		pad := ""
 		if countW > 0 {
 			pad = strings.Repeat(" ", max(inner-len(searchPrefix)-shownW-countW, 0))
 		}
-		row := pal.sgr("1;"+accent, searchPrefix) + shown + pad + countStyled
+		row := pal.SGR("1;"+accent, searchPrefix) + shown + pad + countStyled
 		f.curRow = len(f.rows)
 		f.curCol = 2 + len(searchPrefix) + curCol
 		f.rows = append(f.rows, boxRow(row, len(searchPrefix)+shownW+len(pad)+countW))
 	}
 	if in.rows >= 12 {
-		f.rows = append(f.rows, boxRow(pal.dim(strings.Repeat("─", inner)), inner))
+		f.rows = append(f.rows, boxRow(pal.Dim(strings.Repeat("─", inner)), inner))
 	}
 
 	if searching && m.matchCount == 0 {
 		noMatch := clipWidth("  No matching options", inner)
-		f.rows = append(f.rows, boxRow(pal.dim(noMatch), textWidth(noMatch)))
+		f.rows = append(f.rows, boxRow(pal.Dim(noMatch), textWidth(noMatch)))
 	}
 
 	items := m.filtered
@@ -524,7 +524,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 
 	if m.offset > 0 {
 		more := clipWidth(fmt.Sprintf("  ↑ %d more", m.offset), inner)
-		f.rows = append(f.rows, boxRow(pal.dim(more), textWidth(more)))
+		f.rows = append(f.rows, boxRow(pal.Dim(more), textWidth(more)))
 	}
 
 	numWidth := len(fmt.Sprint(n))
@@ -546,20 +546,20 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 
 		prefix := "  "
 		if selected {
-			prefix = pal.sgr("1;"+accent, "❯") + " "
+			prefix = pal.SGR("1;"+accent, "❯") + " "
 		}
 		numPlain, numStyled := "", ""
 		if !searching {
 			numPlain = fmt.Sprintf("%*d. ", numWidth, i+1)
-			numStyled = pal.dim(numPlain)
+			numStyled = pal.Dim(numPlain)
 			if selected {
-				numStyled = pal.sgr("1;"+accent, numPlain)
+				numStyled = pal.SGR("1;"+accent, numPlain)
 			}
 		}
 
 		checkStyled, checkW := "", 0
 		if it.current {
-			checkStyled = " " + pal.sgr("1;"+colorGreen, "✓")
+			checkStyled = " " + pal.SGR("1;"+colorGreen, "✓")
 			checkW = 2
 		}
 
@@ -576,9 +576,9 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 		labelW := textWidth(labelPlain)
 		labelStyled := labelPlain
 		if selected {
-			labelStyled = pal.bold(labelPlain)
+			labelStyled = pal.Bold(labelPlain)
 		} else if it.custom {
-			labelStyled = pal.sgr(accent, labelPlain)
+			labelStyled = pal.SGR(accent, labelPlain)
 		}
 
 		// Description column (aligned neatly when room permits).
@@ -587,7 +587,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 			pad := max(labelCol-labelW, 0)
 			gap = strings.Repeat(" ", pad+2)
 			descPlain = clipWidth(oneLine(it.desc), descRoom)
-			descStyled = pal.dim(descPlain)
+			descStyled = pal.Dim(descPlain)
 		}
 
 		used := headW + labelW + len(gap) + textWidth(descPlain)
@@ -603,7 +603,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 
 	if below := n - end; below > 0 {
 		more := clipWidth(fmt.Sprintf("  ↓ %d more", below), inner)
-		f.rows = append(f.rows, boxRow(pal.dim(more), textWidth(more)))
+		f.rows = append(f.rows, boxRow(pal.Dim(more), textWidth(more)))
 	}
 
 	f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
@@ -613,7 +613,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	} else if n < 9 {
 		hintText = fmt.Sprintf("↑↓ navigate · type to search · 1-%d select · Enter confirm · Esc cancel", n)
 	}
-	f.rows = append(f.rows, "  "+pal.dim(clipWidth(hintText, width-2)))
+	f.rows = append(f.rows, "  "+pal.Dim(clipWidth(hintText, width-2)))
 	return f
 }
 

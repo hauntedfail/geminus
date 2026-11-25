@@ -10,26 +10,6 @@ import (
 	"time"
 )
 
-// palette styles text with the terminal's own 16 colors, or not at all.
-type palette struct{ on bool }
-
-func (p palette) sgr(code, s string) string {
-	if !p.on || s == "" {
-		return s
-	}
-	return "\x1b[" + code + "m" + s + "\x1b[0m"
-}
-
-func (p palette) dim(s string) string  { return p.sgr("2", s) }
-func (p palette) bold(s string) string { return p.sgr("1", s) }
-
-const (
-	colorRed    = "31"
-	colorGreen  = "32"
-	colorYellow = "33"
-	colorCyan   = "36"
-)
-
 // view is everything about the conversation that the screen shows next to
 // the prompt box. The App fills it in; the box never reads App state.
 type view struct {
@@ -223,13 +203,13 @@ func renderHeader(in headerInput) string {
 	switch {
 	case in.scroll > 0 && in.atTop:
 		rightPlain = fmt.Sprintf("TOP · ↑ %dL", in.scroll)
-		rightStyled = pal.sgr(colorYellow, rightPlain)
+		rightStyled = pal.SGR(colorYellow, rightPlain)
 	case in.scroll > 0:
 		rightPlain = fmt.Sprintf("↑ %dL", in.scroll)
-		rightStyled = pal.sgr(colorYellow, rightPlain)
+		rightStyled = pal.SGR(colorYellow, rightPlain)
 	case oneLine(in.prompt) != "" && v.persona != "":
 		rightPlain = oneLine(v.persona)
-		rightStyled = pal.dim(rightPlain)
+		rightStyled = pal.Dim(rightPlain)
 	}
 	rightWidth := 0
 	if rightPlain != "" {
@@ -241,7 +221,7 @@ func renderHeader(in headerInput) string {
 	if p := oneLine(in.prompt); p != "" {
 		clipped := clipWidth(p, room)
 		leftPlain = "❯ " + clipped
-		leftStyled = pal.sgr("1;"+v.accent(), "❯") + " " + pal.bold(clipped)
+		leftStyled = pal.SGR("1;"+v.accent(), "❯") + " " + pal.Bold(clipped)
 	} else {
 		title := "geminus"
 		if v.persona != "" && v.harness != "" {
@@ -251,7 +231,7 @@ func renderHeader(in headerInput) string {
 		}
 		clipped := clipWidth(title, room)
 		leftPlain = "◆ " + clipped
-		leftStyled = pal.sgr("1;"+colorCyan, "◆") + " " + pal.bold(clipped)
+		leftStyled = pal.SGR("1;"+colorCyan, "◆") + " " + pal.Bold(clipped)
 	}
 
 	used := textWidth(leftPlain)
@@ -260,10 +240,10 @@ func renderHeader(in headerInput) string {
 		if fill == 0 {
 			return leftStyled
 		}
-		return leftStyled + " " + pal.dim(strings.Repeat("─", fill))
+		return leftStyled + " " + pal.Dim(strings.Repeat("─", fill))
 	}
 	fill := max(width-used-textWidth(rightPlain)-2, 1)
-	return leftStyled + " " + pal.dim(strings.Repeat("─", fill)) + " " + rightStyled
+	return leftStyled + " " + pal.Dim(strings.Repeat("─", fill)) + " " + rightStyled
 }
 
 func (v view) nodeShown() bool   { return !v.uiSet || v.showNode }
@@ -274,7 +254,7 @@ func (v view) effortShown() bool { return !v.uiSet || v.showEffort }
 func render(in frameInput) frame {
 	width := max(in.cols-1, 24) // the last column is left free: writing there wraps on some terminals
 	pal, v := in.pal, in.v
-	border := func(s string) string { return pal.sgr(v.accent(), s) }
+	border := func(s string) string { return pal.SGR(v.accent(), s) }
 	var f frame
 
 	// Output that is still on an unfinished line.
@@ -289,15 +269,15 @@ func render(in frameInput) frame {
 	// Top edge: harness · model · effort on the left, node name on the right.
 	// The node badge is never dropped when shown; on narrow terminals the
 	// trailing left-side items yield first.
-	title, plainTitle, right, tagWidth := pal.bold("geminus"), "geminus", "", 0
+	title, plainTitle, right, tagWidth := pal.Bold("geminus"), "geminus", "", 0
 	switch {
 	case v.ask != "":
 		plainTitle = clipWidth(v.ask, width-7)
-		title = pal.bold(plainTitle)
+		title = pal.Bold(plainTitle)
 	case v.persona != "":
 		if v.nodeShown() {
 			tag := v.persona
-			right, tagWidth = " "+pal.sgr("1;"+v.accent(), tag)+" ", textWidth(tag)+2
+			right, tagWidth = " "+pal.SGR("1;"+v.accent(), tag)+" ", textWidth(tag)+2
 		}
 		room := max(width-7-tagWidth, 2)
 		primary := v.harness
@@ -305,7 +285,7 @@ func render(in frameInput) frame {
 			primary = v.persona
 		}
 		plainTitle = clipWidth(primary, room)
-		title = pal.sgr("1;"+v.accent(), plainTitle)
+		title = pal.SGR("1;"+v.accent(), plainTitle)
 
 		appendSegment := func(plain, styled string) {
 			left := room - textWidth(plainTitle) - 3
@@ -314,24 +294,24 @@ func render(in frameInput) frame {
 			}
 			if textWidth(plain) > left {
 				plain = clipWidth(plain, left)
-				styled = pal.dim(plain)
+				styled = pal.Dim(plain)
 			}
 			plainTitle += " · " + plain
-			title += pal.dim(" · ") + styled
+			title += pal.Dim(" · ") + styled
 		}
 		if v.harness != "" {
 			if v.modelShown() {
 				if v.model != "" {
 					appendSegment(v.model, v.model)
 				} else {
-					appendSegment("model:default", pal.dim("model:default"))
+					appendSegment("model:default", pal.Dim("model:default"))
 				}
 			}
 			if v.effortShown() {
 				if v.effort != "" {
 					appendSegment(v.effort, v.effort)
 				} else {
-					appendSegment("effort:default", pal.dim("effort:default"))
+					appendSegment("effort:default", pal.Dim("effort:default"))
 				}
 			}
 		}
@@ -365,11 +345,11 @@ func render(in frameInput) frame {
 	for i, line := range lines {
 		mark := "  "
 		if i == 0 {
-			mark = pal.sgr("1;"+v.accent(), "❯") + " "
+			mark = pal.SGR("1;"+v.accent(), "❯") + " "
 		}
 		shown, used := line, textWidth(line)
 		if placeholder != "" {
-			shown, used = pal.dim(placeholder), textWidth(placeholder)
+			shown, used = pal.Dim(placeholder), textWidth(placeholder)
 		}
 		f.rows = append(f.rows, border("│")+" "+mark+shown+strings.Repeat(" ", max(inner-used, 0))+" "+border("│"))
 	}
@@ -390,10 +370,10 @@ func activity(in frameInput, width int) string {
 	took := in.now.Sub(v.since)
 	var plain, mark string
 	if v.running {
-		mark = pal.sgr(colorCyan, string(spinner[in.spin%len(spinner)]))
+		mark = pal.SGR(colorCyan, string(spinner[in.spin%len(spinner)]))
 		plain = v.target() + " is working… " + elapsed(took)
 	} else {
-		mark = pal.dim("◌")
+		mark = pal.Dim("◌")
 		plain = "in Honcho"
 		if v.rang {
 			plain += " · doorbell rung"
@@ -410,7 +390,7 @@ func activity(in frameInput, width int) string {
 	if v.running {
 		return " " + mark + " " + plain
 	}
-	return " " + mark + " " + pal.dim(plain)
+	return " " + mark + " " + pal.Dim(plain)
 }
 
 // statusRows are the lines under the box: the connection, where on that
@@ -424,22 +404,22 @@ func statusRows(in frameInput, width int) []string {
 	switch {
 	case v.link != "":
 		text := "✗ Honcho cannot be reached: " + clipWidth(v.link, 48)
-		add(text, pal.sgr(colorRed, text))
+		add(text, pal.SGR(colorRed, text))
 	case v.persona == "":
-		add("○ no persona chosen", pal.dim("○ no persona chosen"))
+		add("○ no persona chosen", pal.Dim("○ no persona chosen"))
 	case !v.reported:
 		text := "○ no bridge has reported from " + v.persona
-		add(text, pal.sgr(colorRed, text))
+		add(text, pal.SGR(colorRed, text))
 	default:
 		text, color := "bridge seen "+since(in.now.Sub(v.seen)), colorGreen
 		if in.now.Sub(v.seen) > staleAfter {
 			text, color = text+" (it may be off)", colorYellow
 		}
-		add("● "+text, pal.sgr(color, "●")+" "+text)
+		add("● "+text, pal.SGR(color, "●")+" "+text)
 	}
 	if v.update != "" {
 		// Second, so that a narrow terminal drops other items before it.
-		add("update "+v.update+" · /update", pal.sgr(colorYellow, "update "+v.update)+pal.dim(" · /update"))
+		add("update "+v.update+" · /update", pal.SGR(colorYellow, "update "+v.update)+pal.Dim(" · /update"))
 	}
 	if v.harness != "" {
 		// A long path keeps its end and never takes the whole line.
@@ -447,18 +427,18 @@ func statusRows(in frameInput, width int) []string {
 		switch {
 		case v.cwd != "":
 			dir := clipLeft(v.cwd, room)
-			add("in "+dir, pal.dim("in ")+dir)
+			add("in "+dir, pal.Dim("in ")+dir)
 		case v.home != "":
 			dir := clipLeft(v.home, room-10)
-			add("in "+dir+" (default)", pal.dim("in ")+dir+pal.dim(" (default)"))
+			add("in "+dir+" (default)", pal.Dim("in ")+dir+pal.Dim(" (default)"))
 		default:
 			// A bridge too old to say which one that is.
-			add("default directory", pal.dim("default directory"))
+			add("default directory", pal.Dim("default directory"))
 		}
 		if v.session != "" {
-			add(v.session, pal.dim(v.session))
+			add(v.session, pal.Dim(v.session))
 		} else {
-			add("new conversation", pal.dim("new conversation"))
+			add("new conversation", pal.Dim("new conversation"))
 		}
 	}
 	const most = 2
@@ -478,7 +458,7 @@ func statusRows(in frameInput, width int) []string {
 			}
 			rows, used, sep = append(rows, "  "), 2, ""
 		}
-		rows[len(rows)-1] += pal.dim(sep) + it.styled
+		rows[len(rows)-1] += pal.Dim(sep) + it.styled
 		used += textWidth(sep) + textWidth(it.plain)
 	}
 	return rows
@@ -509,9 +489,9 @@ func slashWord(text []rune) (string, bool) {
 // slash line being typed will do.
 func hintRows(in frameInput, width int) []string {
 	v, pal := in.v, in.pal
-	one := func(s string) []string { return []string{"  " + pal.dim(clipWidth(s, width-2))} }
+	one := func(s string) []string { return []string{"  " + pal.Dim(clipWidth(s, width-2))} }
 	if in.notice != "" {
-		return []string{"  " + pal.sgr(colorYellow, clipWidth(in.notice, width-2))}
+		return []string{"  " + pal.SGR(colorYellow, clipWidth(in.notice, width-2))}
 	}
 	if v.ask != "" {
 		return one("Enter takes the one in [brackets] · Ctrl-C cancels")
@@ -528,15 +508,15 @@ func hintRows(in frameInput, width int) []string {
 		var rows []string
 		for n, i := range found {
 			if n == most {
-				rows = append(rows, "  "+pal.dim(fmt.Sprintf("… %d more · Tab completes", len(found)-most)))
+				rows = append(rows, "  "+pal.Dim(fmt.Sprintf("… %d more · Tab completes", len(found)-most)))
 				break
 			}
 			c := slashCommands[i]
 			left := fmt.Sprintf("%-18s", strings.TrimSpace(c.name+" "+c.args))
-			rows = append(rows, "  "+pal.sgr(colorCyan, left)+" "+pal.dim(clipWidth(c.what, max(width-22, 0))))
+			rows = append(rows, "  "+pal.SGR(colorCyan, left)+" "+pal.Dim(clipWidth(c.what, max(width-22, 0))))
 		}
 		if word == "/" {
-			rows = append(rows, "  "+pal.dim(clipWidth("any other slash line goes to "+v.target()+" as typed", width-2)))
+			rows = append(rows, "  "+pal.Dim(clipWidth("any other slash line goes to "+v.target()+" as typed", width-2)))
 		}
 		return rows
 	}

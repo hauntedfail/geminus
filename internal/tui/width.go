@@ -1,4 +1,4 @@
-package chat
+package tui
 
 // How many terminal columns text takes. The prompt box is drawn by hand, so
 // its right edge and the cursor only land where they should if this agrees
@@ -9,8 +9,8 @@ import (
 	"unicode"
 )
 
-// tabWidth is how wide a tab is drawn inside the prompt box.
-const tabWidth = 4
+// TabWidth is how wide a tab is drawn inside the prompt box.
+const TabWidth = 4
 
 // wideRanges are the characters terminals draw two columns wide: East Asian
 // wide and fullwidth forms, and emoji. Sorted, inclusive.
@@ -43,11 +43,11 @@ func isWide(r rune) bool {
 	return false
 }
 
-// runeWidth is the number of columns r takes.
-func runeWidth(r rune) int {
+// RuneWidth is the number of columns r takes.
+func RuneWidth(r rune) int {
 	switch {
 	case r == '\t':
-		return tabWidth
+		return TabWidth
 	case r < 0x20 || r == 0x7f:
 		return 0
 	case r < 0x300:
@@ -60,9 +60,9 @@ func runeWidth(r rune) int {
 	return 1
 }
 
-// skipStyle returns the length of the styling sequence (ESC [ ... m) at the
+// SkipStyle returns the length of the styling sequence (ESC [ ... m) at the
 // start of s, or 0.
-func skipStyle(s string) int {
+func SkipStyle(s string) int {
 	if !strings.HasPrefix(s, "\x1b[") {
 		return 0
 	}
@@ -76,28 +76,28 @@ func skipStyle(s string) int {
 	return 0
 }
 
-// textWidth is the number of columns s takes; styling takes none.
-func textWidth(s string) int {
+// TextWidth is the number of columns s takes; styling takes none.
+func TextWidth(s string) int {
 	w := 0
 	for i := 0; i < len(s); {
-		if n := skipStyle(s[i:]); n > 0 {
+		if n := SkipStyle(s[i:]); n > 0 {
 			i += n
 			continue
 		}
 		r, size := rune(s[i]), 1
 		if r >= 0x80 {
-			r, size = decodeRune(s[i:])
+			r, size = DecodeRune(s[i:])
 		}
-		w += runeWidth(r)
+		w += RuneWidth(r)
 		i += size
 	}
 	return w
 }
 
-// clipWidth shortens unstyled s to at most w columns, ending in "…" when
+// ClipWidth shortens unstyled s to at most w columns, ending in "…" when
 // something was cut.
-func clipWidth(s string, w int) string {
-	if textWidth(s) <= w {
+func ClipWidth(s string, w int) string {
+	if TextWidth(s) <= w {
 		return s
 	}
 	if w <= 0 {
@@ -106,7 +106,7 @@ func clipWidth(s string, w int) string {
 	var b strings.Builder
 	used := 0
 	for _, r := range s {
-		rw := runeWidth(r)
+		rw := RuneWidth(r)
 		if used+rw > w-1 {
 			break
 		}
@@ -116,10 +116,10 @@ func clipWidth(s string, w int) string {
 	return b.String() + "…"
 }
 
-// clipLeft shortens unstyled s to at most w columns by dropping its start,
+// ClipLeft shortens unstyled s to at most w columns by dropping its start,
 // which "…" then stands for. A path keeps the part that names the place.
-func clipLeft(s string, w int) string {
-	if textWidth(s) <= w {
+func ClipLeft(s string, w int) string {
+	if TextWidth(s) <= w {
 		return s
 	}
 	if w <= 0 {
@@ -127,16 +127,16 @@ func clipLeft(s string, w int) string {
 	}
 	runes := []rune(s)
 	used, from := 0, len(runes)
-	for from > 0 && used+runeWidth(runes[from-1]) <= w-1 {
+	for from > 0 && used+RuneWidth(runes[from-1]) <= w-1 {
 		from--
-		used += runeWidth(runes[from])
+		used += RuneWidth(runes[from])
 	}
 	return "…" + string(runes[from:])
 }
 
-// wrapText cuts s, which has no line breaks, into rows of at most w columns.
+// WrapText cuts s, which has no line breaks, into rows of at most w columns.
 // Styling is kept with the text it precedes.
-func wrapText(s string, w int) []string {
+func WrapText(s string, w int) []string {
 	if w < 1 {
 		w = 1
 	}
@@ -144,19 +144,19 @@ func wrapText(s string, w int) []string {
 	var row strings.Builder
 	used := 0
 	for i := 0; i < len(s); {
-		if n := skipStyle(s[i:]); n > 0 {
+		if n := SkipStyle(s[i:]); n > 0 {
 			row.WriteString(s[i : i+n])
 			i += n
 			continue
 		}
 		r, size := rune(s[i]), 1
 		if r >= 0x80 {
-			r, size = decodeRune(s[i:])
+			r, size = DecodeRune(s[i:])
 		}
 		i += size
-		piece, rw := string(r), runeWidth(r)
+		piece, rw := string(r), RuneWidth(r)
 		if r == '\t' {
-			piece = strings.Repeat(" ", tabWidth)
+			piece = strings.Repeat(" ", TabWidth)
 		}
 		if used+rw > w && used > 0 {
 			rows = append(rows, row.String())
