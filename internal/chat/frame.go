@@ -46,6 +46,14 @@ type view struct {
 	cwd, home, session string
 	model, effort      string
 
+	// UI display preferences for the prompt box. When uiSet is false (for
+	// example in unit tests constructing view directly), all three default
+	// to true.
+	uiSet      bool
+	showNode   bool
+	showModel  bool
+	showEffort bool
+
 	// link says why Honcho could not be read; "" when it can.
 	link string
 
@@ -102,6 +110,7 @@ var slashCommands = []struct{ name, args, what string }{
 	{"/status", "", "show where things stand"},
 	{"/update", "", "install the latest geminus, stay in this conversation"},
 	{"/default", "…", "show or change your defaults"},
+	{"/ui", "…", "customize prompt box display"},
 	{"/help", "", "list geminus commands"},
 	{"/quit", "", "leave geminus"},
 }
@@ -257,6 +266,10 @@ func renderHeader(in headerInput) string {
 	return leftStyled + " " + pal.dim(strings.Repeat("─", fill)) + " " + rightStyled
 }
 
+func (v view) nodeShown() bool   { return !v.uiSet || v.showNode }
+func (v view) modelShown() bool  { return !v.uiSet || v.showModel }
+func (v view) effortShown() bool { return !v.uiSet || v.showEffort }
+
 // render lays out the bottom of the screen for one moment.
 func render(in frameInput) frame {
 	width := max(in.cols-1, 24) // the last column is left free: writing there wraps on some terminals
@@ -273,27 +286,54 @@ func render(in frameInput) frame {
 		f.rows = append(f.rows, row)
 	}
 
-	// Top edge, with who the box talks to in it.
-	// The tag that tells a remote computer from this one is never dropped;
-	// when the box is narrow the names give way.
+	// Top edge: harness · model · effort on the left, node name on the right.
+	// The node badge is never dropped when shown; on narrow terminals the
+	// trailing left-side items yield first.
 	title, plainTitle, right, tagWidth := pal.bold("geminus"), "geminus", "", 0
 	switch {
 	case v.ask != "":
 		plainTitle = clipWidth(v.ask, width-7)
 		title = pal.bold(plainTitle)
 	case v.persona != "":
-		tag := "REMOTE"
-		if v.local {
-			tag = "THIS COMPUTER"
+		if v.nodeShown() {
+			tag := v.persona
+			right, tagWidth = " "+pal.sgr("1;"+v.accent(), tag)+" ", textWidth(tag)+2
 		}
-		right, tagWidth = " "+pal.sgr("1;"+v.accent(), tag)+" ", textWidth(tag)+2
-		room := width - 7 - tagWidth
-		plainTitle = clipWidth(v.persona, max(room, 2))
+		room := max(width-7-tagWidth, 2)
+		primary := v.harness
+		if primary == "" {
+			primary = v.persona
+		}
+		plainTitle = clipWidth(primary, room)
 		title = pal.sgr("1;"+v.accent(), plainTitle)
-		if left := room - textWidth(plainTitle) - 3; v.harness != "" && left >= 2 {
-			program := clipWidth(v.harness, left)
-			plainTitle += " · " + program
-			title += pal.dim(" · ") + program
+
+		appendSegment := func(plain, styled string) {
+			left := room - textWidth(plainTitle) - 3
+			if left < 2 {
+				return
+			}
+			if textWidth(plain) > left {
+				plain = clipWidth(plain, left)
+				styled = pal.dim(plain)
+			}
+			plainTitle += " · " + plain
+			title += pal.dim(" · ") + styled
+		}
+		if v.harness != "" {
+			if v.modelShown() {
+				if v.model != "" {
+					appendSegment(v.model, v.model)
+				} else {
+					appendSegment("model:default", pal.dim("model:default"))
+				}
+			}
+			if v.effortShown() {
+				if v.effort != "" {
+					appendSegment(v.effort, v.effort)
+				} else {
+					appendSegment("effort:default", pal.dim("effort:default"))
+				}
+			}
 		}
 	}
 	fill := max(width-6-textWidth(plainTitle)-tagWidth, 0)
@@ -414,12 +454,6 @@ func statusRows(in frameInput, width int) []string {
 		default:
 			// A bridge too old to say which one that is.
 			add("default directory", pal.dim("default directory"))
-		}
-		if v.model != "" {
-			add("model "+v.model, pal.dim("model ")+v.model)
-		}
-		if v.effort != "" {
-			add("effort "+v.effort, pal.dim("effort ")+v.effort)
 		}
 		if v.session != "" {
 			add(v.session, pal.dim(v.session))

@@ -394,12 +394,62 @@ type Defaults struct {
 	Persona string `json:"persona,omitempty"`
 	// Personas holds the choices made for each persona.
 	Personas map[string]PersonaDefaults `json:"personas,omitempty"`
+	// UI holds prompt-box display preferences; nil means built-in defaults.
+	UI *UIDefaults `json:"ui,omitempty"`
 }
 
-// PersonaDefaults are the preselected harness and directory on one persona.
+// PersonaDefaults are the preselected harness, directory and tuning on one persona.
 type PersonaDefaults struct {
 	Harness string `json:"harness,omitempty"`
 	CWD     string `json:"cwd,omitempty"`
+	Model   string `json:"model,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+}
+
+// UIDefaults are the owner's prompt-box display preferences.
+// Nil pointer fields use the built-in default (true).
+type UIDefaults struct {
+	ShowNode     *bool             `json:"show_node,omitempty"`
+	ShowModel    *bool             `json:"show_model,omitempty"`
+	ShowEffort   *bool             `json:"show_effort,omitempty"`
+	HarnessNames map[string]string `json:"harness_names,omitempty"`
+}
+
+// NodeVisible reports whether the node name badge is shown in the prompt box.
+func (u *UIDefaults) NodeVisible() bool {
+	return u == nil || u.ShowNode == nil || *u.ShowNode
+}
+
+// ModelVisible reports whether the model name is shown in the prompt box.
+func (u *UIDefaults) ModelVisible() bool {
+	return u == nil || u.ShowModel == nil || *u.ShowModel
+}
+
+// EffortVisible reports whether the effort level is shown in the prompt box.
+func (u *UIDefaults) EffortVisible() bool {
+	return u == nil || u.ShowEffort == nil || *u.ShowEffort
+}
+
+// LabelFor returns the display name for a harness ID.
+// User overrides take precedence; hermes defaults to "hermes".
+func (u *UIDefaults) LabelFor(id, fallback string) string {
+	if u != nil {
+		if custom := strings.TrimSpace(u.HarnessNames[id]); custom != "" {
+			return custom
+		}
+	}
+	if id == "hermes" {
+		return "hermes"
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return id
+}
+
+// IsZero reports whether u has no custom settings.
+func (u *UIDefaults) IsZero() bool {
+	return u == nil || (u.ShowNode == nil && u.ShowModel == nil && u.ShowEffort == nil && len(u.HarnessNames) == 0)
 }
 
 // sealed is how defaults are stored: the defaults as JSON text, signed.

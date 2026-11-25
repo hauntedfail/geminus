@@ -76,7 +76,8 @@ func (a *App) handle(line string) error {
 		if err := validDir(arg); err != nil {
 			return err
 		}
-		a.session, a.title, a.tuning = "", "", wire.Tuning{}
+		a.session, a.title = "", ""
+		a.tuning = a.defaultTuning(a.cur.Name, *a.harness)
 		a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 		a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
 		if a.live != nil {
@@ -97,6 +98,8 @@ func (a *App) handle(line string) error {
 		a.Out.line(a.status())
 	case "/default":
 		return a.setDefaults(arg)
+	case "/ui":
+		return a.setUI(arg)
 	case "/update":
 		return a.slashUpdate()
 	case "/model", "/effort":
@@ -208,7 +211,14 @@ func (a *App) setDefaults(arg string) error {
 		sort.Strings(names)
 		for _, name := range names {
 			d := a.defaults.Personas[name]
-			a.Out.line(fmt.Sprintf("  on %s  harness %s  cwd %s", oneLine(name), show(d.Harness), show(d.CWD)))
+			line := fmt.Sprintf("  on %s  harness %s  cwd %s", oneLine(name), show(d.Harness), show(d.CWD))
+			if d.Model != "" {
+				line += "  model " + oneLine(d.Model)
+			}
+			if d.Effort != "" {
+				line += "  effort " + oneLine(d.Effort)
+			}
+			a.Out.line(line)
 		}
 		return nil
 	}
@@ -217,17 +227,12 @@ func (a *App) setDefaults(arg string) error {
 	} else if value == "" && key != "save" {
 		return fmt.Errorf("usage: /default %s VALUE (or none)", key)
 	}
-	d := a.defaults
-	personas := map[string]wire.PersonaDefaults{}
-	for name, v := range d.Personas {
-		personas[name] = v
-	}
-	d.V, d.Personas = 1, personas
+	d := a.cloneDefaults()
 	current := func() (wire.PersonaDefaults, error) {
 		if a.cur == nil {
 			return wire.PersonaDefaults{}, errors.New("pick a persona first (/persona)")
 		}
-		return personas[a.cur.Name], nil
+		return d.Personas[a.cur.Name], nil
 	}
 	said := ""
 	switch key {
@@ -236,7 +241,12 @@ func (a *App) setDefaults(arg string) error {
 			return errors.New("nothing to save: pick a persona and a harness first")
 		}
 		d.Persona = a.cur.Name
-		personas[a.cur.Name] = wire.PersonaDefaults{Harness: a.harness.ID, CWD: a.cwd}
+		d.Personas[a.cur.Name] = wire.PersonaDefaults{
+			Harness: a.harness.ID,
+			CWD:     a.cwd,
+			Model:   a.tuning.Model,
+			Effort:  a.tuning.Effort,
+		}
 		said = fmt.Sprintf("geminus now starts with %s · %s", who(*a.cur), oneLine(a.harness.Name))
 	case "persona":
 		if _, ok := a.find(value); value != "" && !ok {
@@ -249,21 +259,87 @@ func (a *App) setDefaults(arg string) error {
 			return err
 		}
 		pd.Harness = value
-		personas[a.cur.Name] = pd
+		d.Personas[a.cur.Name] = pd
 	case "cwd":
 		pd, err := current()
 		if err != nil {
 			return err
 		}
 		pd.CWD = value
-		personas[a.cur.Name] = pd
-	default:
-		return errors.New("usage: /default [save | persona NAME | harness ID | cwd DIR]")
-	}
-	for name, v := range personas {
-		if v == (wire.PersonaDefaults{}) {
-			delete(personas, name)
+		d.Personas[a.cur.Name] = pd
+	case "model":
+		if value != "" && !wire.ValidSetting("model", value) {
+			return fmt.Errorf("%q is not a usable model name", oneLine(value))
 		}
+		pd, err := current()
+		if err != nil {
+			return err
+		}
+		pd.Model = value
+		d.Personas[a.cur.Name] = pd
+	case "effort":
+		if value != "" && !wire.ValidSetting("effort", value) {
+			return fmt.Errorf("%q is not a usable effort name", oneLine(value))
+		}
+		pd, err := current()
+		if err != nil {
+			return err
+		}
+		pd.Effort = value
+		d.Personas[a.cur.Name] = pd
+	default:
+		return errors.New("usage: /default [save | persona NAME | harness ID | cwd DIR | model NAME | effort LEVEL]")
+	}
+	if err := a.saveDefaults(d); err != nil {
+		return err
+	}
+	if said == "" {
+		said = fmt.Sprintf("default %s: %s", key, show(value))
+	}
+	a.Out.line(said + " (saved in Honcho)")
+	return nil
+}
+
+func (a *App) cloneDefaults() wire.Defaults {
+	d := a.defaults
+	d.V = 1
+	d.Personas = map[string]wire.PersonaDefaults{}
+	for name, v := range a.defaults.Personas {
+		d.Personas[name] = v
+	}
+	if a.defaults.UI != nil {
+		u := *a.defaults.UI
+		if u.ShowNode != nil {
+			v := *u.ShowNode
+			u.ShowNode = &v
+		}
+		if u.ShowModel != nil {
+			v := *u.ShowModel
+			u.ShowModel = &v
+		}
+		if u.ShowEffort != nil {
+			v := *u.ShowEffort
+			u.ShowEffort = &v
+		}
+		if len(a.defaults.UI.HarnessNames) > 0 {
+			u.HarnessNames = map[string]string{}
+			for k, v := range a.defaults.UI.HarnessNames {
+				u.HarnessNames[k] = v
+			}
+		}
+		d.UI = &u
+	}
+	return d
+}
+
+func (a *App) saveDefaults(d wire.Defaults) error {
+	for name, v := range d.Personas {
+		if v == (wire.PersonaDefaults{}) {
+			delete(d.Personas, name)
+		}
+	}
+	if d.UI.IsZero() {
+		d.UI = nil
 	}
 	ctx, cancel := a.call()
 	defer cancel()
@@ -275,8 +351,101 @@ func (a *App) setDefaults(arg string) error {
 		return fmt.Errorf("the default was not saved: %w", err)
 	}
 	a.defaults, a.defaultsSaved = d, a.Now().Unix()
-	if said == "" {
-		said = fmt.Sprintf("default %s: %s", key, show(value))
+	return nil
+}
+
+// setUI shows or updates prompt-box display preferences, stored in the
+// owner's signed Honcho defaults so every computer shares the same look.
+func (a *App) setUI(arg string) error {
+	onOff := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
+	}
+	if arg == "" {
+		u := a.defaults.UI
+		a.Out.line("prompt box UI (saved in Honcho)")
+		a.Out.line("  node    " + onOff(u.NodeVisible()))
+		a.Out.line("  model   " + onOff(u.ModelVisible()))
+		a.Out.line("  effort  " + onOff(u.EffortVisible()))
+		if u != nil && len(u.HarnessNames) > 0 {
+			ids := make([]string, 0, len(u.HarnessNames))
+			for id := range u.HarnessNames {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				a.Out.line(fmt.Sprintf("  label   %s -> %s", oneLine(id), oneLine(u.HarnessNames[id])))
+			}
+		} else {
+			a.Out.line("  label   hermes -> hermes (default)")
+		}
+		return nil
+	}
+	key, rest, _ := strings.Cut(arg, " ")
+	rest = strings.TrimSpace(rest)
+	d := a.cloneDefaults()
+	if d.UI == nil {
+		d.UI = &wire.UIDefaults{}
+	}
+	parseToggle := func(s string) (bool, error) {
+		switch strings.ToLower(s) {
+		case "on", "true", "show", "yes", "1":
+			return true, nil
+		case "off", "false", "hide", "no", "0":
+			return false, nil
+		default:
+			return false, fmt.Errorf("usage: /ui %s on|off", key)
+		}
+	}
+	said := ""
+	switch key {
+	case "node":
+		v, err := parseToggle(rest)
+		if err != nil {
+			return err
+		}
+		d.UI.ShowNode = &v
+		said = "ui node: " + onOff(v)
+	case "model":
+		v, err := parseToggle(rest)
+		if err != nil {
+			return err
+		}
+		d.UI.ShowModel = &v
+		said = "ui model: " + onOff(v)
+	case "effort":
+		v, err := parseToggle(rest)
+		if err != nil {
+			return err
+		}
+		d.UI.ShowEffort = &v
+		said = "ui effort: " + onOff(v)
+	case "label":
+		id, label, _ := strings.Cut(rest, " ")
+		id, label = strings.TrimSpace(id), strings.TrimSpace(label)
+		if id == "" || label == "" {
+			return errors.New("usage: /ui label HARNESS_ID NAME (or default)")
+		}
+		if d.UI.HarnessNames == nil {
+			d.UI.HarnessNames = map[string]string{}
+		}
+		if label == "default" || label == "none" {
+			delete(d.UI.HarnessNames, id)
+			said = fmt.Sprintf("ui label %s: default", oneLine(id))
+		} else {
+			d.UI.HarnessNames[id] = oneLine(label)
+			said = fmt.Sprintf("ui label %s: %s", oneLine(id), oneLine(label))
+		}
+	case "reset":
+		d.UI = nil
+		said = "ui settings reset to defaults"
+	default:
+		return errors.New("usage: /ui [node|model|effort on|off | label ID NAME | reset]")
+	}
+	if err := a.saveDefaults(d); err != nil {
+		return err
 	}
 	a.Out.line(said + " (saved in Honcho)")
 	return nil

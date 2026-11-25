@@ -206,7 +206,8 @@ func (a *App) useHarness(id string) error {
 	for _, h := range p.Harnesses {
 		if h.ID == id {
 			h := h
-			a.harness, a.session, a.title, a.tuning = &h, "", "", wire.Tuning{}
+			a.harness, a.session, a.title = &h, "", ""
+			a.tuning = a.defaultTuning(p.Name, h)
 			a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 			return nil
 		}
@@ -216,6 +217,25 @@ func (a *App) useHarness(id string) error {
 		ids[i] = h.ID
 	}
 	return fmt.Errorf("%s's computer has no harness %q (it has: %s)", p.Name, id, strings.Join(ids, ", "))
+}
+
+// defaultTuning returns the preselected model and effort for persona/harness,
+// dropping any setting the harness does not advertise as supported.
+func (a *App) defaultTuning(persona string, h wire.Harness) wire.Tuning {
+	pd := a.defaults.Personas[persona]
+	var t wire.Tuning
+	if pd.Model != "" && h.Takes("model") && wire.ValidSetting("model", pd.Model) {
+		t.Model = pd.Model
+	}
+	if pd.Effort != "" && h.Takes("effort") && wire.ValidSetting("effort", pd.Effort) {
+		t.Effort = pd.Effort
+	}
+	return t
+}
+
+// harnessDisplay returns the label shown for h in the prompt box and transcript.
+func (a *App) harnessDisplay(h wire.Harness) string {
+	return oneLine(a.defaults.UI.LabelFor(h.ID, oneLine(h.Name)))
 }
 
 func (a *App) status() string {

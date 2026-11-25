@@ -265,7 +265,7 @@ func (a *App) show(content string, meta wire.Message) {
 			if a.cur != nil {
 				speaker = oneLine(a.cur.Name)
 				if a.harness != nil {
-					speaker += " · " + oneLine(a.harness.Name)
+					speaker += " · " + a.harnessDisplay(*a.harness)
 				}
 			}
 			a.Out.line("")

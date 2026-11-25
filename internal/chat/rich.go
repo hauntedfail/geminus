@@ -150,13 +150,17 @@ func (a *App) sync() {
 	}
 	v := view{ask: a.asking, link: a.link, cwd: oneLine(a.cwd), session: oneLine(a.session),
 		model: oneLine(a.tuning.Model), effort: oneLine(a.tuning.Effort), slow: a.SlowAfter, rang: a.rang,
-		update: a.newerRelease()}
+		update:     a.newerRelease(),
+		uiSet:      true,
+		showNode:   a.defaults.UI.NodeVisible(),
+		showModel:  a.defaults.UI.ModelVisible(),
+		showEffort: a.defaults.UI.EffortVisible()}
 	if a.cur != nil {
 		v.persona, v.local, v.reported, v.seen = oneLine(a.cur.Name), a.cur.Local, a.cur.Reported, a.cur.Seen
 		v.home = oneLine(a.cur.Home)
 	}
 	if a.harness != nil {
-		v.harness = oneLine(a.harness.Name)
+		v.harness = a.harnessDisplay(*a.harness)
 	}
 	// The line above the box follows the prompt that has waited longest.
 	for id := range a.sentAt {
@@ -250,7 +254,7 @@ func isGeminusCommand(line string) bool {
 	cmd, _, _ := strings.Cut(line, " ")
 	switch cmd {
 	case "/help", "/status", "/persona", "/personas", "/harness", "/new", "/cwd",
-		"/sessions", "/resume", "/default", "/update", "/model", "/effort", "/quit", "/exit":
+		"/sessions", "/resume", "/default", "/ui", "/update", "/model", "/effort", "/quit", "/exit":
 		return true
 	}
 	return false

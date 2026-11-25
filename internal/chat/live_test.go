@@ -181,14 +181,13 @@ func draw(in frameInput) (string, frame) {
 
 func TestTheBoxShowsWhoWhatAndWhere(t *testing.T) {
 	v := sibylView()
-	v.cwd, v.model, v.effort = "/srv/app", "opus", "high"
+	v.harness, v.cwd, v.model, v.effort = "hermes", "/srv/app", "group/lvmh", "medium"
 	got, f := draw(frameInput{v: v})
 	want := `
-╭─ sibyl · Hermes Agent ──────────────────────────────────── REMOTE ─╮
-│ ❯ Type a prompt for Hermes Agent on sibyl                          │
+╭─ hermes · group/lvmh · medium ───────────────────────────── sibyl ─╮
+│ ❯ Type a prompt for hermes on sibyl                                │
 ╰────────────────────────────────────────────────────────────────────╯
-  ● bridge seen 15s ago · in /srv/app · model opus · effort high
-  new conversation
+  ● bridge seen 15s ago · in /srv/app · new conversation
   / commands · Enter send · PgUp/PgDn scroll · Alt+Enter new line · C…`
 	if got != want {
 		t.Errorf("empty box:\n%s\nwant:\n%s", got, want)
@@ -202,11 +201,11 @@ func TestTheBoxShowsWhoWhatAndWhere(t *testing.T) {
 		}
 	}
 
-	// This computer's own agent is never mistaken for a remote one.
+	// Node name is shown on the right; unset model/effort show defaults.
 	v = sibylView()
-	v.persona, v.local, v.session = "chrome", true, "geminus-chrome-20261119-abc123"
+	v.persona, v.harness, v.local, v.session = "chrome", "hermes", true, "geminus-chrome-20261119-abc123"
 	got, _ = draw(frameInput{v: v})
-	if !strings.Contains(got, "╭─ chrome · Hermes Agent ──────────────────────────── THIS COMPUTER ─╮") ||
+	if !strings.Contains(got, "╭─ hermes · model:default · effort:default ───────────────── chrome ─╮") ||
 		!strings.Contains(got, "  ● bridge seen 15s ago · default directory\n  geminus-chrome-20261119-abc123\n") {
 		t.Errorf("local box:\n%s", got)
 	}
@@ -214,6 +213,19 @@ func TestTheBoxShowsWhoWhatAndWhere(t *testing.T) {
 	styled := render(frameInput{v: v, cols: 71, rows: 24, now: noon, pal: palette{on: true}})
 	if !strings.Contains(styled.rows[1], "\x1b[33m╭─") {
 		t.Errorf("local border is not yellow: %q", styled.rows[1])
+	}
+
+	// User UI preferences can toggle model, effort and node display.
+	v.uiSet, v.showNode, v.showModel, v.showEffort = true, true, true, false
+	v.model = "group/lvmh"
+	got, _ = draw(frameInput{v: v})
+	if !strings.Contains(got, "╭─ hermes · group/lvmh ───────────────────────────────────── chrome ─╮") {
+		t.Errorf("effort hidden:\n%s", got)
+	}
+	v.showNode, v.showModel, v.showEffort = false, false, false
+	got, _ = draw(frameInput{v: v})
+	if !strings.Contains(got, "╭─ hermes ───────────────────────────────────────────────────────────╮") {
+		t.Errorf("all toggles off:\n%s", got)
 	}
 }
 
@@ -302,7 +314,7 @@ func TestTypedTextWrapsInsideTheBoxAndTheCursorFollows(t *testing.T) {
 	text := []rune("日本語のプロンプトを書く。and some English after it\nsecond line")
 	got, f := draw(frameInput{v: sibylView(), text: text, pos: len(text), cols: 31})
 	want := `
-╭─ sibyl · Hermes… ─ REMOTE ─╮
+╭─ Hermes Agent ───── sibyl ─╮
 │ ❯ 日本語のプロンプトを書く │
 │   。and some English after │
 │    it                      │
@@ -425,7 +437,7 @@ func TestALongTranscriptScrollsAndTheBoxStaysWhole(t *testing.T) {
 	if lines := strings.Split(got, "\n"); len(lines) > 12 {
 		t.Errorf("screen overflowed terminal height (%d rows):\n%s", len(lines), got)
 	}
-	if strings.Count(got, "╭─ sibyl") != 1 || strings.Count(got, "╰──") != 1 {
+	if strings.Count(got, "╭─ Hermes Agent") != 1 || strings.Count(got, "╰──") != 1 {
 		t.Errorf("screen after scrolling:\n%s", got)
 	}
 	if term.cursor() != "│ ❯ 日本語で書く" {
@@ -434,7 +446,7 @@ func TestALongTranscriptScrollsAndTheBoxStaysWhole(t *testing.T) {
 	// A very long line with no end wraps inside the viewport without pushing the box away.
 	lv.Write([]byte(strings.Repeat("x", 41*30)))
 	got = term.text()
-	if strings.Count(got, "╭─ sibyl") != 1 || !strings.HasSuffix(got, "PgUp/PgDn s…") || !strings.Contains(got, "xxxx") {
+	if strings.Count(got, "╭─ Hermes Agent") != 1 || !strings.HasSuffix(got, "PgUp/PgDn s…") || !strings.Contains(got, "xxxx") {
 		t.Errorf("screen after an endless line:\n%s", got)
 	}
 	if term.cursor() != "│ ❯ 日本語で書く" {
@@ -521,7 +533,7 @@ func TestResizingAndClosingLeaveNoBoxBehind(t *testing.T) {
 	lv.size = func() (int, int) { return 44, 20 }
 	term.cols = 44
 	lv.tick()
-	if got := term.text(); !strings.Contains(got, "╭─ sibyl · Hermes Agent ───────── REMOTE ─╮") {
+	if got := term.text(); !strings.Contains(got, "╭─ Hermes Agent · model:default ── sibyl ─╮") {
 		t.Errorf("after resize:\n%s", got)
 	}
 	lv.Write([]byte("no line end yet"))
@@ -663,7 +675,7 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 	w.offline["sibyl"] = true
 	w.mu.Unlock()
 	term, typed, done := w.onTerminal(t, "persona", "sibyl")
-	term.waitFor(t, "◆ geminus", "╭─ sibyl · Hermes Agent ─", "REMOTE ─╮", "● bridge seen 40s ago · default directory · new conversation")
+	term.waitFor(t, "◆ geminus", "╭─ hermes · model:default · effort:default ─", "sibyl ─╮", "● bridge seen 40s ago · default directory · new conversation")
 
 	// Sending returns at once: the second prompt goes out while the first
 	// has not even been picked up.
@@ -682,7 +694,7 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 	if !strings.Contains(header, "❯ second") {
 		t.Errorf("sticky header = %q, want second prompt", header)
 	}
-	order := []string{"── you ──", "❯ long job", "❯ second", "── sibyl · Hermes Agent ──", "echo: long job", "echo: second", "╭─ sibyl"}
+	order := []string{"── you ──", "❯ long job", "❯ second", "── sibyl · hermes ──", "echo: long job", "echo: second", "╭─ hermes"}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(body, order[i-1]) > strings.Index(body, order[i]) {
 			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], body)
@@ -695,20 +707,20 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 	// A slash line geminus does not know goes to the agent; /model is its own.
 	typed("/compact\r")
 	term.waitFor(t, "echo: /compact")
-	typed("/mo\t", "fast-1\r")
-	term.waitFor(t, "model: fast-1", "· default directory · model fast-1")
+	typed("/mo	", "fast-1\r")
+	term.waitFor(t, "model: fast-1", "╭─ hermes · fast-1 · effort:default ─")
 
 	// A question is asked in the box; cancelling it changes nothing.
 	typed("/persona\r")
 	term.waitFor(t, "╭─ persona ─", "a number or a name from the list", "  1  chrome")
 	typed("\x03")
-	term.waitFor(t, "╭─ sibyl · Hermes Agent ─")
+	term.waitFor(t, "╭─ hermes · fast-1 · effort:default ─")
 	typed("/persona\r")
 	term.waitFor(t, "╭─ persona ─")
 	typed("chrome\r")
 	term.waitFor(t, "persona ❯ chrome", "╭─ harness ─")
 	typed("cl\r")
-	term.waitFor(t, "harness ❯ cl", "╭─ chrome · Claude Code ─", "THIS COMPUTER ─╮", "● bridge seen 5s ago · default directory · new conversation")
+	term.waitFor(t, "harness ❯ cl", "╭─ Claude Code · model:default · effort:default ─", "chrome ─╮", "● bridge seen 5s ago · default directory · new conversation")
 
 	// The directory is under the box, and can be changed there until the
 	// first prompt of the conversation is sent.
@@ -746,7 +758,7 @@ func TestOnATerminalTheStatusSaysWhenHonchoCannotBeRead(t *testing.T) {
 func TestNothingFromOutsideCanControlTheTerminalThroughTheBox(t *testing.T) {
 	w := newWorld(t)
 	term, typed, _ := w.onTerminal(t, "persona", "sibyl")
-	term.waitFor(t, "╭─ sibyl · Hermes Agent ─")
+	term.waitFor(t, "╭─ hermes · model:default · effort:default ─")
 	// A directory name with an escape sequence and a line break in it, and
 	// the same pasted into the box.
 	typed("/new /tmp/a\x1b[2J\x1b]0;owned\x07b\r")
@@ -755,4 +767,27 @@ func TestNothingFromOutsideCanControlTheTerminalThroughTheBox(t *testing.T) {
 	if raw := term.raw.String(); strings.Contains(raw, "\x1b[2J") || strings.Contains(raw, "\x1b]0;") || strings.Contains(raw, "\x07") {
 		t.Errorf("an escape sequence from outside reached the terminal: %q", raw)
 	}
+}
+
+func TestUICommandAndDefaultTuningPersistInHoncho(t *testing.T) {
+	w := newWorld(t)
+	term, typed, done := w.onTerminal(t, "persona", "sibyl")
+	term.waitFor(t, "╭─ hermes · model:default · effort:default ─", "sibyl ─╮")
+
+	typed("/default model group/lvmh\r")
+	term.waitFor(t, "default model: group/lvmh (saved in Honcho)")
+	typed("/default effort medium\r")
+	term.waitFor(t, "default effort: medium (saved in Honcho)")
+	typed("/new\r")
+	term.waitFor(t, "╭─ hermes · group/lvmh · medium ─", "sibyl ─╮")
+
+	typed("/ui effort off\r")
+	term.waitFor(t, "ui effort: off (saved in Honcho)", "╭─ hermes · group/lvmh ───")
+	typed("/ui label hermes h-agent\r")
+	term.waitFor(t, "ui label hermes: h-agent (saved in Honcho)", "╭─ h-agent · group/lvmh ───")
+	typed("/ui reset\r")
+	term.waitFor(t, "ui settings reset to defaults (saved in Honcho)", "╭─ hermes · group/lvmh · medium ─")
+
+	typed("\x03", "\x03")
+	<-done
 }

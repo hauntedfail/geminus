@@ -63,8 +63,10 @@ const commandHelp = `geminus commands
   /update                install the latest release of geminus and carry on
                          in this conversation
   /default               show your defaults; /default save keeps the current
-                         persona, harness and directory;
-                         /default persona|harness|cwd VALUE (or none)
+                         persona, harness, directory, model and effort;
+                         /default persona|harness|cwd|model|effort VALUE (or none)
+  /ui                    show or customize prompt box display
+                         (/ui model|effort|node on|off, /ui label ID NAME, /ui reset)
   /quit                  leave geminus
   /anything else         goes to the agent as typed, for the agent program's
                          own slash commands; //help sends /help
