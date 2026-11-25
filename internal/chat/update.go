@@ -91,7 +91,7 @@ func (a *App) slashUpdate() error {
 		a.Out.line(a.Out.dim("The new program runs the next time geminus starts."))
 		return nil
 	}
-	a.restarting, a.restartWith = true, args
+	a.restarting, a.restartWith, a.restartNotice = true, args, a.Out.accent("◆ ")+said
 	return nil
 }
 

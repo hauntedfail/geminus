@@ -151,11 +151,13 @@ type App struct {
 	Restart func(exe string, args []string) (int, error)
 	// newer is the version of a release newer than this program, once
 	// newerFound has delivered it. restarting is set by /update when the
-	// new program is to take over, with restartWith as its arguments.
-	newer       string
-	newerFound  <-chan string
-	restarting  bool
-	restartWith []string
+	// new program is to take over, with restartWith as its arguments and
+	// restartNotice printed on the primary screen after leaving alt-screen.
+	newer         string
+	newerFound    <-chan string
+	restarting    bool
+	restartWith   []string
+	restartNotice string
 	// readOn tells the keyboard reader, which stops after an /update line,
 	// to read on.
 	readOn chan<- struct{}
@@ -397,6 +399,9 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 			// The new program draws its own box.
 			a.live.close()
 			stop()
+			if a.restartNotice != "" {
+				fmt.Fprintln(a.live.out, a.restartNotice)
+			}
 			return a.relaunch(errw)
 		}
 		return 0

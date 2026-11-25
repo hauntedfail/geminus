@@ -271,8 +271,8 @@ func TestSlashUpdateOnATerminalStartsTheNewProgramInTheSameConversation(t *testi
 	if got := term.text(); strings.Contains(got, "╭─") {
 		t.Errorf("the screen left behind:\n%s", got)
 	}
-	if !strings.Contains(term.raw.String(), "geminus 0.4.0 → 0.5.0") {
-		t.Errorf("update message never reached the terminal")
+	if got := term.text(); !strings.Contains(got, "geminus 0.4.0 → 0.5.0") {
+		t.Errorf("update message not shown on primary screen after leaving alt-screen:\n%s", got)
 	}
 	if got := r.program(); got != "the program of 0.5.0" {
 		t.Errorf("program = %q", got)
