@@ -174,6 +174,7 @@ Defaults are stored in your own peer in Honcho, not on disk. With a default pers
 
 ```
 geminus                  talk to the default persona, or pick one
+geminus NAME [HARNESS]   talk to NAME (optionally with HARNESS)
 geminus persona          list personas and exit
 geminus persona NAME     talk to NAME
   --harness ID           use this harness
@@ -184,7 +185,7 @@ geminus update           install the latest release of geminus
 geminus version | help
 ```
 
-`geminus persona NAME` either opens the conversation or exits with status 1 and the reason. Bad usage exits with 2.
+`geminus NAME [HARNESS]` (and `geminus persona NAME`) either opens the conversation or exits with status 1 and the reason. Bad usage exits with 2.
 
 ## Trust
 
