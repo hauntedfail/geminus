@@ -17,7 +17,7 @@ from .config import ConfigError, load, prepare_state_dir
 from .mailbox import Mailbox, MailboxError
 from .store import Store
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 TOOLSET = "geminise"
 log = logging.getLogger("geminish")
 

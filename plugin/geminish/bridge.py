@@ -104,6 +104,22 @@ class CannotGoBack(Exception):
     """The program cannot return this setting to its own default inside a session."""
 
 
+def split_hermes_provider(value: str, providers) -> tuple[str, str]:
+    """Split ``provider:model`` when the prefix matches a known Hermes provider slug.
+
+    Checking against known provider slugs avoids misreading model tags that contain colons
+    (such as ``llama3:8b`` or ``model:free``). Longer slugs match first so ``custom:near-ai:m``
+    splits as ``("custom:near-ai", "m")`` rather than ``("custom", "near-ai:m")``.
+    """
+    if not value or ":" not in value or not providers:
+        return "", value
+    for slug in sorted((str(p) for p in providers if p), key=len, reverse=True):
+        prefix = slug + ":"
+        if value.startswith(prefix) and len(value) > len(prefix):
+            return slug, value[len(prefix):]
+    return "", value
+
+
 @dataclass(frozen=True)
 class Harness:
     """One agent program and how to give it a prompt in its own non-interactive mode."""
@@ -126,7 +142,7 @@ class Harness:
         said = {name for name, _, _ in self.inline}
         return tuple(name for name, how in (("model", self.model), ("effort", self.effort)) if how or name in said)
 
-    def preludes(self, asked: dict, ever: dict) -> list:
+    def preludes(self, asked: dict, ever: dict, *, hermes_providers=()) -> list:
         """The lines to send in the session before a prompt: (setting, line). ``asked`` is what the
         prompt carries; ``ever`` says which settings an earlier prompt of the conversation carried.
 
@@ -137,7 +153,13 @@ class Harness:
         lines = []
         for name, set_line, reset_line in self.inline:
             if asked.get(name):
-                lines.append((name, set_line.replace("{}", asked[name])))
+                val = asked[name]
+                if self.id == "hermes" and name == "model":
+                    prov, mod = split_hermes_provider(val, hermes_providers)
+                    if prov:
+                        lines.append((name, f"/model {mod} --provider {prov}"))
+                        continue
+                lines.append((name, set_line.replace("{}", val)))
             elif ever.get(name):
                 if not reset_line:
                     raise CannotGoBack(name)
@@ -271,6 +293,264 @@ def available(cfg=None, harnesses=HARNESSES, find=find_binary) -> list[tuple[Har
     return found
 
 
+# ----- model discovery for node cards ----------------------------------------------
+
+MAX_ADVERTISED_MODELS = 400
+MAX_CURRENT_PROVIDER_MODELS = 64
+MAX_OTHER_PROVIDER_MODELS = 40
+_MODELS_MARK = "__GEMINISH_MODELS__"
+_HERMES_INVENTORY_SCRIPT = (
+    "import json\n"
+    "from hermes_cli.config import load_config\n"
+    "from hermes_cli.inventory import load_picker_context, build_models_payload\n"
+    "cfg = load_config()\n"
+    "ctx = load_picker_context()\n"
+    "payload = build_models_payload(ctx, probe_custom_providers=False, "
+    "probe_current_custom_provider=False, for_picker=True)\n"
+    "mcfg = cfg.get('model') if isinstance(cfg.get('model'), dict) else {}\n"
+    "out = {\n"
+    "  'default_provider': str(mcfg.get('provider') or ''),\n"
+    "  'default_model': str(mcfg.get('default') or ''),\n"
+    "  'providers': [{\n"
+    "    'slug': str(p.get('slug') or ''),\n"
+    "    'is_current': bool(p.get('is_current')),\n"
+    "    'is_user_defined': bool(p.get('is_user_defined')),\n"
+    "    'models': [str(m) for m in (p.get('models') or []) if isinstance(m, str)],\n"
+    "    'aliases': [str(a) for a in (p.get('aliases') or []) if isinstance(a, str)],\n"
+    "  } for p in (payload.get('providers') or []) if isinstance(p, dict)]\n"
+    "}\n"
+    f"print({_MODELS_MARK!r} + json.dumps(out, ensure_ascii=False))\n"
+)
+
+
+def _hermes_home_dir(environ: dict | None = None) -> Path:
+    env = environ if environ is not None else os.environ
+    raw = env.get("HERMES_HOME")
+    if raw:
+        return Path(os.path.expanduser(raw))
+    return Path.home() / ".hermes"
+
+
+def _hermes_agent_candidates(binary: str, hermes_home: Path) -> list[tuple[Path, Path]]:
+    """Return candidate ``(python_exe, repo_root)`` pairs for Hermes's own runtime."""
+    roots: list[Path] = [hermes_home / "hermes-agent"]
+    if binary:
+        try:
+            resolved = Path(binary).resolve()
+            for parent in resolved.parents:
+                if (parent / "hermes_cli").is_dir():
+                    roots.append(parent)
+                    break
+        except OSError:
+            pass
+    seen: set[Path] = set()
+    pairs: list[tuple[Path, Path]] = []
+    for root in roots:
+        if root in seen or not (root / "hermes_cli").is_dir():
+            continue
+        seen.add(root)
+        for rel in (Path("venv/bin/python"), Path("venv/bin/python3"), Path("venv/Scripts/python.exe")):
+            py = root / rel
+            if py.is_file():
+                pairs.append((py, root))
+                break
+    return pairs
+
+
+def _format_inventory_models(data: dict) -> tuple[list[str], set[str]]:
+    """Order and bound models from Hermes's inventory payload into ``provider:model`` entries."""
+    raw_providers = data.get("providers")
+    if not isinstance(raw_providers, list):
+        return [], set()
+    default_provider = str(data.get("default_provider") or "").strip()
+    default_model = str(data.get("default_model") or "").strip()
+    providers_set: set[str] = set()
+    if default_provider:
+        providers_set.add(default_provider)
+
+    # Order: current provider first, then user-defined providers, then other authenticated providers.
+    ordered = sorted(
+        (p for p in raw_providers if isinstance(p, dict) and p.get("slug")),
+        key=lambda p: (0 if p.get("is_current") else (1 if p.get("is_user_defined") else 2)),
+    )
+    models: list[str] = []
+    seen_models: set[str] = set()
+
+    def push(slug: str, model: str) -> None:
+        if len(models) >= MAX_ADVERTISED_MODELS:
+            return
+        entry = f"{slug}:{model}" if slug else model
+        if entry in seen_models or not valid_setting("model", entry):
+            return
+        seen_models.add(entry)
+        models.append(entry)
+
+    for prov in ordered:
+        slug = str(prov.get("slug") or "").strip()
+        if not slug:
+            continue
+        providers_set.add(slug)
+        for alias in prov.get("aliases") or ():
+            if isinstance(alias, str) and alias.strip():
+                providers_set.add(alias.strip())
+        is_current = bool(prov.get("is_current")) or (default_provider and slug == default_provider)
+        cap = MAX_CURRENT_PROVIDER_MODELS if is_current else MAX_OTHER_PROVIDER_MODELS
+        added = 0
+        if is_current and default_model:
+            before = len(models)
+            push(slug, default_model)
+            if len(models) > before:
+                added += 1
+        for m in prov.get("models") or ():
+            if added >= cap or len(models) >= MAX_ADVERTISED_MODELS:
+                break
+            if not isinstance(m, str) or not m.strip():
+                continue
+            before = len(models)
+            push(slug, m.strip())
+            if len(models) > before:
+                added += 1
+    return models, providers_set
+
+
+def _discover_hermes_models_from_config(config_path: Path) -> tuple[list[str], set[str]]:
+    """Lightweight stdlib-only fallback reader for ``~/.hermes/config.yaml``."""
+    try:
+        lines = config_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return [], set()
+
+    default_provider = ""
+    default_model = ""
+    provider_models: dict[str, list[str]] = {}
+    section = ""
+    cur_prov = ""
+    in_models = False
+    models_indent = 0
+
+    def unquote(s: str) -> str:
+        s = s.strip()
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+            return s[1:-1].strip()
+        return s
+
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        if indent == 0:
+            section = stripped.rstrip(":") if stripped.endswith(":") else ""
+            cur_prov = ""
+            in_models = False
+            continue
+        if section == "model" and indent == 2 and ":" in stripped:
+            k, v = stripped.split(":", 1)
+            k, v = k.strip(), unquote(v)
+            if k == "provider":
+                default_provider = v
+            elif k == "default":
+                default_model = v
+        elif section == "providers":
+            if indent == 2 and stripped.endswith(":"):
+                cur_prov = unquote(stripped[:-1])
+                provider_models.setdefault(cur_prov, [])
+                in_models = False
+            elif cur_prov and indent == 4 and ":" in stripped:
+                k, v = stripped.split(":", 1)
+                k, v = k.strip(), unquote(v)
+                if k == "default_model" and v:
+                    provider_models.setdefault(cur_prov, []).append(v)
+                    in_models = False
+                elif k == "models":
+                    in_models = True
+                    models_indent = indent
+                else:
+                    in_models = False
+            elif cur_prov and in_models and indent > models_indent:
+                if stripped.startswith("- "):
+                    m = unquote(stripped[2:])
+                    if m:
+                        provider_models.setdefault(cur_prov, []).append(m)
+                elif indent == models_indent + 2 and stripped.endswith(":"):
+                    m = unquote(stripped[:-1])
+                    if m:
+                        provider_models.setdefault(cur_prov, []).append(m)
+            elif indent <= models_indent:
+                in_models = False
+
+    payload = {
+        "default_provider": default_provider,
+        "default_model": default_model,
+        "providers": [
+            {
+                "slug": slug,
+                "is_current": slug == default_provider,
+                "is_user_defined": True,
+                "models": mods,
+                "aliases": [],
+            }
+            for slug, mods in provider_models.items()
+        ],
+    }
+    if default_provider and default_provider not in provider_models and default_model:
+        payload["providers"].insert(0, {
+            "slug": default_provider,
+            "is_current": True,
+            "is_user_defined": True,
+            "models": [default_model],
+            "aliases": [],
+        })
+    return _format_inventory_models(payload)
+
+
+def discover_hermes_models(binary: str = "", environ: dict | None = None, *,
+                           hermes_home: Path | None = None) -> tuple[list[str], set[str]]:
+    """Discover active Hermes providers and models for the node card.
+
+    Prefers Hermes's own ``hermes_cli.inventory.build_models_payload`` (offline, no network probes)
+    so every authenticated provider and custom provider appears exactly as in Hermes's own ``/model``
+    picker. Falls back to parsing ``config.yaml`` if Hermes's Python runtime is unavailable.
+    """
+    env = dict(shell_env() if environ is None else environ)
+    home = hermes_home if hermes_home is not None else _hermes_home_dir(env)
+    env.setdefault("HERMES_HOME", str(home))
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    for py, root in _hermes_agent_candidates(binary, home):
+        run_env = dict(env)
+        existing_pp = run_env.get("PYTHONPATH", "")
+        run_env["PYTHONPATH"] = str(root) + (os.pathsep + existing_pp if existing_pp else "")
+        try:
+            proc = subprocess.run(
+                [str(py), "-c", _HERMES_INVENTORY_SCRIPT],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=run_env,
+                timeout=8.0,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0:
+            continue
+        for line in proc.stdout.splitlines():
+            if line.startswith(_MODELS_MARK):
+                try:
+                    data = json.loads(line[len(_MODELS_MARK):])
+                except ValueError:
+                    break
+                models, providers = _format_inventory_models(data)
+                if models or providers:
+                    return models, providers
+                break
+
+    return _discover_hermes_models_from_config(home / "config.yaml")
+
+
 # ----- Honcho ----------------------------------------------------------------------
 
 class Api:
@@ -337,12 +617,24 @@ def card_text(harnesses) -> str:
     return ",".join(":".join((h.id, *h.options)) for h in harnesses)
 
 
-def node_card(secret: bytes, peer: str, harnesses, now: float, cwd: str = "") -> dict:
+def node_card(secret: bytes, peer: str, harnesses, now: float, cwd: str = "",
+              models: dict[str, list[str]] | None = None) -> dict:
     """``sig`` covers the program ids, as it always has, so a geminus from before options existed
     still reads the card. ``options_sig`` covers the ids with their options, and ``cwd_sig`` the
-    directory a prompt runs in when its conversation names none, which geminus shows."""
+    directory a prompt runs in when its conversation names none, which geminus shows.
+
+    Optional ``models`` maps harness id to a list of advertised model names for geminus's ``/model``
+    selector; older clients ignore it and signatures stay backward compatible."""
     stamp = int(now)
-    card = {"v": 1, "harnesses": [{"id": h.id, "name": h.name, "options": list(h.options)} for h in harnesses],
+    models_map = models or {}
+    entries = []
+    for h in harnesses:
+        entry: dict = {"id": h.id, "name": h.name, "options": list(h.options)}
+        advertised = models_map.get(h.id)
+        if advertised:
+            entry["models"] = list(advertised)
+        entries.append(entry)
+    card = {"v": 1, "harnesses": entries,
             "ts": stamp, "sig": sign(secret, ",".join(h.id for h in harnesses), node_label(peer), stamp),
             "options_sig": sign(secret, card_text(harnesses), options_label(peer), stamp)}
     if cwd:
@@ -511,13 +803,16 @@ class Bridge:
     long turn in one does not hold back another, or the mail poller."""
 
     def __init__(self, cfg, store, api: Api, *, harnesses=HARNESSES, find=find_binary, run=run_prompt,
-                 clock=time.time):
+                 clock=time.time, discover_models=discover_hermes_models):
         self.cfg, self.store, self.api = cfg, store, api
         self._harnesses, self._find, self._run, self._clock = harnesses, find, run, clock
+        self._discover_models = discover_models
         self._workers: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
         self._card_at = 0.0
         self._card_ids: str | None = None
+        self._hermes_providers: set[str] = set()
+        self._hermes_models: list[str] = []
         settings = getattr(cfg, "geminus", None) or {}
         self.enabled = settings.get("enabled", True) is not False
         self.default_cwd = str(settings.get("cwd") or Path.home())
@@ -535,15 +830,38 @@ class Bridge:
 
     # -- node card --
 
+    def _refresh_hermes_models(self, binary: str) -> list[str]:
+        if not self._discover_models:
+            return []
+        try:
+            models, providers = self._discover_models(binary)
+        except Exception as exc:
+            log.debug("geminus: model discovery failed: %s", exc)
+            return list(self._hermes_models)
+        if providers:
+            self._hermes_providers = set(providers)
+        self._hermes_models = list(models)
+        return list(models)
+
     def publish_card(self, *, force: bool = False) -> bool:
         """Tell geminus which agent programs this computer has. Returns whether a card was written."""
         now = self._clock()
-        found = [h for h, _ in available(self.cfg, self._harnesses, self._find)]
+        found_pairs = available(self.cfg, self._harnesses, self._find)
+        found = [h for h, _ in found_pairs]
         ids = card_text(found)
         if not force and ids == self._card_ids and now - self._card_at < CARD_SECONDS:
             return False
-        self.api.set_peer_metadata(self.cfg.me, NODE_KEY,
-                                   node_card(self.cfg.secret, self.cfg.me, found, now, self.default_cwd))
+        models_by_harness: dict[str, list[str]] = {}
+        for h, binary in found_pairs:
+            if h.id == "hermes":
+                discovered = self._refresh_hermes_models(binary)
+                if discovered:
+                    models_by_harness[h.id] = discovered
+        self.api.set_peer_metadata(
+            self.cfg.me,
+            NODE_KEY,
+            node_card(self.cfg.secret, self.cfg.me, found, now, self.default_cwd, models=models_by_harness),
+        )
         self._card_at, self._card_ids = now, ids
         return True
 
@@ -766,8 +1084,10 @@ class Bridge:
                 earlier.append(meta)
         ever = {name: any(isinstance(m.get(name), str) and m.get(name) for m in earlier) for name in asked}
         last = earlier[-1] if earlier else {}
+        if harness.id == "hermes" and asked.get("model") and not self._hermes_providers:
+            self._refresh_hermes_models(binary)
         try:
-            preludes = harness.preludes(asked, ever)
+            preludes = harness.preludes(asked, ever, hermes_providers=self._hermes_providers)
         except CannotGoBack as exc:
             why = (f"{harness.name} cannot go back to its own {exc} inside a conversation that has had one set; "
                    f"set a {exc} again or start a new conversation")

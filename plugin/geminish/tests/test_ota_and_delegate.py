@@ -194,5 +194,84 @@ class TestHumanPubkeys(unittest.TestCase):
                 bridge.verify_human_ed25519 = orig
 
 
+class TestBridgeModelDiscovery(unittest.TestCase):
+    def test_split_hermes_provider_and_preludes(self):
+        providers = {"sibyl", "magpie", "custom:near-ai", "openai-codex"}
+        self.assertEqual(bridge.split_hermes_provider("sibyl:group/lvmh", providers), ("sibyl", "group/lvmh"))
+        self.assertEqual(
+            bridge.split_hermes_provider("custom:near-ai:deepseek-ai/DeepSeek-V4", providers),
+            ("custom:near-ai", "deepseek-ai/DeepSeek-V4"),
+        )
+        # Colon in a model tag (not a known provider) stays untouched.
+        self.assertEqual(bridge.split_hermes_provider("llama3:8b", providers), ("", "llama3:8b"))
+        self.assertEqual(bridge.split_hermes_provider("group/lvmh", providers), ("", "group/lvmh"))
+
+        hermes = next(h for h in bridge.HARNESSES if h.id == "hermes")
+        self.assertEqual(
+            hermes.preludes({"model": "sibyl:group/miumiu", "effort": ""}, {}, hermes_providers=providers),
+            [("model", "/model group/miumiu --provider sibyl")],
+        )
+        self.assertEqual(
+            hermes.preludes({"model": "custom:near-ai:z-ai/glm", "effort": ""}, {}, hermes_providers=providers),
+            [("model", "/model z-ai/glm --provider custom:near-ai")],
+        )
+        self.assertEqual(
+            hermes.preludes({"model": "group/lvmh", "effort": ""}, {}, hermes_providers=providers),
+            [("model", "/model group/lvmh")],
+        )
+
+    def test_format_inventory_models_prioritizes_current_and_default(self):
+        data = {
+            "default_provider": "sibyl",
+            "default_model": "group/lvmh",
+            "providers": [
+                {"slug": "openai-codex", "is_current": False, "is_user_defined": False, "models": ["gpt-6.2-astra"], "aliases": []},
+                {"slug": "magpie", "is_current": False, "is_user_defined": True, "models": ["group/vvx"], "aliases": ["custom:magpie"]},
+                {"slug": "sibyl", "is_current": True, "is_user_defined": True, "models": ["group/yvng", "group/lvmh", "bad model"], "aliases": ["custom:sibyl"]},
+            ],
+        }
+        models, providers = bridge._format_inventory_models(data)
+        self.assertEqual(models, ["sibyl:group/lvmh", "sibyl:group/yvng", "magpie:group/vvx", "openai-codex:gpt-6.2-astra"])
+        self.assertIn("sibyl", providers)
+        self.assertIn("custom:magpie", providers)
+
+    def test_config_fallback_reads_providers_and_default(self):
+        yaml_text = (
+            "model:\n"
+            "  default: group/lvmh\n"
+            "  provider: sibyl\n"
+            "providers:\n"
+            "  sibyl:\n"
+            "    default_model: group/yvng\n"
+            "    models:\n"
+            "      group/yvng:\n"
+            "        context_length: 1000000\n"
+            "      group/lvmh:\n"
+            "        context_length: 1048576\n"
+            "  magpie:\n"
+            "    models:\n"
+            "      - group/vvx\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yaml"
+            cfg_path.write_text(yaml_text, encoding="utf-8")
+            models, providers = bridge._discover_hermes_models_from_config(cfg_path)
+        self.assertEqual(models[:3], ["sibyl:group/lvmh", "sibyl:group/yvng", "magpie:group/vvx"])
+        self.assertEqual(providers, {"sibyl", "magpie"})
+
+    def test_node_card_includes_models_without_breaking_sigs(self):
+        secret = hashlib.sha256(b"test-group-secret").digest()
+        hermes = next(h for h in bridge.HARNESSES if h.id == "hermes")
+        card_without = bridge.node_card(secret, "chrome", [hermes], 1700000000.0, "/tmp")
+        card_with = bridge.node_card(
+            secret, "chrome", [hermes], 1700000000.0, "/tmp",
+            models={"hermes": ["sibyl:group/lvmh", "sibyl:group/yvng"]},
+        )
+        self.assertEqual(card_with["sig"], card_without["sig"])
+        self.assertEqual(card_with["options_sig"], card_without["options_sig"])
+        self.assertEqual(card_with["cwd_sig"], card_without["cwd_sig"])
+        self.assertEqual(card_with["harnesses"][0]["models"], ["sibyl:group/lvmh", "sibyl:group/yvng"])
+
+
 if __name__ == "__main__":
     unittest.main()
