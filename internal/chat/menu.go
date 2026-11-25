@@ -25,6 +25,7 @@ type menuItem struct {
 type menuConfig struct {
 	title             string
 	subtitle          string
+	searchPlaceholder string
 	customTitle       string
 	customSubtitle    string
 	customPlaceholder string
@@ -39,6 +40,10 @@ type menuResult struct {
 
 type selectMenu struct {
 	cfg        menuConfig
+	search     editor
+	filtered   []menuItem
+	matchCount int
+	totalCount int
 	cursor     int
 	offset     int
 	customMode bool
@@ -49,18 +54,19 @@ type selectMenu struct {
 }
 
 func newSelectMenu(cfg menuConfig, done chan menuResult) *selectMenu {
-	cur := 0
-	for i, it := range cfg.items {
-		if it.current {
-			cur = i
-			break
+	total := 0
+	for _, it := range cfg.items {
+		if !it.custom {
+			total++
 		}
 	}
-	return &selectMenu{
-		cfg:    cfg,
-		cursor: cur,
-		done:   done,
+	m := &selectMenu{
+		cfg:        cfg,
+		totalCount: total,
+		done:       done,
 	}
+	m.refreshFilter(true)
+	return m
 }
 
 func (m *selectMenu) finish(value string, ok bool) {
@@ -73,8 +79,114 @@ func (m *selectMenu) finish(value string, ok bool) {
 	}
 }
 
+func (m *selectMenu) refreshFilter(selectCurrent bool) {
+	q := strings.ToLower(strings.TrimSpace(m.search.String()))
+	if q == "" {
+		m.filtered = m.cfg.items
+		m.matchCount = m.totalCount
+		m.offset = 0
+		if selectCurrent {
+			m.cursor = 0
+			for i, it := range m.filtered {
+				if it.current {
+					m.cursor = i
+					break
+				}
+			}
+		} else if len(m.filtered) == 0 {
+			m.cursor = 0
+		} else if m.cursor >= len(m.filtered) {
+			m.cursor = len(m.filtered) - 1
+		}
+		return
+	}
+
+	tokens := strings.Fields(q)
+	type scored struct {
+		item  menuItem
+		tier  int
+		index int
+	}
+	var matches []scored
+	var customs []menuItem
+	for i, it := range m.cfg.items {
+		if it.custom {
+			customs = append(customs, it)
+			continue
+		}
+		tier := matchMenuItem(q, tokens, it)
+		if tier >= 0 {
+			matches = append(matches, scored{item: it, tier: tier, index: i})
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].tier != matches[j].tier {
+			return matches[i].tier < matches[j].tier
+		}
+		return matches[i].index < matches[j].index
+	})
+
+	out := make([]menuItem, 0, len(matches)+len(customs))
+	for _, s := range matches {
+		out = append(out, s.item)
+	}
+	out = append(out, customs...)
+	m.filtered = out
+	m.matchCount = len(matches)
+	m.cursor = 0
+	m.offset = 0
+}
+
+func matchMenuItem(q string, tokens []string, it menuItem) int {
+	label := strings.ToLower(oneLine(it.label))
+	val := strings.ToLower(oneLine(it.value))
+	desc := strings.ToLower(oneLine(it.desc))
+
+	if label == q || (val != "" && val == q) {
+		return 0
+	}
+	if strings.HasPrefix(label, q) || (val != "" && strings.HasPrefix(val, q)) {
+		return 1
+	}
+	if strings.Contains(label, q) || (val != "" && strings.Contains(val, q)) {
+		return 2
+	}
+	combined := label + " " + val + " " + desc
+	allTokens := len(tokens) > 0
+	for _, tok := range tokens {
+		if !strings.Contains(combined, tok) {
+			allTokens = false
+			break
+		}
+	}
+	if allTokens {
+		return 3
+	}
+	if len(tokens) == 1 && (isSubsequence(q, label) || (val != "" && isSubsequence(q, val))) {
+		return 4
+	}
+	return -1
+}
+
+func isSubsequence(needle, haystack string) bool {
+	if needle == "" {
+		return true
+	}
+	nr := []rune(needle)
+	i := 0
+	for _, r := range haystack {
+		if r == nr[i] {
+			i++
+			if i == len(nr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (m *selectMenu) move(delta int) {
-	n := len(m.cfg.items)
+	n := len(m.filtered)
 	if n == 0 {
 		return
 	}
@@ -82,13 +194,16 @@ func (m *selectMenu) move(delta int) {
 }
 
 func (m *selectMenu) pickIndex(idx int) (closed bool) {
-	if idx < 0 || idx >= len(m.cfg.items) {
+	if idx < 0 || idx >= len(m.filtered) {
 		return false
 	}
-	it := m.cfg.items[idx]
+	it := m.filtered[idx]
 	if it.custom {
 		m.customMode = true
 		m.input.clear()
+		if q := strings.TrimSpace(m.search.String()); q != "" {
+			m.input.set([]rune(q))
+		}
 		m.errMsg = ""
 		return false
 	}
@@ -108,34 +223,80 @@ func (m *selectMenu) handleKey(k key) (closed bool) {
 	case keyDown:
 		m.move(1)
 	case keyHome:
-		m.cursor = 0
+		if m.search.empty() {
+			m.cursor = 0
+		} else {
+			m.search.home()
+		}
 	case keyEnd:
-		if len(m.cfg.items) > 0 {
-			m.cursor = len(m.cfg.items) - 1
+		if m.search.empty() {
+			if len(m.filtered) > 0 {
+				m.cursor = len(m.filtered) - 1
+			}
+		} else {
+			m.search.end()
+		}
+	case keyLeft:
+		m.search.left()
+	case keyRight:
+		m.search.right()
+	case keyWordLeft:
+		m.search.wordLeft()
+	case keyWordRight:
+		m.search.wordRight()
+	case keyBackspace:
+		if !m.search.empty() {
+			m.search.backspace()
+			m.refreshFilter(m.search.empty())
+		}
+	case keyDelete:
+		if !m.search.empty() {
+			m.search.del()
+			m.refreshFilter(m.search.empty())
+		}
+	case keyKillWord:
+		if !m.search.empty() {
+			m.search.killWord()
+			m.refreshFilter(m.search.empty())
+		}
+	case keyKillStart:
+		if !m.search.empty() {
+			m.search.killStart()
+			m.refreshFilter(m.search.empty())
+		}
+	case keyKillEnd:
+		if !m.search.empty() {
+			m.search.killEnd()
+			m.refreshFilter(m.search.empty())
+		}
+	case keyPaste:
+		if s := oneLine(k.text); s != "" {
+			m.search.insert(s)
+			m.refreshFilter(false)
 		}
 	case keyEnter:
 		return m.pickIndex(m.cursor)
-	case keyEsc, keyInterrupt, keyEOF:
+	case keyEsc, keyInterrupt:
+		if !m.search.empty() {
+			m.search.clear()
+			m.refreshFilter(true)
+			return false
+		}
+		m.finish("", false)
+		return true
+	case keyEOF:
 		m.finish("", false)
 		return true
 	case keyRune:
-		switch k.r {
-		case 'k', 'K':
-			m.move(-1)
-		case 'j', 'J':
-			m.move(1)
-		case 'q', 'Q':
-			m.finish("", false)
-			return true
-		default:
-			if k.r >= '1' && k.r <= '9' {
-				idx := int(k.r - '1')
-				if idx < len(m.cfg.items) {
-					m.cursor = idx
-					return m.pickIndex(idx)
-				}
+		if m.search.empty() && k.r >= '1' && k.r <= '9' {
+			idx := int(k.r - '1')
+			if idx < len(m.filtered) {
+				m.cursor = idx
+				return m.pickIndex(idx)
 			}
 		}
+		m.search.insert(string(k.r))
+		m.refreshFilter(false)
 	}
 	return false
 }
@@ -297,8 +458,53 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 		return f
 	}
 
-	// List mode: compute scrollable window.
-	n := len(m.cfg.items)
+	// List mode: search bar + filtered scrollable window.
+	searching := !m.search.empty()
+	searchPrefix := "Search: "
+	countPlain, countStyled, countW := "", "", 0
+	if searching {
+		countPlain = fmt.Sprintf(" %d/%d", m.matchCount, m.totalCount)
+		countStyled = pal.dim(countPlain)
+		countW = textWidth(countPlain)
+	}
+	searchRoom := inner - len(searchPrefix) - countW
+	if searchRoom < 6 {
+		countPlain, countStyled, countW = "", "", 0
+		searchRoom = max(inner-len(searchPrefix), 4)
+	}
+	if !searching {
+		ph := m.cfg.searchPlaceholder
+		if ph == "" {
+			ph = "Type to search…"
+		}
+		clipped := clipWidth(ph, searchRoom)
+		row := pal.sgr(accent, searchPrefix) + pal.dim(clipped)
+		f.curRow = len(f.rows)
+		f.curCol = 2 + len(searchPrefix)
+		f.rows = append(f.rows, boxRow(row, len(searchPrefix)+textWidth(clipped)))
+	} else {
+		shown, curCol := clipSearchWindow(m.search.text, m.search.pos, searchRoom)
+		shownW := textWidth(shown)
+		pad := ""
+		if countW > 0 {
+			pad = strings.Repeat(" ", max(inner-len(searchPrefix)-shownW-countW, 0))
+		}
+		row := pal.sgr("1;"+accent, searchPrefix) + shown + pad + countStyled
+		f.curRow = len(f.rows)
+		f.curCol = 2 + len(searchPrefix) + curCol
+		f.rows = append(f.rows, boxRow(row, len(searchPrefix)+shownW+len(pad)+countW))
+	}
+	if in.rows >= 12 {
+		f.rows = append(f.rows, boxRow(pal.dim(strings.Repeat("─", inner)), inner))
+	}
+
+	if searching && m.matchCount == 0 {
+		noMatch := clipWidth("  No matching options", inner)
+		f.rows = append(f.rows, boxRow(pal.dim(noMatch), textWidth(noMatch)))
+	}
+
+	items := m.filtered
+	n := len(items)
 	maxVisible := max(3, min(10, in.rows/2))
 	if maxVisible > n {
 		maxVisible = n
@@ -323,7 +529,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 
 	numWidth := len(fmt.Sprint(n))
 	labelCol := 0
-	for _, it := range m.cfg.items {
+	for _, it := range items {
 		if w := textWidth(oneLine(it.label)); w > labelCol {
 			labelCol = w
 		}
@@ -335,17 +541,20 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 
 	end := min(m.offset+maxVisible, n)
 	for i := m.offset; i < end; i++ {
-		it := m.cfg.items[i]
+		it := items[i]
 		selected := i == m.cursor
 
 		prefix := "  "
 		if selected {
 			prefix = pal.sgr("1;"+accent, "❯") + " "
 		}
-		numPlain := fmt.Sprintf("%*d. ", numWidth, i+1)
-		numStyled := pal.dim(numPlain)
-		if selected {
-			numStyled = pal.sgr("1;"+accent, numPlain)
+		numPlain, numStyled := "", ""
+		if !searching {
+			numPlain = fmt.Sprintf("%*d. ", numWidth, i+1)
+			numStyled = pal.dim(numPlain)
+			if selected {
+				numStyled = pal.sgr("1;"+accent, numPlain)
+			}
 		}
 
 		checkStyled, checkW := "", 0
@@ -354,7 +563,7 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 			checkW = 2
 		}
 
-		headW := 2 + len(numPlain) // prefix + number
+		headW := 2 + len(numPlain) // prefix + optional number
 		avail := max(inner-headW-checkW, 4)
 
 		rawLabel := oneLine(it.label)
@@ -389,10 +598,6 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 		}
 
 		row := prefix + numStyled + labelStyled + gap + descStyled + rightPad + checkStyled
-		if selected {
-			f.curRow = len(f.rows)
-			f.curCol = 2
-		}
 		f.rows = append(f.rows, boxRow(row, used))
 	}
 
@@ -402,12 +607,53 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	}
 
 	f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
-	hintText := "↑↓ navigate · 1-9 select · Enter confirm · Esc cancel"
-	if n < 9 {
-		hintText = fmt.Sprintf("↑↓ navigate · 1-%d select · Enter confirm · Esc cancel", n)
+	hintText := "↑↓ navigate · type to search · 1-9 select · Enter confirm · Esc cancel"
+	if searching {
+		hintText = "↑↓ navigate · Enter confirm · Esc clear search"
+	} else if n < 9 {
+		hintText = fmt.Sprintf("↑↓ navigate · type to search · 1-%d select · Enter confirm · Esc cancel", n)
 	}
 	f.rows = append(f.rows, "  "+pal.dim(clipWidth(hintText, width-2)))
 	return f
+}
+
+// clipSearchWindow slices text to fit within maxW display cells while keeping
+// the rune cursor at pos visible, returning the displayed string and the
+// cursor's display column within it.
+func clipSearchWindow(text []rune, pos, maxW int) (string, int) {
+	if maxW <= 0 || len(text) == 0 {
+		return "", 0
+	}
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(text) {
+		pos = len(text)
+	}
+	widths := make([]int, len(text))
+	for i, r := range text {
+		widths[i] = textWidth(string(r))
+	}
+	left := 0
+	before := 0
+	for i := 0; i < pos; i++ {
+		before += widths[i]
+	}
+	limit := maxW
+	if pos < len(text) && maxW > 1 {
+		limit = maxW - 1
+	}
+	for left < pos && before > limit {
+		before -= widths[left]
+		left++
+	}
+	right := left
+	used := 0
+	for right < len(text) && used+widths[right] <= maxW {
+		used += widths[right]
+		right++
+	}
+	return string(text[left:right]), before
 }
 
 // harnessModelPresets are curated default suggestions for harnesses whose

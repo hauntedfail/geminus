@@ -143,7 +143,7 @@ Inside geminus, a line starting with `/` is a command.
 | `/new [DIR]` | Start a new conversation, optionally in directory DIR on that computer. |
 | `/sessions` | List your conversations with this persona, most recently used first. |
 | `/resume [ID\|N]` | Reopen a conversation and show it so far: the latest, a number from `/sessions`, an ID, or the unique end of one. |
-| `/model [NAME]` | Model for this conversation. Running `/model` alone opens an interactive model selector on a terminal; `/model default` goes back to the agent program's own. |
+| `/model [NAME]` | Model for this conversation. Running `/model` alone opens an interactive searchable model selector on a terminal; `/model default` goes back to the agent program's own. |
 | `/effort [LEVEL]` | Effort for this conversation. `/effort default` goes back. |
 | `/status` | Show persona, harness, bridge and conversation. |
 | `/update` | Install the latest release of geminus and carry on in this conversation with it. |

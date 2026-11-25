@@ -143,6 +143,7 @@ func (a *App) tune(kind, value string) error {
 			cfg := menuConfig{
 				title:             "Select model",
 				subtitle:          fmt.Sprintf("Model for this conversation · %s", disp),
+				searchPlaceholder: "Type to search models…",
 				customTitle:       "Custom model",
 				customSubtitle:    fmt.Sprintf("Enter any model name for %s (or \"default\" to reset)", disp),
 				customPlaceholder: "e.g. group/lvmh, opus, sonnet",
