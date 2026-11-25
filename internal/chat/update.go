@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -26,7 +27,22 @@ const (
 	// noticeLimit bounds the look at the start. It runs beside everything
 	// else, and a server that does not answer is not mentioned.
 	noticeLimit = 2 * time.Second
+	// updatedFromEnv carries the previous version across /update relaunch so
+	// the new process can display the version transition inside its alt-screen
+	// viewport. Older binaries ignore it cleanly.
+	updatedFromEnv = "GEMINUS_UPDATED_FROM"
 )
+
+// consumeUpdatedFrom returns and clears the version passed from the previous
+// geminus process after an in-session /update relaunch.
+func consumeUpdatedFrom() string {
+	v := strings.TrimSpace(os.Getenv(updatedFromEnv))
+	if v == "" {
+		return ""
+	}
+	_ = os.Unsetenv(updatedFromEnv)
+	return sanitize(v)
+}
 
 // update installs the latest release if it is newer than this program. It
 // returns the line that says what happened and whether the program on disk
@@ -144,6 +160,8 @@ func (a *App) reopenArgs() (args []string, ok bool) {
 
 // relaunch hands the terminal to the new program. The box is already gone.
 func (a *App) relaunch(errw io.Writer) int {
+	_ = os.Setenv(updatedFromEnv, version.Version)
+	defer os.Unsetenv(updatedFromEnv)
 	code, err := a.Restart(a.Exe, a.restartWith)
 	if err != nil {
 		fmt.Fprintln(errw, "geminus: the new program is in place but could not be started:", sanitize(err.Error()))

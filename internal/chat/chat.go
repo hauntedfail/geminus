@@ -345,6 +345,7 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		a.showPersonas()
 		return 0
 	}
+	updatedFrom := consumeUpdatedFrom()
 	// On a terminal: the prompt box. Otherwise line by line.
 	stop := func() {}
 	if a.live == nil {
@@ -392,16 +393,20 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		}
 		a.Out.line(a.Out.fail("✗ " + err.Error()))
 	}
+	if updatedFrom != "" && updatedFrom != version.Version {
+		a.Out.line(a.Out.accent("◆ ") + fmt.Sprintf("geminus %s → %s", updatedFrom, version.Version))
+	}
 	if a.live != nil {
 		// The box and the line under it say where things stand.
 		a.loopLive()
 		if a.restarting {
-			// The new program draws its own box.
+			// The new program draws its own box. Print the notice after leaving
+			// alt-screen and before stop() so VT output stays active on Windows.
 			a.live.close()
-			stop()
 			if a.restartNotice != "" {
 				fmt.Fprintln(a.live.out, a.restartNotice)
 			}
+			stop()
 			return a.relaunch(errw)
 		}
 		return 0

@@ -507,3 +507,43 @@ func TestReleaseAsksTheServerToBuildAndWaits(t *testing.T) {
 		t.Errorf("release without a server: exit %d, stderr %q", code, w.errs)
 	}
 }
+
+func TestSlashUpdateShowsVersionTransitionInRelaunchedAltScreen(t *testing.T) {
+	running(t, "0.4.0")
+	w := newWorld(t)
+	r := newReleases(t, w)
+	r.publish("0.5.0", true)
+	gotUpdatedFrom := ""
+	origRestart := w.app.Restart
+	w.app.Restart = func(exe string, args []string) (int, error) {
+		gotUpdatedFrom = os.Getenv(updatedFromEnv)
+		return origRestart(exe, args)
+	}
+	term, typed, done := w.onTerminal(t, "persona", "chrome", "--harness", "claude")
+	term.waitFor(t, "╭─ Claude Code · model:default · effort:default ─", "chrome ─╮")
+	typed("/update\r")
+	select {
+	case <-r.restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("geminus did not restart:\n%s", term.text())
+	}
+	<-done
+	if gotUpdatedFrom != "0.4.0" {
+		t.Fatalf("%s during restart = %q, want 0.4.0", updatedFromEnv, gotUpdatedFrom)
+	}
+	if left := os.Getenv(updatedFromEnv); left != "" {
+		t.Fatalf("%s not cleaned up after restart: %q", updatedFromEnv, left)
+	}
+
+	// Simulate the newly relaunched 0.5.0 process receiving GEMINUS_UPDATED_FROM=0.4.0.
+	running(t, "0.5.0")
+	t.Setenv(updatedFromEnv, "0.4.0")
+	w.newApp()
+	term2, typed2, done2 := w.onTerminal(t, "persona", "chrome", "--harness", "claude")
+	term2.waitFor(t, "◆ geminus 0.4.0 → 0.5.0")
+	if left := os.Getenv(updatedFromEnv); left != "" {
+		t.Errorf("%s not cleared after startup: %q", updatedFromEnv, left)
+	}
+	typed2("/quit\r")
+	<-done2
+}
