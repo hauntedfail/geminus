@@ -162,6 +162,7 @@ func (a *App) sync() {
 	v := view{ask: a.asking, link: a.link, cwd: oneLine(a.cwd), session: oneLine(a.session),
 		model: oneLine(a.tuning.Model), effort: oneLine(a.tuning.Effort), slow: a.SlowAfter, rang: a.rang,
 		update:     a.newerRelease(),
+		postHuman:  a.defaults.PostHumanEnabled(),
 		uiSet:      true,
 		showNode:   a.defaults.UI.NodeVisible(),
 		showModel:  a.defaults.UI.ModelVisible(),

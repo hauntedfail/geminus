@@ -32,6 +32,10 @@ const (
 	altScreenOff     = "\x1b[?1049l" // restore original terminal screen on exit
 	cursorHide       = "\x1b[?25l"   // hide cursor while navigating a select menu
 	cursorShow       = "\x1b[?25h"   // restore cursor visibility
+	cursorDefault    = "\x1b[0 q"    // restore default terminal cursor shape
+	cursorBlock      = "\x1b[2 q"    // steady block (Post-Human Normal)
+	cursorUnderline  = "\x1b[4 q"    // steady underline (Post-Human Select)
+	cursorBar        = "\x1b[6 q"    // steady bar (Post-Human Insert)
 	cursorHome       = "\x1b[H"
 	clearLineEnd     = "\x1b[K"
 	syncStart        = "\x1b[?2026h" // draw the following as one update, where supported
@@ -66,8 +70,10 @@ type live struct {
 	size       func() (cols, rows int)
 	cols, rows int
 
-	ed        editor
-	v         view
+	ed           editor
+	hx           helix
+	cursorStyled bool
+	v            view
 	menu      *selectMenu
 	lines     []transcriptLine
 	tail      string
@@ -210,8 +216,28 @@ func (l *live) draw() {
 	if l.notice != "" && !l.now().Before(l.noticeUntil) {
 		l.notice = ""
 	}
-	in := frameInput{v: l.v, text: l.ed.Text(), pos: l.ed.Pos(), notice: l.notice,
-		cols: l.cols, rows: l.rows, now: l.now(), spin: l.spin, pal: l.pal}
+	postHuman := l.v.postHuman && l.v.ask == ""
+	selStart, selEnd, selActive := 0, 0, false
+	if postHuman {
+		selStart, selEnd, selActive = l.hx.SelectionRange(len(l.ed.Text()))
+	}
+	in := frameInput{
+		v:            l.v,
+		text:         l.ed.Text(),
+		pos:          l.ed.Pos(),
+		postHuman:    postHuman,
+		helixMode:    l.hx.Mode(),
+		helixPending: l.hx.PendingLabel(),
+		selStart:     selStart,
+		selEnd:       selEnd,
+		selActive:    selActive,
+		notice:       l.notice,
+		cols:         l.cols,
+		rows:         l.rows,
+		now:          l.now(),
+		spin:         l.spin,
+		pal:          l.pal,
+	}
 	var f frame
 	hideCursor := false
 	if l.menu != nil {
@@ -276,6 +302,20 @@ func (l *live) draw() {
 	if hideCursor {
 		body.WriteString(cursorHide)
 	} else {
+		if postHuman {
+			switch l.hx.Mode() {
+			case helixNormal:
+				body.WriteString(cursorBlock)
+			case helixSelect:
+				body.WriteString(cursorUnderline)
+			default:
+				body.WriteString(cursorBar)
+			}
+			l.cursorStyled = true
+		} else if l.cursorStyled {
+			body.WriteString(cursorDefault)
+			l.cursorStyled = false
+		}
 		body.WriteString(cursorShow)
 	}
 
@@ -299,6 +339,9 @@ func (l *live) set(v view) {
 	if v.ask != l.v.ask {
 		// A question starts with an empty box, and so does what follows it.
 		l.ed.Clear()
+		l.hx.ResetForNewPrompt()
+	} else if v.postHuman != l.v.postHuman {
+		l.hx.ResetForNewPrompt()
 	}
 	l.v = v
 	l.draw()
@@ -365,6 +408,68 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 	asking := l.v.ask != ""
 	if k.Kind != keyInterrupt {
 		l.notice = ""
+	}
+	if l.v.postHuman && !asking {
+		act := l.hx.HandleKey(e, k, false)
+		switch act {
+		case helixSubmit:
+			if strings.TrimSpace(e.String()) != "" {
+				line, entered = e.Take(true), true
+				l.scroll = 0
+				l.hx.ResetForNewPrompt()
+			}
+		case helixComplete:
+			l.complete()
+		case helixRedraw:
+			l.last = ""
+		case helixScrollUp:
+			step := 1
+			if k.Kind == keyMouseScrollUp {
+				step = mouseScrollLines
+			}
+			l.scroll += step
+		case helixScrollDown:
+			step := 1
+			if k.Kind == keyMouseScrollDown {
+				step = mouseScrollLines
+			}
+			l.scroll = max(l.scroll-step, 0)
+		case helixScrollHalfUp:
+			step := max(l.viewRows/2, 1)
+			l.scroll += step
+		case helixScrollHalfDown:
+			step := max(l.viewRows/2, 1)
+			l.scroll = max(l.scroll-step, 0)
+		case helixScrollPageUp:
+			step := max(l.viewRows-2, 1)
+			l.scroll += step
+		case helixScrollPageDown:
+			step := max(l.viewRows-2, 1)
+			l.scroll = max(l.scroll-step, 0)
+		case helixScrollTop:
+			l.scroll = max(l.wrappedCount(l.width())-l.viewRows, 0)
+		case helixScrollBottom:
+			l.scroll = 0
+		case helixEOF:
+			if e.Empty() {
+				quit = true
+			} else {
+				e.Del()
+			}
+		case helixInterrupt:
+			switch {
+			case !e.Empty():
+				e.Clear()
+				l.hx.ResetForNewPrompt()
+			case l.now().Sub(l.interrupted) < quitWindow:
+				quit = true
+			default:
+				l.interrupted = l.now()
+				l.say("Press Ctrl-C again to quit geminus (agents keep working; answers stay in Honcho)")
+			}
+		}
+		l.draw()
+		return line, entered, quit
 	}
 	switch k.Kind {
 	case keyRune:
@@ -523,6 +628,11 @@ func (l *live) close() {
 		l.menu.finish("", false)
 		l.menu = nil
 	}
-	io.WriteString(l.out, cursorShow+mouseModeOff+altScreenOff+pasteModeOf)
+	reset := ""
+	if l.cursorStyled {
+		reset = cursorDefault
+		l.cursorStyled = false
+	}
+	io.WriteString(l.out, reset+cursorShow+mouseModeOff+altScreenOff+pasteModeOf)
 	l.closed = true
 }

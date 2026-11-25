@@ -100,6 +100,8 @@ func (a *App) handle(line string) error {
 		return a.setDefaults(arg)
 	case "/config":
 		return a.slashConfig(arg)
+	case "/post-human", "/posthuman", "/helix":
+		return a.slashPostHuman(arg)
 	case "/ui":
 		return a.setUI(arg)
 	case "/update":
@@ -441,7 +443,48 @@ func (a *App) cloneDefaults() wire.Defaults {
 		v := *a.defaults.AutoUpdate
 		d.AutoUpdate = &v
 	}
+	if a.defaults.PostHuman != nil {
+		v := *a.defaults.PostHuman
+		d.PostHuman = &v
+	}
 	return d
+}
+
+// slashPostHuman toggles or sets Post-Human (Helix) modal editing, saved in
+// the owner's signed Honcho defaults.
+func (a *App) slashPostHuman(arg string) error {
+	onOff := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
+	}
+	var next bool
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "":
+		next = !a.defaults.PostHumanEnabled()
+	case "on", "true", "yes", "1":
+		next = true
+	case "off", "false", "no", "0":
+		next = false
+	case "status":
+		a.Out.line("post-human mode: " + onOff(a.defaults.PostHumanEnabled()) + " (Helix modal editing)")
+		return nil
+	default:
+		return errors.New("usage: /post-human [on|off|status]")
+	}
+	d := a.cloneDefaults()
+	d.PostHuman = &next
+	if err := a.saveDefaults(d); err != nil {
+		return err
+	}
+	a.sync()
+	if next {
+		a.Out.line("Post-Human mode: on (Helix modal editing · Esc normal, i/a insert, v select · saved in Honcho)")
+	} else {
+		a.Out.line("Post-Human mode: off (saved in Honcho)")
+	}
+	return nil
 }
 
 func (a *App) saveDefaults(d wire.Defaults) error {

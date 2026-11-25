@@ -17,6 +17,7 @@ type KeyKind int
 const (
 	KeyNone  KeyKind = iota
 	KeyRune          // a character; see Key.R
+	KeyAltRune       // Alt + printable character; see Key.R
 	KeyPaste         // pasted text; see Key.Text
 	KeyEnter
 	KeyNewline // a line break inside the input (Alt+Enter, Shift+Enter, Ctrl-J)
@@ -51,6 +52,7 @@ type Key struct {
 	Kind KeyKind
 	R    rune
 	Text string
+	Ctrl byte // non-zero when produced by an ASCII control byte (0x01..0x1a)
 }
 
 const pasteEnd = "\x1b[201~"
@@ -119,7 +121,11 @@ func (p *KeyParser) Feed(b []byte) []Key {
 			i += n
 		case c < 0x20 || c == 0x7f:
 			if kind, ok := controlKeys[c]; ok {
-				out = append(out, Key{Kind: kind})
+				var ctrl byte
+				if c < 0x20 {
+					ctrl = c
+				}
+				out = append(out, Key{Kind: kind, Ctrl: ctrl})
 			}
 			i++
 		default:
@@ -196,6 +202,8 @@ func parseEscape(b []byte) (k Key, n int, complete bool) {
 		return Key{Kind: KeyWordLeft}, 2, true
 	case 'f':
 		return Key{Kind: KeyWordRight}, 2, true
+	case ';', '.', 'd', 'c', '`':
+		return Key{Kind: KeyAltRune, R: rune(b[1])}, 2, true
 	case 0x1b:
 		return Key{Kind: KeyEsc}, 1, true
 	}

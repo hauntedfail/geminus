@@ -3,11 +3,14 @@ package chat
 import "github.com/hauntedfail/geminus/internal/tui"
 
 type (
-	key       = tui.Key
-	keyKind   = tui.KeyKind
-	keyParser = tui.KeyParser
-	editor    = tui.Editor
-	palette   = tui.Palette
+	key         = tui.Key
+	keyKind     = tui.KeyKind
+	keyParser   = tui.KeyParser
+	editor      = tui.Editor
+	palette     = tui.Palette
+	helix       = tui.Helix
+	helixMode   = tui.HelixMode
+	helixAction = tui.HelixAction
 )
 
 const (
@@ -15,6 +18,7 @@ const (
 
 	keyNone            = tui.KeyNone
 	keyRune            = tui.KeyRune
+	keyAltRune         = tui.KeyAltRune
 	keyPaste           = tui.KeyPaste
 	keyEnter           = tui.KeyEnter
 	keyNewline         = tui.KeyNewline
@@ -44,10 +48,30 @@ const (
 	keyRedraw          = tui.KeyRedraw
 	keyPasteStart      = tui.KeyPasteStart
 
-	colorRed    = tui.ColorRed
-	colorGreen  = tui.ColorGreen
-	colorYellow = tui.ColorYellow
-	colorCyan   = tui.ColorCyan
+	colorRed     = tui.ColorRed
+	colorGreen   = tui.ColorGreen
+	colorYellow  = tui.ColorYellow
+	colorMagenta = tui.ColorMagenta
+	colorCyan    = tui.ColorCyan
+
+	helixInsert = tui.HelixInsert
+	helixNormal = tui.HelixNormal
+	helixSelect = tui.HelixSelect
+
+	helixNone           = tui.HelixNone
+	helixSubmit         = tui.HelixSubmit
+	helixInterrupt      = tui.HelixInterrupt
+	helixEOF            = tui.HelixEOF
+	helixComplete       = tui.HelixComplete
+	helixRedraw         = tui.HelixRedraw
+	helixScrollUp       = tui.HelixScrollUp
+	helixScrollDown     = tui.HelixScrollDown
+	helixScrollHalfUp   = tui.HelixScrollHalfUp
+	helixScrollHalfDown = tui.HelixScrollHalfDown
+	helixScrollPageUp   = tui.HelixScrollPageUp
+	helixScrollPageDown = tui.HelixScrollPageDown
+	helixScrollTop      = tui.HelixScrollTop
+	helixScrollBottom   = tui.HelixScrollBottom
 )
 
 var (

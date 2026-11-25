@@ -411,11 +411,19 @@ type Defaults struct {
 	// AutoUpdate enables automatic installation and relaunch when a newer
 	// geminus release is published; nil means unset (default off).
 	AutoUpdate *bool `json:"auto_update,omitempty"`
+	// PostHuman enables Helix-style modal editing (Normal/Insert/Select) in
+	// the prompt box; nil means unset (default off).
+	PostHuman *bool `json:"post_human,omitempty"`
 }
 
 // AutoUpdateEnabled reports whether automatic updates are enabled in defaults.
 func (d Defaults) AutoUpdateEnabled() bool {
 	return d.AutoUpdate != nil && *d.AutoUpdate
+}
+
+// PostHumanEnabled reports whether Post-Human (Helix) modal editing is enabled.
+func (d Defaults) PostHumanEnabled() bool {
+	return d.PostHuman != nil && *d.PostHuman
 }
 
 // PersonaDefaults are the preselected harness, directory and tuning on one persona.

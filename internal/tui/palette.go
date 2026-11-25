@@ -10,12 +10,14 @@ func (p Palette) SGR(code, s string) string {
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
-func (p Palette) Dim(s string) string  { return p.SGR("2", s) }
-func (p Palette) Bold(s string) string { return p.SGR("1", s) }
+func (p Palette) Dim(s string) string    { return p.SGR("2", s) }
+func (p Palette) Bold(s string) string   { return p.SGR("1", s) }
+func (p Palette) Invert(s string) string { return p.SGR("7", s) }
 
 const (
-	ColorRed    = "31"
-	ColorGreen  = "32"
-	ColorYellow = "33"
-	ColorCyan   = "36"
+	ColorRed     = "31"
+	ColorGreen   = "32"
+	ColorYellow  = "33"
+	ColorMagenta = "35"
+	ColorCyan    = "36"
 )

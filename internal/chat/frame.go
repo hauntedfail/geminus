@@ -52,6 +52,9 @@ type view struct {
 
 	// update is the version of a geminus release newer than this program.
 	update string
+
+	// postHuman enables Helix-style modal editing in the prompt box.
+	postHuman bool
 }
 
 // frameInput is one moment of the screen's bottom.
@@ -59,6 +62,13 @@ type frameInput struct {
 	v    view
 	text []rune // what is typed
 	pos  int    // cursor, as an index into text
+	// Post-Human (Helix) modal state, active when postHuman is true.
+	postHuman    bool
+	helixMode    helixMode
+	helixPending string
+	selStart     int
+	selEnd       int
+	selActive    bool
 	// tail is output that has not reached a line end yet.
 	tail       string
 	notice     string
@@ -90,6 +100,7 @@ var slashCommands = []struct{ name, args, what string }{
 	{"/status", "", "show where things stand"},
 	{"/update", "[auto on|off]", "install the latest geminus, or toggle auto-update"},
 	{"/config", "", "interactive settings menu"},
+	{"/post-human", "[on|off]", "toggle Post-Human (Helix) modal editing"},
 	{"/default", "…", "show or change your defaults"},
 	{"/ui", "…", "customize prompt box display"},
 	{"/help", "", "list geminus commands"},
@@ -120,6 +131,12 @@ func elapsed(d time.Duration) string {
 // layoutInput cuts the typed text into the rows of the box and finds the
 // cursor. A row holds at most width columns.
 func layoutInput(text []rune, pos, width int) (rows []string, curRow, curCol int) {
+	return layoutInputSelected(text, pos, width, palette{}, 0, 0, false)
+}
+
+// layoutInputSelected cuts the typed text into rows, highlighting the
+// inclusive rune selection [selStart, selEnd] when selActive is true.
+func layoutInputSelected(text []rune, pos, width int, pal palette, selStart, selEnd int, selActive bool) (rows []string, curRow, curCol int) {
 	var row strings.Builder
 	used := 0
 	flush := func() {
@@ -128,6 +145,7 @@ func layoutInput(text []rune, pos, width int) (rows []string, curRow, curCol int
 		used = 0
 	}
 	for i, r := range text {
+		selected := selActive && i >= selStart && i <= selEnd
 		if r == '\n' {
 			if i == pos {
 				curRow, curCol = len(rows), used
@@ -142,10 +160,16 @@ func layoutInput(text []rune, pos, width int) (rows []string, curRow, curCol int
 		if i == pos {
 			curRow, curCol = len(rows), used
 		}
-		if r == '\t' {
-			row.WriteString(strings.Repeat(" ", tabWidth))
+		var chunk string
+		if r == '	' {
+			chunk = strings.Repeat(" ", tabWidth)
 		} else {
-			row.WriteRune(r)
+			chunk = string(r)
+		}
+		if selected {
+			row.WriteString(pal.Invert(chunk))
+		} else {
+			row.WriteString(chunk)
 		}
 		used += rw
 	}
@@ -322,7 +346,7 @@ func render(in frameInput) frame {
 
 	// The input.
 	inner := width - 6 // edges, a space inside each, and the prompt mark
-	lines, curRow, curCol := layoutInput(in.text, in.pos, inner)
+	lines, curRow, curCol := layoutInputSelected(in.text, in.pos, inner, pal, in.selStart, in.selEnd, in.postHuman && in.selActive)
 	if most := max(1, min(10, in.rows/3)); len(lines) > most {
 		first := 0
 		if curRow >= most {
@@ -355,7 +379,26 @@ func render(in frameInput) frame {
 		f.rows = append(f.rows, border("│")+" "+mark+shown+strings.Repeat(" ", max(inner-used, 0))+" "+border("│"))
 	}
 	f.curRow, f.curCol = len(f.rows)-len(lines)+curRow, 4+curCol
-	f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
+	if in.postHuman {
+		modePlain := in.helixMode.Label()
+		modeColor := colorGreen
+		switch in.helixMode {
+		case helixNormal:
+			modeColor = colorYellow
+		case helixSelect:
+			modeColor = colorMagenta
+		}
+		badge := pal.SGR("1;"+modeColor, modePlain)
+		badgePlain := modePlain
+		if in.helixPending != "" {
+			badge += pal.Dim(" · ") + pal.SGR("1;"+colorCyan, in.helixPending)
+			badgePlain += " · " + in.helixPending
+		}
+		bottomFill := max(width-5-textWidth(badgePlain), 0)
+		f.rows = append(f.rows, border("╰─")+" "+badge+" "+border(strings.Repeat("─", bottomFill)+"╯"))
+	} else {
+		f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
+	}
 
 	f.rows = append(f.rows, statusRows(in, width)...)
 	f.rows = append(f.rows, hintRows(in, width)...)
@@ -520,6 +563,12 @@ func hintRows(in frameInput, width int) []string {
 			rows = append(rows, "  "+pal.Dim(clipWidth("any other slash line goes to "+v.target()+" as typed", width-2)))
 		}
 		return rows
+	}
+	if in.postHuman {
+		if in.helixMode == helixInsert {
+			return one("Esc normal · Enter send · Alt+Enter new line · / commands · Ctrl-C twice to quit")
+		}
+		return one("i/a insert · v select · w/b/e/x/% motion · d/c/y/p edit · g/m/z minor · Enter send")
 	}
 	return one("/ commands · Enter send · PgUp/PgDn scroll · Alt+Enter new line · Ctrl-C twice to quit")
 }

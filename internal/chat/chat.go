@@ -63,7 +63,8 @@ const commandHelp = `geminus commands
   /status                show persona, harness, bridge and conversation
   /update [auto on|off]  install the latest release of geminus and carry on
                          in this conversation, or toggle automatic updates
-  /config                open interactive settings menu (auto-update, UI, defaults)
+  /config                open interactive settings menu (auto-update, Post-Human, UI, defaults)
+  /post-human [on|off]   toggle Post-Human (Helix) modal editing in the prompt box
   /default               show your defaults; /default save keeps the current
                          persona, harness, directory, model and effort;
                          /default persona|harness|cwd|model|effort|auto_update VALUE (or none)
