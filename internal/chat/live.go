@@ -1,9 +1,11 @@
 package chat
 
-// The live part of the screen. Everything geminus prints scrolls above it;
-// the prompt box and the status around it stay at the bottom and are redrawn
-// in place. Typing is handled here, on the goroutine that reads the keyboard,
-// so the box stays responsive while the main loop is talking to Honcho.
+// The live full-screen console. geminus runs inside the terminal's alternate
+// screen buffer so scrolling never leaks into the shell's prior log. Row 0 is
+// a sticky one-line prompt header, the middle is a scrollable transcript
+// viewport, and the prompt box + status stay anchored at the bottom. Typing is
+// handled on the keyboard goroutine so the box stays responsive while the main
+// loop talks to Honcho.
 
 import (
 	"fmt"
@@ -21,11 +23,29 @@ const (
 	// quitWindow is how long after one Ctrl-C a second one quits.
 	quitWindow = 2 * time.Second
 
-	syncStart   = "\x1b[?2026h" // draw the following as one update, where supported
-	syncEnd     = "\x1b[?2026l"
-	pasteModeOn = "\x1b[?2004h" // mark pasted text, so a pasted line break is not Enter
-	pasteModeOf = "\x1b[?2004l"
+	// maxTranscriptLines caps retained logical transcript lines so long
+	// sessions stay bounded in memory.
+	maxTranscriptLines = 20000
+
+	altScreenOn  = "\x1b[?1049h" // switch to alternate screen buffer (isolates shell scrollback)
+	altScreenOff = "\x1b[?1049l" // restore original terminal screen on exit
+	cursorHome   = "\x1b[H"
+	clearLineEnd = "\x1b[K"
+	syncStart    = "\x1b[?2026h" // draw the following as one update, where supported
+	syncEnd      = "\x1b[?2026l"
+	pasteModeOn  = "\x1b[?2004h" // mark pasted text, so a pasted line break is not Enter
+	pasteModeOf  = "\x1b[?2004l"
 )
+
+type transcriptLine struct {
+	text   string
+	prompt string // one-line user prompt active when this line was written
+}
+
+type wrappedLine struct {
+	text   string
+	prompt string
+}
 
 type live struct {
 	// park, when set, is asked after each entered line whether input is to
@@ -40,18 +60,19 @@ type live struct {
 	size       func() (cols, rows int)
 	cols, rows int
 
-	ed   editor
-	v    view
-	tail string
-	spin int
+	ed        editor
+	v         view
+	lines     []transcriptLine
+	tail      string
+	curPrompt string
+	scroll    int // wrapped rows scrolled up from bottom (0 = auto-follow)
+	viewRows  int // last viewport height, for PageUp/PageDown step size
+	spin      int
 
 	notice      string
 	noticeUntil time.Time
 	interrupted time.Time
 
-	// What is on screen: the cursor's row within the drawn rows, and the
-	// drawn text itself.
-	curRow int
 	last   string
 	closed bool
 }
@@ -60,81 +81,188 @@ func newLive(out io.Writer, cols, rows int, pal palette, now func() time.Time) *
 	l := &live{out: out, cols: cols, rows: rows, pal: pal, now: now}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	io.WriteString(out, pasteModeOn)
-	l.draw("")
+	io.WriteString(out, altScreenOn+pasteModeOn)
+	l.draw()
 	return l
 }
 
 func (l *live) width() int { return max(l.cols-1, 24) }
 
-// Write prints p above the box. Text that does not end a line yet is kept
-// just above the box until its line ends.
+// setPrompt records the one-line user prompt for subsequent transcript lines.
+func (l *live) setPrompt(prompt string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.curPrompt = oneLine(prompt)
+	l.draw()
+}
+
+// wrappedCount returns the total number of wrapped rows for the current
+// transcript and unfinished tail at width w.
+func (l *live) wrappedCount(w int) int {
+	n := 0
+	for _, entry := range l.lines {
+		n += len(wrapText(entry.text, w))
+	}
+	if l.tail != "" {
+		n += len(wrapText(l.tail, w))
+	}
+	return n
+}
+
+func (l *live) wrapAll(w int) []wrappedLine {
+	out := make([]wrappedLine, 0, len(l.lines)+1)
+	for _, entry := range l.lines {
+		for _, row := range wrapText(entry.text, w) {
+			out = append(out, wrappedLine{text: row, prompt: entry.prompt})
+		}
+	}
+	if l.tail != "" {
+		for _, row := range wrapText(l.tail, w) {
+			out = append(out, wrappedLine{text: row, prompt: l.curPrompt})
+		}
+	}
+	return out
+}
+
+// Write appends p to the transcript buffer and redraws the viewport.
+// Text that does not end with a newline stays in tail until completed.
 func (l *live) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
 		return l.out.Write(p)
 	}
+	w := l.width()
+	before := 0
+	if l.scroll > 0 {
+		before = l.wrappedCount(w)
+	}
+
 	text := l.tail + string(p)
-	commit, tail := "", text
 	if i := strings.LastIndexByte(text, '\n'); i >= 0 {
-		commit, tail = text[:i+1], text[i+1:]
+		completed := strings.Split(text[:i], "\n")
+		for _, line := range completed {
+			l.lines = append(l.lines, transcriptLine{text: line, prompt: l.curPrompt})
+		}
+		l.tail = text[i+1:]
+		if over := len(l.lines) - maxTranscriptLines; over > 0 {
+			l.lines = append([]transcriptLine(nil), l.lines[over:]...)
+		}
+	} else {
+		l.tail = text
 	}
-	// A very long unfinished line would push the box off the screen: its
-	// first rows are let go as lines of their own.
-	if rows, most := wrapText(tail, l.width()), max(1, min(8, l.rows/4)); len(rows) > most {
-		commit += strings.Join(rows[:len(rows)-most], "\n") + "\n"
-		tail = strings.Join(rows[len(rows)-most:], "")
+
+	if l.scroll > 0 {
+		after := l.wrappedCount(w)
+		if delta := after - before; delta > 0 {
+			l.scroll += delta
+		}
 	}
-	l.tail = tail
-	l.draw(commit)
+	l.draw()
 	return len(p), nil
 }
 
-// draw replaces what is drawn with the current frame, after printing commit
-// (whole lines) above it. It does nothing when nothing changed.
-func (l *live) draw(commit string) {
+// activeHeaderPrompt picks which user prompt the sticky top bar should display
+// for the currently visible slice of wrapped lines.
+func (l *live) activeHeaderPrompt(wrapped []wrappedLine, start, end int) string {
+	if l.scroll == 0 {
+		if l.curPrompt != "" {
+			return l.curPrompt
+		}
+		for i := end - 1; i >= start; i-- {
+			if wrapped[i].prompt != "" {
+				return wrapped[i].prompt
+			}
+		}
+		return ""
+	}
+	if start < end && wrapped[start].prompt != "" {
+		return wrapped[start].prompt
+	}
+	for i := start - 1; i >= 0; i-- {
+		if wrapped[i].prompt != "" {
+			return wrapped[i].prompt
+		}
+	}
+	return ""
+}
+
+// draw renders the entire alternate-screen frame (sticky header + viewport +
+// prompt box) and writes it atomically when anything changed.
+func (l *live) draw() {
 	if l.closed {
 		return
 	}
 	if l.notice != "" && !l.now().Before(l.noticeUntil) {
 		l.notice = ""
 	}
-	f := render(frameInput{v: l.v, text: l.ed.text, pos: l.ed.pos, tail: l.tail, notice: l.notice,
+	f := render(frameInput{v: l.v, text: l.ed.text, pos: l.ed.pos, notice: l.notice,
 		cols: l.cols, rows: l.rows, now: l.now(), spin: l.spin, pal: l.pal})
-	// Never taller than the screen: the rows are found again by counting up
-	// from the cursor.
-	if over := len(f.rows) - max(l.rows-1, 4); over > 0 {
+	// Reserve at least row 0 for the sticky header and keep total height <= l.rows.
+	maxBottom := max(l.rows-2, 1)
+	if over := len(f.rows) - maxBottom; over > 0 {
 		f.rows, f.curRow = f.rows[over:], max(f.curRow-over, 0)
 	}
-	body := strings.Join(f.rows, "\r\n")
-	if up := len(f.rows) - 1 - f.curRow; up > 0 {
-		body += fmt.Sprintf("\x1b[%dA", up)
+	viewHeight := max(l.rows-1-len(f.rows), 0)
+	l.viewRows = viewHeight
+
+	wrapped := l.wrapAll(l.width())
+	maxScroll := max(len(wrapped)-viewHeight, 0)
+	if l.scroll > maxScroll {
+		l.scroll = maxScroll
 	}
-	body += "\r"
-	if f.curCol > 0 {
-		body += fmt.Sprintf("\x1b[%dC", f.curCol)
+	if l.scroll < 0 {
+		l.scroll = 0
 	}
-	if commit == "" && body == l.last {
+	end := len(wrapped) - l.scroll
+	start := max(end-viewHeight, 0)
+	visible := wrapped[start:end]
+
+	headerPrompt := l.activeHeaderPrompt(wrapped, start, end)
+	header := renderHeader(headerInput{
+		v:      l.v,
+		prompt: headerPrompt,
+		scroll: l.scroll,
+		atTop:  maxScroll > 0 && l.scroll == maxScroll,
+		cols:   l.cols,
+		pal:    l.pal,
+	})
+
+	var body strings.Builder
+	body.WriteString(header)
+	body.WriteString(clearLineEnd)
+	body.WriteString("\r\n")
+
+	for i := 0; i < viewHeight; i++ {
+		if i < len(visible) {
+			body.WriteString(visible[i].text)
+		}
+		body.WriteString(clearLineEnd)
+		body.WriteString("\r\n")
+	}
+
+	for i, row := range f.rows {
+		body.WriteString(row)
+		body.WriteString(clearLineEnd)
+		if i < len(f.rows)-1 {
+			body.WriteString("\r\n")
+		}
+	}
+
+	curRow := 1 + viewHeight + f.curRow
+	body.WriteString(fmt.Sprintf("\x1b[%d;%dH", curRow+1, f.curCol+1))
+
+	rendered := body.String()
+	if rendered == l.last {
 		return
 	}
-	var b strings.Builder
-	b.WriteString(syncStart)
-	b.WriteString(l.erase())
-	b.WriteString(strings.ReplaceAll(commit, "\n", "\r\n"))
-	b.WriteString(body)
-	b.WriteString(syncEnd)
-	io.WriteString(l.out, b.String())
-	l.last, l.curRow = body, f.curRow
-}
-
-// erase moves to the first drawn row and clears from there down.
-func (l *live) erase() string {
-	s := "\r\x1b[J"
-	if l.curRow > 0 {
-		s = fmt.Sprintf("\x1b[%dA", l.curRow) + s
-	}
-	return s
+	var out strings.Builder
+	out.WriteString(syncStart)
+	out.WriteString(cursorHome)
+	out.WriteString(rendered)
+	out.WriteString(syncEnd)
+	io.WriteString(l.out, out.String())
+	l.last = rendered
 }
 
 // set replaces what the status around the box shows.
@@ -146,7 +274,7 @@ func (l *live) set(v view) {
 		l.ed.clear()
 	}
 	l.v = v
-	l.draw("")
+	l.draw()
 }
 
 // tick advances the spinner, follows the terminal's size, and redraws when
@@ -159,17 +287,13 @@ func (l *live) tick() {
 	}
 	if l.size != nil {
 		if cols, rows := l.size(); cols > 0 && rows > 0 && (cols != l.cols || rows != l.rows) {
-			// Redrawn from where the box started. A terminal that rewraps
-			// what is on screen when it gets narrower can leave part of the
-			// old box above the new one; guessing how far it moved would
-			// risk erasing output instead.
 			l.cols, l.rows, l.last = cols, rows, ""
 		}
 	}
 	if l.v.waiting > 0 {
 		l.spin++
 	}
-	l.draw("")
+	l.draw()
 }
 
 func (l *live) say(notice string) {
@@ -206,6 +330,9 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 			e.insert("\n")
 		case asking || strings.TrimSpace(e.String()) != "":
 			line, entered = e.take(!asking), true
+			if !asking {
+				l.scroll = 0
+			}
 		}
 	case keyBackspace:
 		e.backspace()
@@ -223,6 +350,16 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 		e.home()
 	case keyEnd:
 		e.end()
+	case keyPageUp:
+		step := max(l.viewRows-2, 1)
+		l.scroll += step
+	case keyPageDown:
+		step := max(l.viewRows-2, 1)
+		l.scroll = max(l.scroll-step, 0)
+	case keyScrollUp:
+		l.scroll++
+	case keyScrollDown:
+		l.scroll = max(l.scroll-1, 0)
 	case keyWordLeft:
 		e.wordLeft()
 	case keyWordRight:
@@ -258,7 +395,7 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 			l.say("Press Ctrl-C again to quit geminus (agents keep working; answers stay in Honcho)")
 		}
 	}
-	l.draw("")
+	l.draw()
 	return line, entered, quit
 }
 
@@ -290,17 +427,13 @@ func (l *live) complete() {
 	}
 }
 
-// close removes the box and leaves the cursor on a fresh line.
+// close leaves the alternate screen buffer and restores paste mode.
 func (l *live) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
 		return
 	}
-	end := l.erase()
-	if l.tail != "" {
-		end += l.tail + "\r\n"
-	}
-	io.WriteString(l.out, end+pasteModeOf)
+	io.WriteString(l.out, altScreenOff+pasteModeOf)
 	l.closed = true
 }

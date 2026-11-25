@@ -194,6 +194,69 @@ func (v view) accent() string {
 	return colorCyan
 }
 
+// headerInput is one moment of the sticky 1-line bar at the top of the screen.
+type headerInput struct {
+	v      view
+	prompt string // one-line user prompt for what is currently in view
+	scroll int    // wrapped rows scrolled up from the bottom (0 = following latest)
+	atTop  bool   // true when scrolled all the way to the top of the transcript
+	cols   int
+	pal    palette
+}
+
+// renderHeader draws the fixed single-line header at row 0: the active prompt
+// for the visible output on the left, and a scroll badge or persona on the right.
+func renderHeader(in headerInput) string {
+	width := max(in.cols-1, 24)
+	pal, v := in.pal, in.v
+
+	var rightPlain, rightStyled string
+	switch {
+	case in.scroll > 0 && in.atTop:
+		rightPlain = fmt.Sprintf("TOP · ↑ %dL", in.scroll)
+		rightStyled = pal.sgr(colorYellow, rightPlain)
+	case in.scroll > 0:
+		rightPlain = fmt.Sprintf("↑ %dL", in.scroll)
+		rightStyled = pal.sgr(colorYellow, rightPlain)
+	case oneLine(in.prompt) != "" && v.persona != "":
+		rightPlain = oneLine(v.persona)
+		rightStyled = pal.dim(rightPlain)
+	}
+	rightWidth := 0
+	if rightPlain != "" {
+		rightWidth = textWidth(rightPlain) + 2 // leading space + trailing space
+	}
+
+	room := max(width-4-rightWidth, 8)
+	var leftPlain, leftStyled string
+	if p := oneLine(in.prompt); p != "" {
+		clipped := clipWidth(p, room)
+		leftPlain = "❯ " + clipped
+		leftStyled = pal.sgr("1;"+v.accent(), "❯") + " " + pal.bold(clipped)
+	} else {
+		title := "geminus"
+		if v.persona != "" && v.harness != "" {
+			title += " · " + oneLine(v.persona) + " · " + oneLine(v.harness)
+		} else if v.persona != "" {
+			title += " · " + oneLine(v.persona)
+		}
+		clipped := clipWidth(title, room)
+		leftPlain = "◆ " + clipped
+		leftStyled = pal.sgr("1;"+colorCyan, "◆") + " " + pal.bold(clipped)
+	}
+
+	used := textWidth(leftPlain)
+	if rightPlain == "" {
+		fill := max(width-used-1, 0)
+		if fill == 0 {
+			return leftStyled
+		}
+		return leftStyled + " " + pal.dim(strings.Repeat("─", fill))
+	}
+	fill := max(width-used-textWidth(rightPlain)-2, 1)
+	return leftStyled + " " + pal.dim(strings.Repeat("─", fill)) + " " + rightStyled
+}
+
 // render lays out the bottom of the screen for one moment.
 func render(in frameInput) frame {
 	width := max(in.cols-1, 24) // the last column is left free: writing there wraps on some terminals
@@ -443,5 +506,5 @@ func hintRows(in frameInput, width int) []string {
 		}
 		return rows
 	}
-	return one("/ commands · Enter send · Alt+Enter new line · ↑ earlier prompts · Ctrl-C twice to quit")
+	return one("/ commands · Enter send · PgUp/PgDn scroll · Alt+Enter new line · Ctrl-C twice to quit")
 }

@@ -69,10 +69,11 @@ const commandHelp = `geminus commands
   /anything else         goes to the agent as typed, for the agent program's
                          own slash commands; //help sends /help
   On a terminal the box takes the next prompt while an answer is still
-  arriving. Enter sends, Alt+Enter (or a backslash before Enter) starts a
-  new line, Tab completes a geminus command, the up arrow brings back earlier
-  prompts, Ctrl-C clears the box and pressed twice quits. Quitting never
-  stops an agent: the answer stays in Honcho.`
+  arriving. Enter sends, PageUp/PageDown scrolls the transcript while keeping
+  focus in the box, Alt+Enter (or a backslash before Enter) starts a new line,
+  Tab completes a geminus command, the up arrow brings back earlier prompts,
+  Ctrl-C clears the box and pressed twice quits. Quitting never stops an
+  agent: the answer stays in Honcho.`
 
 const (
 	// watchEvery is how often Honcho is read while an answer is expected.
@@ -128,11 +129,13 @@ type App struct {
 	// runs line by line. The rest is only used with it: the question the box
 	// is asking, when each waiting prompt was sent, whether the doorbell
 	// rang for the last one, and why Honcho could not be read, if so.
-	live   *live
-	asking string
-	sentAt map[string]time.Time
-	rang   bool
-	link   string
+	live       *live
+	asking     string
+	sentAt     map[string]time.Time
+	shownTurn  map[string]bool
+	turnPrompt map[string]string
+	rang       bool
+	link       string
 
 	// Updates is the server geminus releases come from, Exe this program's
 	// own file, and Restart what starts it again in this process's place

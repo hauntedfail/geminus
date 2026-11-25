@@ -78,6 +78,10 @@ func (a *App) handle(line string) error {
 		}
 		a.session, a.title, a.tuning = "", "", wire.Tuning{}
 		a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
+		a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
+		if a.live != nil {
+			a.live.setPrompt("")
+		}
 		if arg != "" {
 			a.cwd = arg
 		}

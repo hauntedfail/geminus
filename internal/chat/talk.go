@@ -96,6 +96,10 @@ func (a *App) say(text string) error {
 		return fmt.Errorf("nothing was sent: %w", err)
 	}
 	a.shown[stored.ID], a.waiting[stored.ID] = true, true
+	if a.turnPrompt == nil {
+		a.turnPrompt = map[string]string{}
+	}
+	a.turnPrompt[stored.ID] = text
 	// The mark is what the bridge looks for. Without it the prompt is
 	// stored but nobody picks it up, so say exactly that.
 	if err := a.Honcho.SetSessionMetadata(ctx, a.session, wire.SessionMetadata(a.meta(a.session, a.title, true))); err != nil {
@@ -181,7 +185,18 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				}
 				// Typed in geminus on another computer.
 				a.waiting[m.ID] = true
-				a.Out.line(a.Out.dim("you, from another geminus: ") + sanitize(m.Content))
+				if a.turnPrompt == nil {
+					a.turnPrompt = map[string]string{}
+				}
+				a.turnPrompt[m.ID] = m.Content
+				if a.live != nil {
+					a.live.setPrompt(m.Content)
+					a.Out.line("")
+					a.Out.line(a.Out.dim("── ") + a.Out.accent("you (another geminus)") + a.Out.dim(" ──────────"))
+					a.Out.line(a.Out.accent("❯ ") + a.Out.bold(sanitize(m.Content)))
+				} else {
+					a.Out.line(a.Out.dim("you, from another geminus: ") + sanitize(m.Content))
+				}
 			}
 			if !a.waiting[m.ID] || a.state[m.ID] == meta.State {
 				continue
@@ -237,6 +252,26 @@ func (a *App) own(m honcho.Message, meta wire.Message) bool {
 
 // show prints one piece of an agent's output.
 func (a *App) show(content string, meta wire.Message) {
+	if a.live != nil {
+		if p := a.turnPrompt[meta.Turn]; p != "" {
+			a.live.setPrompt(p)
+		}
+		if a.shownTurn == nil {
+			a.shownTurn = map[string]bool{}
+		}
+		if !a.shownTurn[meta.Turn] {
+			a.shownTurn[meta.Turn] = true
+			speaker := "agent"
+			if a.cur != nil {
+				speaker = oneLine(a.cur.Name)
+				if a.harness != nil {
+					speaker += " · " + oneLine(a.harness.Name)
+				}
+			}
+			a.Out.line("")
+			a.Out.line(a.Out.dim("── ") + a.Out.bold(speaker) + a.Out.dim(" ────────────────────────"))
+		}
+	}
 	if !meta.OK {
 		a.Out.line(a.Out.fail("✗ " + strings.TrimRight(sanitize(content), "\n")))
 		return
@@ -383,6 +418,7 @@ func (a *App) resume(want string) error {
 	a.harness, a.session, a.cwd, a.title = &harness, picked.ID, info.CWD, info.Title
 	a.tuning = wire.Tuning{Model: info.Model, Effort: info.Effort}
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
+	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
 
 	// The description was verified when the conversations were listed. As a
 	// second check, the prompts were signed for the same harness and
@@ -412,7 +448,21 @@ func (a *App) resume(want string) error {
 		a.shown[m.ID] = true
 		switch {
 		case meta.Role == wire.RolePrompt && a.own(m, meta):
-			a.Out.line(a.Out.dim("you: ") + sanitize(m.Content))
+			a.turnPrompt[m.ID] = m.Content
+			if a.live != nil {
+				a.live.setPrompt(m.Content)
+				a.Out.line("")
+				a.Out.line(a.Out.dim("── ") + a.Out.accent("you") + a.Out.dim(" ────────────────────────────"))
+				for i, line := range strings.Split(m.Content, "\n") {
+					mark := a.Out.dim("│ ")
+					if i == 0 {
+						mark = a.Out.accent("❯ ")
+					}
+					a.Out.line(mark + a.Out.bold(sanitize(line)))
+				}
+			} else {
+				a.Out.line(a.Out.dim("you: ") + sanitize(m.Content))
+			}
 			a.state[m.ID] = meta.State
 			if meta.State == wire.StateQueued || meta.State == wire.StateRunning {
 				a.waiting[m.ID] = true

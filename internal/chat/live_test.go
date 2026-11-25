@@ -189,7 +189,7 @@ func TestTheBoxShowsWhoWhatAndWhere(t *testing.T) {
 ╰────────────────────────────────────────────────────────────────────╯
   ● bridge seen 15s ago · in /srv/app · model opus · effort high
   new conversation
-  / commands · Enter send · Alt+Enter new line · ↑ earlier prompts · …`
+  / commands · Enter send · PgUp/PgDn scroll · Alt+Enter new line · C…`
 	if got != want {
 		t.Errorf("empty box:\n%s\nwant:\n%s", got, want)
 	}
@@ -394,15 +394,12 @@ func TestOutputScrollsAboveTheBoxWhileTyping(t *testing.T) {
 	typeKeys(t, lv, "half a pro")
 	lv.Write([]byte("first line\nsecond "))
 	lv.Write([]byte("line, still coming"))
-	box := `
-╭─ sibyl · Hermes Agent ────── REMOTE ─╮
-│ ❯ half a pro                         │
-╰──────────────────────────────────────╯
-  ● bridge seen 15s ago
-  default directory · new conversation
-  / commands · Enter send · Alt+Enter n…`
-	if got, want := term.text(), "first line\nsecond line, still coming\n"+box; got != want {
-		t.Errorf("screen:\n%s\nwant:\n%s", got, want)
+	got := term.text()
+	if !strings.HasPrefix(got, "◆ geminus · sibyl · Hermes Agent ───────\nfirst line\nsecond line, still coming\n") {
+		t.Errorf("screen top:\n%s", got)
+	}
+	if !strings.Contains(got, "│ ❯ half a pro                         │") {
+		t.Errorf("prompt box missing draft:\n%s", got)
 	}
 	if term.cursor() != "│ ❯ half a pro" {
 		t.Errorf("cursor is after %q", term.cursor())
@@ -410,8 +407,10 @@ func TestOutputScrollsAboveTheBoxWhileTyping(t *testing.T) {
 	// The unfinished line ends: it joins the transcript, in order.
 	lv.Write([]byte("!\nthird\n"))
 	typeKeys(t, lv, "mpt")
-	if got, want := term.text(), "first line\nsecond line, still coming!\nthird\n"+strings.Replace(box, "half a pro   ", "half a prompt", 1); got != want {
-		t.Errorf("screen:\n%s\nwant:\n%s", got, want)
+	got = term.text()
+	if !strings.Contains(got, "first line\nsecond line, still coming!\nthird\n") ||
+		!strings.Contains(got, "│ ❯ half a prompt                      │") {
+		t.Errorf("screen after finish:\n%s", got)
 	}
 }
 
@@ -422,17 +421,21 @@ func TestALongTranscriptScrollsAndTheBoxStaysWhole(t *testing.T) {
 	}
 	typeKeys(t, lv, "日本語で書く")
 	got := term.text()
-	if strings.Count(got, "output line") != 40 || strings.Count(got, "╭─ sibyl") != 1 || strings.Count(got, "╰──") != 1 {
+	// Full-screen console: only the viewport fits on screen, no terminal scrollback overflow.
+	if lines := strings.Split(got, "\n"); len(lines) > 12 {
+		t.Errorf("screen overflowed terminal height (%d rows):\n%s", len(lines), got)
+	}
+	if strings.Count(got, "╭─ sibyl") != 1 || strings.Count(got, "╰──") != 1 {
 		t.Errorf("screen after scrolling:\n%s", got)
 	}
 	if term.cursor() != "│ ❯ 日本語で書く" {
 		t.Errorf("cursor is after %q", term.cursor())
 	}
-	// A very long line with no end does not push the box away.
+	// A very long line with no end wraps inside the viewport without pushing the box away.
 	lv.Write([]byte(strings.Repeat("x", 41*30)))
 	got = term.text()
-	if strings.Count(got, "╭─ sibyl") != 1 || !strings.HasSuffix(got, "Alt+Enter n…") || strings.Count(got, "x") != 41*30 {
-		t.Errorf("screen after an endless line:\n%s", got[strings.LastIndex(got, "output line"):])
+	if strings.Count(got, "╭─ sibyl") != 1 || !strings.HasSuffix(got, "PgUp/PgDn s…") || !strings.Contains(got, "xxxx") {
+		t.Errorf("screen after an endless line:\n%s", got)
 	}
 	if term.cursor() != "│ ❯ 日本語で書く" {
 		t.Errorf("cursor is after %q", term.cursor())
@@ -504,7 +507,16 @@ func TestAQuestionTakesAnEmptyAnswerAndCanBeCancelled(t *testing.T) {
 }
 
 func TestResizingAndClosingLeaveNoBoxBehind(t *testing.T) {
-	term, lv, _ := newTestLive(60, 20)
+	term := newVT(60, 20)
+	term.Write([]byte("prior shell output\r\n$ geminus\r\n"))
+	clock := noon
+	lv := newLive(term, 60, 20, palette{}, func() time.Time { return clock })
+	lv.set(sibylView())
+
+	// Prior shell output is isolated from the alternate screen buffer.
+	if got := term.text(); strings.Contains(got, "prior shell output") {
+		t.Errorf("prior shell output leaked into geminus console:\n%s", got)
+	}
 	lv.Write([]byte("said\n"))
 	lv.size = func() (int, int) { return 44, 20 }
 	term.cols = 44
@@ -515,11 +527,82 @@ func TestResizingAndClosingLeaveNoBoxBehind(t *testing.T) {
 	lv.Write([]byte("no line end yet"))
 	lv.close()
 	lv.close()
-	if got := term.text(); got != "said\nno line end yet" {
+	// Closing leaves the alternate screen and restores the original shell screen.
+	if got := term.text(); got != "prior shell output\n$ geminus" {
 		t.Errorf("after close:\n%q", got)
 	}
-	if raw := term.raw.String(); !strings.HasPrefix(raw, pasteModeOn) || !strings.HasSuffix(raw, pasteModeOf) {
-		t.Error("paste marking was not switched on and off again")
+	raw := term.raw.String()
+	if !strings.Contains(raw, altScreenOn+pasteModeOn) || !strings.HasSuffix(raw, altScreenOff+pasteModeOf) {
+		t.Error("alternate screen / paste marking was not switched on and off again")
+	}
+}
+
+func TestPageUpDownScrollAndStickyPromptHeader(t *testing.T) {
+	term := newVT(71, 16)
+	term.Write([]byte("old shell log line 1\r\nold shell log line 2\r\n"))
+	clock := noon
+	lv := newLive(term, 71, 16, palette{}, func() time.Time { return clock })
+	lv.set(sibylView())
+
+	// Turn 1: 15 lines of output.
+	lv.setPrompt("first prompt: inspect auth")
+	lv.Write([]byte("── you ──\n❯ first prompt: inspect auth\n"))
+	for i := 1; i <= 15; i++ {
+		lv.Write([]byte(strings.Repeat(" ", 0) + "turn1-line-" + string(rune('a'+i-1)) + "\n"))
+	}
+	// Turn 2: 15 lines of output.
+	lv.setPrompt("second prompt: fix timeout")
+	lv.Write([]byte("── you ──\n❯ second prompt: fix timeout\n"))
+	for i := 1; i <= 15; i++ {
+		lv.Write([]byte("turn2-line-" + string(rune('a'+i-1)) + "\n"))
+	}
+
+	// Keep a draft in the prompt box while scrolling.
+	typeKeys(t, lv, "draft while reading")
+	firstRow := strings.SplitN(term.text(), "\n", 2)[0]
+	if !strings.Contains(firstRow, "❯ second prompt: fix timeout") {
+		t.Errorf("at bottom, sticky header = %q, want second prompt", firstRow)
+	}
+
+	// Scroll up with PageUp (CSI 5~) into Turn 1's output without losing prompt focus.
+	for i := 0; i < 4; i++ {
+		typeKeys(t, lv, "\x1b[5~")
+	}
+	got := term.text()
+	firstRow = strings.SplitN(got, "\n", 2)[0]
+	if !strings.Contains(firstRow, "❯ first prompt: inspect auth") || !strings.Contains(firstRow, "↑ ") {
+		t.Errorf("after PageUp into turn 1, sticky header = %q", firstRow)
+	}
+	if !strings.Contains(got, "turn1-line-") {
+		t.Errorf("after PageUp, turn 1 lines not visible:\n%s", got)
+	}
+	if strings.Contains(got, "old shell log") {
+		t.Errorf("shell log leaked when scrolled up:\n%s", got)
+	}
+	if term.cursor() != "│ ❯ draft while reading" {
+		t.Errorf("prompt focus lost while scrolling: cursor=%q", term.cursor())
+	}
+
+	// Scroll all the way to the top: stops at geminus transcript top, never shows shell logs.
+	for i := 0; i < 20; i++ {
+		typeKeys(t, lv, "\x1b[5~")
+	}
+	got = term.text()
+	firstRow = strings.SplitN(got, "\n", 2)[0]
+	if !strings.Contains(firstRow, "TOP · ↑ ") || strings.Contains(got, "old shell log") {
+		t.Errorf("at top: header=%q\nscreen:\n%s", firstRow, got)
+	}
+
+	// PageDown (CSI 6~) returns to the bottom and restores the latest prompt in the header.
+	for i := 0; i < 25; i++ {
+		typeKeys(t, lv, "\x1b[6~")
+	}
+	firstRow = strings.SplitN(term.text(), "\n", 2)[0]
+	if !strings.Contains(firstRow, "❯ second prompt: fix timeout") || strings.Contains(firstRow, "↑ ") {
+		t.Errorf("after PageDown to bottom, sticky header = %q", firstRow)
+	}
+	if lv.ed.String() != "draft while reading" {
+		t.Errorf("draft text altered by scrolling: %q", lv.ed.String())
 	}
 }
 
@@ -595,14 +678,18 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 	term.waitFor(t, "echo: long job", "echo: second")
 	term.waitGone(t, "waiting for sibyl")
 	got := term.text()
-	order := []string{"❯ long job", "❯ second", "echo: long job", "echo: second", "╭─ sibyl"}
+	header, body, _ := strings.Cut(got, "\n")
+	if !strings.Contains(header, "❯ second") {
+		t.Errorf("sticky header = %q, want second prompt", header)
+	}
+	order := []string{"── you ──", "❯ long job", "❯ second", "── sibyl · Hermes Agent ──", "echo: long job", "echo: second", "╭─ sibyl"}
 	for i := 1; i < len(order); i++ {
-		if strings.Index(got, order[i-1]) > strings.Index(got, order[i]) {
-			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], got)
+		if strings.Index(body, order[i-1]) > strings.Index(body, order[i]) {
+			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], body)
 		}
 	}
-	if strings.Count(got, "echo: long job") != 1 || strings.Count(got, "╭─") != 1 {
-		t.Errorf("something is on screen twice:\n%s", got)
+	if strings.Count(body, "echo: long job") != 1 || strings.Count(body, "╭─") != 1 {
+		t.Errorf("something is on screen twice:\n%s", body)
 	}
 
 	// A slash line geminus does not know goes to the agent; /model is its own.

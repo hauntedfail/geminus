@@ -16,6 +16,11 @@ type vt struct {
 	lines      [][]rune // everything, scrollback included
 	top        int      // index in lines of the screen's first row
 	row, col   int      // cursor, relative to the screen
+	alt        bool
+	savedLines [][]rune
+	savedTop   int
+	savedRow   int
+	savedCol   int
 	raw        strings.Builder
 }
 
@@ -75,12 +80,43 @@ func (t *vt) Write(p []byte) (int, error) {
 			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
 				j++
 			}
-			arg, _ := strconv.Atoi(strings.TrimLeft(s[i+2:j], "?"))
+			params := s[i+2 : j]
+			arg, _ := strconv.Atoi(strings.TrimLeft(params, "?"))
 			switch s[j] {
+			case 'h':
+				if params == "?1049" && !t.alt {
+					t.savedLines, t.savedTop, t.savedRow, t.savedCol = t.lines, t.top, t.row, t.col
+					t.lines, t.top, t.row, t.col, t.alt = [][]rune{nil}, 0, 0, 0, true
+				}
+			case 'l':
+				if params == "?1049" && t.alt {
+					t.lines, t.top, t.row, t.col, t.alt = t.savedLines, t.savedTop, t.savedRow, t.savedCol, false
+					t.savedLines = nil
+				}
+			case 'H':
+				r, c := 1, 1
+				if params != "" {
+					parts := strings.SplitN(params, ";", 2)
+					if v, err := strconv.Atoi(parts[0]); err == nil && v > 0 {
+						r = v
+					}
+					if len(parts) == 2 {
+						if v, err := strconv.Atoi(parts[1]); err == nil && v > 0 {
+							c = v
+						}
+					}
+				}
+				t.row = min(max(r-1, 0), t.rows-1)
+				t.col = min(max(c-1, 0), t.cols-1)
 			case 'A':
 				t.row = max(t.row-max(arg, 1), 0)
 			case 'C':
 				t.col = min(t.col+max(arg, 1), t.cols-1)
+			case 'K':
+				l := t.line()
+				if len(*l) > t.col {
+					*l = (*l)[:t.col]
+				}
 			case 'J':
 				l := t.line()
 				if len(*l) > t.col {

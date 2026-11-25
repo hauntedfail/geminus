@@ -26,6 +26,10 @@ const (
 	keyDown
 	keyHome
 	keyEnd
+	keyPageUp
+	keyPageDown
+	keyScrollUp
+	keyScrollDown
 	keyWordLeft
 	keyWordRight
 	keyKillWord  // delete the word before the cursor
@@ -134,6 +138,9 @@ func (p *keyParser) feed(b []byte) []key {
 var csiKeys = map[string]keyKind{
 	"A": keyUp, "B": keyDown, "C": keyRight, "D": keyLeft, "H": keyHome, "F": keyEnd,
 	"1~": keyHome, "7~": keyHome, "4~": keyEnd, "8~": keyEnd, "3~": keyDelete, "200~": keyPasteStart,
+	"5~": keyPageUp, "5;2~": keyPageUp, "5;5~": keyPageUp,
+	"6~": keyPageDown, "6;2~": keyPageDown, "6;5~": keyPageDown,
+	"1;2A": keyScrollUp, "1;2B": keyScrollDown,
 	// With Ctrl or Alt held: move by words.
 	"1;5C": keyWordRight, "1;3C": keyWordRight, "1;5D": keyWordLeft, "1;3D": keyWordLeft,
 	"1;2H": keyHome, "1;2F": keyEnd,

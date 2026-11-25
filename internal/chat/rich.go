@@ -137,6 +137,8 @@ func (a *App) attach(lv *live, lines <-chan string) {
 	a.Out.w = lv
 	a.Out.mu.Unlock()
 	a.sentAt = map[string]time.Time{}
+	a.shownTurn = map[string]bool{}
+	a.turnPrompt = map[string]string{}
 	a.Out.line(a.Out.accent("◆ geminus") + a.Out.dim(" "+version.Version+" · "+oneLine(a.Profile.Human)+
 		" · Honcho workspace "+oneLine(a.Profile.Workspace)))
 }
@@ -239,11 +241,37 @@ func (a *App) linked(err error) {
 	}
 }
 
-// echoPrompt puts what was entered into the transcript above the box.
+// isGeminusCommand reports whether line is handled locally by geminus rather
+// than sent to the remote agent as a prompt.
+func isGeminusCommand(line string) bool {
+	if !strings.HasPrefix(line, "/") || strings.HasPrefix(line, "//") {
+		return false
+	}
+	cmd, _, _ := strings.Cut(line, " ")
+	switch cmd {
+	case "/help", "/status", "/persona", "/personas", "/harness", "/new", "/cwd",
+		"/sessions", "/resume", "/default", "/update", "/model", "/effort", "/quit", "/exit":
+		return true
+	}
+	return false
+}
+
+// echoPrompt puts what was entered into the transcript with a clear user
+// utterance boundary, and updates the sticky prompt header when it is a prompt.
 func (a *App) echoPrompt(text string) {
+	if a.live != nil && !isGeminusCommand(text) {
+		prompt := text
+		if strings.HasPrefix(prompt, "//") {
+			prompt = prompt[1:]
+		}
+		a.live.setPrompt(prompt)
+	}
 	a.Out.line("")
+	if !isGeminusCommand(text) {
+		a.Out.line(a.Out.dim("── ") + a.Out.accent("you") + a.Out.dim(" ────────────────────────────"))
+	}
 	for i, line := range strings.Split(text, "\n") {
-		mark := "  "
+		mark := a.Out.dim("│ ")
 		if i == 0 {
 			mark = a.Out.accent("❯ ")
 		}
