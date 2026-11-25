@@ -57,8 +57,8 @@ const commandHelp = `geminus commands
   /new [DIR]             start a new conversation (optionally in DIR there)
   /sessions              list your conversations with this persona
   /resume [ID|N]         reopen a conversation (default: the latest)
-  /model [NAME]          model for this conversation (/model default: the
-                         agent program's own choice)
+  /model [NAME]          model for this conversation (/model alone opens a
+                         selector on a terminal; /model default resets)
   /effort [LEVEL]        effort for this conversation (/effort default)
   /status                show persona, harness, bridge and conversation
   /update                install the latest release of geminus and carry on
@@ -121,6 +121,8 @@ type App struct {
 	// the one the next prompt starts). It is never a default: a new
 	// conversation starts with the agent program's own settings.
 	tuning wire.Tuning
+	// recentModels remembers models chosen during this run, keyed by harness ID.
+	recentModels map[string][]string
 	// shown holds the messages of the open conversation already on screen.
 	shown map[string]bool
 	// waiting holds the prompts whose answer has not ended yet, and state

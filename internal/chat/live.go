@@ -8,6 +8,7 @@ package chat
 // loop talks to Honcho.
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -29,6 +30,8 @@ const (
 
 	altScreenOn  = "\x1b[?1049h" // switch to alternate screen buffer (isolates shell scrollback)
 	altScreenOff = "\x1b[?1049l" // restore original terminal screen on exit
+	cursorHide   = "\x1b[?25l"   // hide cursor while navigating a select menu
+	cursorShow   = "\x1b[?25h"   // restore cursor visibility
 	cursorHome   = "\x1b[H"
 	clearLineEnd = "\x1b[K"
 	syncStart    = "\x1b[?2026h" // draw the following as one update, where supported
@@ -62,6 +65,7 @@ type live struct {
 
 	ed        editor
 	v         view
+	menu      *selectMenu
 	lines     []transcriptLine
 	tail      string
 	curPrompt string
@@ -196,8 +200,16 @@ func (l *live) draw() {
 	if l.notice != "" && !l.now().Before(l.noticeUntil) {
 		l.notice = ""
 	}
-	f := render(frameInput{v: l.v, text: l.ed.text, pos: l.ed.pos, notice: l.notice,
-		cols: l.cols, rows: l.rows, now: l.now(), spin: l.spin, pal: l.pal})
+	in := frameInput{v: l.v, text: l.ed.text, pos: l.ed.pos, notice: l.notice,
+		cols: l.cols, rows: l.rows, now: l.now(), spin: l.spin, pal: l.pal}
+	var f frame
+	hideCursor := false
+	if l.menu != nil {
+		f = renderMenu(in, l.menu)
+		hideCursor = !l.menu.customMode
+	} else {
+		f = render(in)
+	}
 	// Reserve at least row 0 for the sticky header and keep total height <= l.rows.
 	maxBottom := max(l.rows-2, 1)
 	if over := len(f.rows) - maxBottom; over > 0 {
@@ -251,6 +263,11 @@ func (l *live) draw() {
 
 	curRow := 1 + viewHeight + f.curRow
 	body.WriteString(fmt.Sprintf("\x1b[%d;%dH", curRow+1, f.curCol+1))
+	if hideCursor {
+		body.WriteString(cursorHide)
+	} else {
+		body.WriteString(cursorShow)
+	}
 
 	rendered := body.String()
 	if rendered == l.last {
@@ -306,6 +323,28 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
+		return "", false, false
+	}
+	if l.menu != nil {
+		switch k.kind {
+		case keyPageUp:
+			step := max(l.viewRows-2, 1)
+			l.scroll += step
+		case keyPageDown:
+			step := max(l.viewRows-2, 1)
+			l.scroll = max(l.scroll-step, 0)
+		case keyScrollUp:
+			l.scroll++
+		case keyScrollDown:
+			l.scroll = max(l.scroll-1, 0)
+		case keyRedraw:
+			l.last = ""
+		default:
+			if l.menu.handleKey(k) {
+				l.menu = nil
+			}
+		}
+		l.draw()
 		return "", false, false
 	}
 	e := &l.ed
@@ -427,6 +466,34 @@ func (l *live) complete() {
 	}
 }
 
+// selectOption opens an interactive select menu in the bottom panel and
+// waits until the user picks an item, enters a custom value, or cancels.
+func (l *live) selectOption(ctx context.Context, cfg menuConfig) (string, bool) {
+	done := make(chan menuResult, 1)
+	m := newSelectMenu(cfg, done)
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return "", false
+	}
+	l.menu = m
+	l.draw()
+	l.mu.Unlock()
+
+	select {
+	case res := <-done:
+		return res.value, res.ok
+	case <-ctx.Done():
+		l.mu.Lock()
+		if l.menu == m {
+			l.menu = nil
+			l.draw()
+		}
+		l.mu.Unlock()
+		return "", false
+	}
+}
+
 // close leaves the alternate screen buffer and restores paste mode.
 func (l *live) close() {
 	l.mu.Lock()
@@ -434,6 +501,10 @@ func (l *live) close() {
 	if l.closed {
 		return
 	}
-	io.WriteString(l.out, altScreenOff+pasteModeOf)
+	if l.menu != nil {
+		l.menu.finish("", false)
+		l.menu = nil
+	}
+	io.WriteString(l.out, cursorShow+altScreenOff+pasteModeOf)
 	l.closed = true
 }

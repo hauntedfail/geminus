@@ -132,8 +132,38 @@ func (a *App) tune(kind, value string) error {
 		a.Out.line(fmt.Sprintf("%s: %s  (this conversation only; /%s default goes back to %s's own)", kind, oneLine(*current), kind, oneLine(a.harness.Name)))
 	}
 	if value == "" {
-		show()
-		return nil
+		if kind == "model" && a.live != nil {
+			if len(a.harness.Options) == 0 {
+				return fmt.Errorf("the bridge on %s's computer is too old to pass a %s: geminish 0.6 or later must be running there. Prompts without one still work", a.cur.Name, kind)
+			}
+			if !a.harness.Takes(kind) {
+				return fmt.Errorf("%s takes no %s setting from geminus on %s's computer", oneLine(a.harness.Name), kind, a.cur.Name)
+			}
+			disp := a.harnessDisplay(*a.harness)
+			cfg := menuConfig{
+				title:             "Select model",
+				subtitle:          fmt.Sprintf("Model for this conversation · %s", disp),
+				customTitle:       "Custom model",
+				customSubtitle:    fmt.Sprintf("Enter any model name for %s (or \"default\" to reset)", disp),
+				customPlaceholder: "e.g. group/lvmh, opus, sonnet",
+				items:             a.modelMenuItems(),
+				validate: func(v string) error {
+					if !wire.ValidSetting("model", v) {
+						return fmt.Errorf("%q is not a usable model name (letters, digits and . _ - : / @ # + [ ])", oneLine(v))
+					}
+					return nil
+				},
+			}
+			picked, ok := a.live.selectOption(a.ctx, cfg)
+			if !ok {
+				a.Out.line(a.Out.dim("model unchanged"))
+				return nil
+			}
+			value = picked
+		} else {
+			show()
+			return nil
+		}
 	}
 	if value == "default" || value == "none" {
 		value = ""
@@ -164,8 +194,31 @@ func (a *App) tune(kind, value string) error {
 			return fmt.Errorf("the %s was not changed: %w", kind, err)
 		}
 	}
+	if kind == "model" && value != "" {
+		a.rememberModel(a.harness.ID, value)
+	}
 	show()
 	return nil
+}
+
+// rememberModel keeps up to 8 recently selected models per harness for the
+// /model select menu.
+func (a *App) rememberModel(harnessID, model string) {
+	if harnessID == "" || model == "" {
+		return
+	}
+	if a.recentModels == nil {
+		a.recentModels = map[string][]string{}
+	}
+	prev := a.recentModels[harnessID]
+	next := make([]string, 0, min(len(prev)+1, 8))
+	next = append(next, model)
+	for _, m := range prev {
+		if m != model && len(next) < 8 {
+			next = append(next, m)
+		}
+	}
+	a.recentModels[harnessID] = next
 }
 
 // refresh re-reads Honcho and keeps the current persona selected.

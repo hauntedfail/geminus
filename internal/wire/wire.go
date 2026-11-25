@@ -310,6 +310,8 @@ type Harness struct {
 	// Options are the settings the bridge can pass to the program for one
 	// run: "model", "effort".
 	Options []string `json:"options,omitempty"`
+	// Models is an optional list of model names advertised by the bridge.
+	Models []string `json:"models,omitempty"`
 }
 
 // Takes reports whether the program can be given the setting.
