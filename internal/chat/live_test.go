@@ -63,6 +63,23 @@ func TestWhatTheTerminalSendsBecomesKeys(t *testing.T) {
 	if got := kinds(keysOf(t, "\x1b", "\x1b[I\x1b[<0;1;1Mx\x1bz")); !sameKinds(got, keyEsc, keyRune) {
 		t.Errorf("ignored input = %v", got)
 	}
+	// Mouse wheel events (SGR and legacy X10), including modifiers and split reads.
+	if got := kinds(keysOf(t,
+		"\x1b[<64;10;5M", "\x1b[<65;10;5M",
+		"\x1b[<68;10;5M", "\x1b[<81;10;5M", // Shift+wheel up, Ctrl+wheel down
+		"\x1b[<64;10;5m", "\x1b[<66;10;5M", // release and horizontal wheel ignored
+		"\x1b[M\x60\x21\x21", "\x1b[M\x61\x21\x21", // X10 wheel up/down
+		"\x1b[M", "\x60", "\x21\x21", // X10 split across reads
+		"\x1b[M\x20\x21\x21a", // X10 left click ignored; trailing 'a' preserved
+	)); !sameKinds(got,
+		keyMouseScrollUp, keyMouseScrollDown,
+		keyMouseScrollUp, keyMouseScrollDown,
+		keyMouseScrollUp, keyMouseScrollDown,
+		keyMouseScrollUp,
+		keyRune,
+	) {
+		t.Errorf("mouse wheel = %v", got)
+	}
 }
 
 func TestPastedTextIsOneKeyAndItsLineBreaksDoNotSend(t *testing.T) {
@@ -544,8 +561,8 @@ func TestResizingAndClosingLeaveNoBoxBehind(t *testing.T) {
 		t.Errorf("after close:\n%q", got)
 	}
 	raw := term.raw.String()
-	if !strings.Contains(raw, altScreenOn+pasteModeOn) || !strings.HasSuffix(raw, altScreenOff+pasteModeOf) {
-		t.Error("alternate screen / paste marking was not switched on and off again")
+	if !strings.Contains(raw, altScreenOn+pasteModeOn+mouseModeOn) || !strings.HasSuffix(raw, cursorShow+mouseModeOff+altScreenOff+pasteModeOf) {
+		t.Error("alternate screen / paste / mouse reporting was not switched on and off again")
 	}
 }
 
@@ -615,6 +632,72 @@ func TestPageUpDownScrollAndStickyPromptHeader(t *testing.T) {
 	}
 	if lv.ed.String() != "draft while reading" {
 		t.Errorf("draft text altered by scrolling: %q", lv.ed.String())
+	}
+}
+
+func TestMouseWheelScrollsViewportWithoutMovingPromptHistory(t *testing.T) {
+	term := newVT(71, 16)
+	clock := noon
+	lv := newLive(term, 71, 16, palette{}, func() time.Time { return clock })
+	lv.set(sibylView())
+
+	// Seed prompt history so an accidental arrow-key fallback would visibly change the box.
+	lv.ed.insert("older prompt")
+	lv.ed.take(true)
+	lv.ed.insert("current draft")
+
+	lv.setPrompt("turn 1 prompt")
+	lv.Write([]byte("── you ──\n❯ turn 1 prompt\n"))
+	for i := 1; i <= 15; i++ {
+		lv.Write([]byte("turn1-row-" + string(rune('a'+i-1)) + "\n"))
+	}
+	lv.setPrompt("turn 2 prompt")
+	lv.Write([]byte("── you ──\n❯ turn 2 prompt\n"))
+	for i := 1; i <= 15; i++ {
+		lv.Write([]byte("turn2-row-" + string(rune('a'+i-1)) + "\n"))
+	}
+
+	// Scroll up via SGR mouse wheel (button 64).
+	for i := 0; i < 6; i++ {
+		typeKeys(t, lv, "\x1b[<64;20;8M")
+	}
+	got := term.text()
+	firstRow := strings.SplitN(got, "\n", 2)[0]
+	if !strings.Contains(firstRow, "❯ turn 1 prompt") || !strings.Contains(firstRow, "↑ ") {
+		t.Errorf("after mouse wheel up, sticky header = %q", firstRow)
+	}
+	if !strings.Contains(got, "turn1-row-") {
+		t.Errorf("after mouse wheel up, turn 1 rows not visible:\n%s", got)
+	}
+	if lv.ed.String() != "current draft" {
+		t.Errorf("mouse wheel up changed prompt box to %q, want %q", lv.ed.String(), "current draft")
+	}
+
+	// Legacy X10 mouse wheel up also scrolls without disturbing the prompt box.
+	prevScroll := lv.scroll
+	typeKeys(t, lv, "\x1b[M\x60\x21\x21")
+	if lv.scroll <= prevScroll {
+		t.Errorf("X10 wheel up did not increase scroll: before=%d after=%d", prevScroll, lv.scroll)
+	}
+	if lv.ed.String() != "current draft" {
+		t.Errorf("X10 wheel up changed prompt box to %q", lv.ed.String())
+	}
+
+	// Mouse wheel down returns to the bottom.
+	for i := 0; i < 10; i++ {
+		typeKeys(t, lv, "\x1b[<65;20;8M")
+	}
+	if lv.scroll != 0 {
+		t.Errorf("after mouse wheel down to bottom, scroll = %d, want 0", lv.scroll)
+	}
+	if lv.ed.String() != "current draft" {
+		t.Errorf("mouse wheel down changed prompt box to %q", lv.ed.String())
+	}
+
+	// Up arrow still recalls prompt history.
+	typeKeys(t, lv, "\x1b[A")
+	if lv.ed.String() != "older prompt" {
+		t.Errorf("up arrow after mouse scroll = %q, want %q", lv.ed.String(), "older prompt")
 	}
 }
 

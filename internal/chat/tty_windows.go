@@ -16,6 +16,7 @@ const (
 	enableProcessedInput       = 0x0001
 	enableLineInput            = 0x0002
 	enableEchoInput            = 0x0004
+	enableMouseInput           = 0x0010
 	enableVirtualTerminalInput = 0x0200
 
 	enableProcessedOutput       = 0x0001
@@ -44,7 +45,7 @@ func rawMode(in, out *os.File) (restore func(), err error) {
 	if err := setConsoleMode(outHandle, outMode|enableProcessedOutput|enableVirtualTerminalOutput); err != nil {
 		return nil, err
 	}
-	raw := inMode&^(enableProcessedInput|enableLineInput|enableEchoInput) | enableVirtualTerminalInput
+	raw := inMode&^(enableProcessedInput|enableLineInput|enableEchoInput) | enableVirtualTerminalInput | enableMouseInput
 	if err := setConsoleMode(inHandle, raw); err != nil {
 		_ = setConsoleMode(outHandle, outMode)
 		return nil, err

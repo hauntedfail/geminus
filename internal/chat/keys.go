@@ -4,6 +4,7 @@ package chat
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -30,6 +31,8 @@ const (
 	keyPageDown
 	keyScrollUp
 	keyScrollDown
+	keyMouseScrollUp
+	keyMouseScrollDown
 	keyWordLeft
 	keyWordRight
 	keyKillWord  // delete the word before the cursor
@@ -159,9 +162,20 @@ func parseEscape(b []byte) (k key, n int, complete bool) {
 	}
 	switch b[1] {
 	case '[':
+		// Legacy X10 mouse report: ESC [ M Cb Cx Cy (3 raw bytes after 'M').
+		if len(b) >= 3 && b[2] == 'M' {
+			if len(b) < 6 {
+				return key{}, 0, false
+			}
+			return parseX10Mouse(b[3]), 6, true
+		}
 		for i := 2; i < len(b); i++ {
 			if b[i] >= 0x40 && b[i] <= 0x7e {
-				return key{kind: csiKeys[string(b[2:i+1])]}, i + 1, true
+				seq := string(b[2 : i+1])
+				if strings.HasPrefix(seq, "<") && (b[i] == 'M' || b[i] == 'm') {
+					return parseSGRMouse(seq), i + 1, true
+				}
+				return key{kind: csiKeys[seq]}, i + 1, true
 			}
 		}
 		if len(b) > 64 {
@@ -185,4 +199,45 @@ func parseEscape(b []byte) (k key, n int, complete bool) {
 		return key{kind: keyEsc}, 1, true
 	}
 	return key{}, 2, true // Alt with a key geminus has no use for
+}
+
+// parseSGRMouse decodes an SGR mouse sequence body like "<64;12;8M" or "<0;1;1m".
+func parseSGRMouse(seq string) key {
+	if len(seq) < 2 || seq[0] != '<' {
+		return key{}
+	}
+	pressed := seq[len(seq)-1] == 'M'
+	if !pressed {
+		return key{}
+	}
+	parts := strings.Split(seq[1:len(seq)-1], ";")
+	if len(parts) != 3 {
+		return key{}
+	}
+	code, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return key{}
+	}
+	return mouseButtonKey(code)
+}
+
+// parseX10Mouse decodes the button byte from a legacy X10 mouse sequence (ESC [ M Cb Cx Cy).
+func parseX10Mouse(cb byte) key {
+	if cb < 32 {
+		return key{}
+	}
+	return mouseButtonKey(int(cb - 32))
+}
+
+// mouseButtonKey maps an xterm mouse button code to a scroll key, ignoring clicks and motion.
+func mouseButtonKey(code int) key {
+	// Strip Shift (4), Alt/Meta (8), and Ctrl (16) modifier bits.
+	switch code &^ (4 | 8 | 16) {
+	case 64:
+		return key{kind: keyMouseScrollUp}
+	case 65:
+		return key{kind: keyMouseScrollDown}
+	default:
+		return key{}
+	}
 }

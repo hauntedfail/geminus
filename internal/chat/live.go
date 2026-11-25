@@ -28,16 +28,19 @@ const (
 	// sessions stay bounded in memory.
 	maxTranscriptLines = 20000
 
-	altScreenOn  = "\x1b[?1049h" // switch to alternate screen buffer (isolates shell scrollback)
-	altScreenOff = "\x1b[?1049l" // restore original terminal screen on exit
-	cursorHide   = "\x1b[?25l"   // hide cursor while navigating a select menu
-	cursorShow   = "\x1b[?25h"   // restore cursor visibility
-	cursorHome   = "\x1b[H"
-	clearLineEnd = "\x1b[K"
-	syncStart    = "\x1b[?2026h" // draw the following as one update, where supported
-	syncEnd      = "\x1b[?2026l"
-	pasteModeOn  = "\x1b[?2004h" // mark pasted text, so a pasted line break is not Enter
-	pasteModeOf  = "\x1b[?2004l"
+	altScreenOn      = "\x1b[?1049h"          // switch to alternate screen buffer (isolates shell scrollback)
+	altScreenOff     = "\x1b[?1049l"          // restore original terminal screen on exit
+	cursorHide       = "\x1b[?25l"            // hide cursor while navigating a select menu
+	cursorShow       = "\x1b[?25h"            // restore cursor visibility
+	cursorHome       = "\x1b[H"
+	clearLineEnd     = "\x1b[K"
+	syncStart        = "\x1b[?2026h"          // draw the following as one update, where supported
+	syncEnd          = "\x1b[?2026l"
+	pasteModeOn      = "\x1b[?2004h"          // mark pasted text, so a pasted line break is not Enter
+	pasteModeOf      = "\x1b[?2004l"
+	mouseModeOn      = "\x1b[?1000h\x1b[?1006h" // report mouse wheel & clicks in SGR format (avoids alternate-scroll arrow keys)
+	mouseModeOff     = "\x1b[?1006l\x1b[?1000l"
+	mouseScrollLines = 3
 )
 
 type transcriptLine struct {
@@ -85,7 +88,7 @@ func newLive(out io.Writer, cols, rows int, pal palette, now func() time.Time) *
 	l := &live{out: out, cols: cols, rows: rows, pal: pal, now: now}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	io.WriteString(out, altScreenOn+pasteModeOn)
+	io.WriteString(out, altScreenOn+pasteModeOn+mouseModeOn)
 	l.draw()
 	return l
 }
@@ -337,6 +340,10 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 			l.scroll++
 		case keyScrollDown:
 			l.scroll = max(l.scroll-1, 0)
+		case keyMouseScrollUp:
+			l.scroll += mouseScrollLines
+		case keyMouseScrollDown:
+			l.scroll = max(l.scroll-mouseScrollLines, 0)
 		case keyRedraw:
 			l.last = ""
 		default:
@@ -399,6 +406,10 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 		l.scroll++
 	case keyScrollDown:
 		l.scroll = max(l.scroll-1, 0)
+	case keyMouseScrollUp:
+		l.scroll += mouseScrollLines
+	case keyMouseScrollDown:
+		l.scroll = max(l.scroll-mouseScrollLines, 0)
 	case keyWordLeft:
 		e.wordLeft()
 	case keyWordRight:
@@ -494,7 +505,7 @@ func (l *live) selectOption(ctx context.Context, cfg menuConfig) (string, bool) 
 	}
 }
 
-// close leaves the alternate screen buffer and restores paste mode.
+// close leaves the alternate screen buffer and restores mouse and paste modes.
 func (l *live) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -505,6 +516,6 @@ func (l *live) close() {
 		l.menu.finish("", false)
 		l.menu = nil
 	}
-	io.WriteString(l.out, cursorShow+altScreenOff+pasteModeOf)
+	io.WriteString(l.out, cursorShow+mouseModeOff+altScreenOff+pasteModeOf)
 	l.closed = true
 }
