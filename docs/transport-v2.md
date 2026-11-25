@@ -1,8 +1,13 @@
-# geminise Transport v2 (Draft Design)
+# geminise End-to-End (P2P) Transport
 
-Status: Phase 0–2 implemented on branch `feat/transport-v2` (transport abstraction + failover, Obfuscated QUIC with XChaCha20-Poly1305 whitening & silent drop, bridge-side `LocalStore`, `PeerCache`, LAN discovery, blind UDP relay, and `cmd/geminised` daemon). Phase 3 (A2A mail / OTA streams and TCP/443 masquerade) remains planned.
+Status: Implemented on branch `feat/transport-v2` alongside Central (Honcho) transport. Provides transport abstraction + failover, Obfuscated QUIC with XChaCha20-Poly1305 whitening & silent drop, bridge-side `LocalStore`, `PeerCache`, LAN discovery, blind encrypted HTTPS/WebSocket relay (behind `cloudflared` with zero open firewall ports) and blind UDP relay, and the `cmd/geminised` daemon.
 
-## 1. Motivation and Goals
+## 1. Positioning: Central (Honcho) vs. End-to-End (P2P)
+
+`geminus` supports two parallel transport modes rather than replacing Honcho:
+
+- **Central transport (Honcho)**: Rides directly on the Honcho ecosystem so conversations automatically feed shared cross-agent memory, representations, and cards across `chrome`, `sibyl`, and `mirai`.
+- **End-to-End transport (P2P / direct + blind relay)**: A separate peer-to-peer path that does not depend on Honcho — for direct LAN/WAN sessions, Honcho-outage failover, UDP-blocked networks (via blind HTTPS/WebSocket relay behind `cloudflared`), and external users without a Honcho server.
 
 Today, `geminus` and `geminish` use Honcho over HTTPS as their sole transport channel. That gave fast initial delivery with zero open ports, but creates four structural limits:
 

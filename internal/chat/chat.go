@@ -651,7 +651,7 @@ func dialTransportV2(req request, prof profile.Profile) (transport.Backend, func
 		}
 		var selfID [ed25519.PublicKeySize]byte
 		copy(selfID[:], selfPub)
-		rc, err := p2p.NewRelayPacketConn(relay, prof.Secret, selfID)
+		rc, err := p2p.DialRelayPacketConn(relay, prof.Secret, selfID)
 		if err != nil {
 			return nil, nil, err
 		}

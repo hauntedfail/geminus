@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -375,5 +376,99 @@ func TestPeerCacheSaveAndLoad(t *testing.T) {
 	p, ok := loaded.Peers["chrome"]
 	if !ok || p.DirectAddr != "192.168.1.10:4433" || p.RelayAddr != "sibyl.haunted.fail:4433" {
 		t.Fatalf("unexpected cached peer: %+v ok=%v", p, ok)
+	}
+}
+
+func TestWSRelayEndToEnd(t *testing.T) {
+	relay, err := ListenHTTPRelay("127.0.0.1:0", "/geminise/relay", testSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+
+	relayURL := "http://" + relay.Addr().String() + relay.Path()
+
+	// Unauthenticated HTTP probes must receive 404 Not Found.
+	resp, err := http.Get(relayURL)
+	if err != nil {
+		t.Fatalf("unauthenticated probe request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unauthenticated probe, got %d", resp.StatusCode)
+	}
+	if relay.DroppedPackets() == 0 {
+		t.Fatalf("expected dropped counter > 0 after unauthenticated probe")
+	}
+
+	srvPub, srvPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var srvID [nodeIDSize]byte
+	copy(srvID[:], srvPub)
+
+	srvRelayConn, err := DialRelayPacketConn(relayURL, testSecret(), srvID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srvRelayConn.Close()
+
+	store, err := NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := ListenServer(ServerOptions{
+		PacketConn: srvRelayConn,
+		Secret:     testSecret(),
+		Identity:   srvPriv,
+		Backend:    store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	cliPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cliID [nodeIDSize]byte
+	copy(cliID[:], cliPub)
+
+	cliRelayConn, err := DialRelayPacketConn(relayURL, testSecret(), cliID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cliRelayConn.Close()
+
+	cli, err := NewClient(ClientOptions{
+		RemoteAddr:   RelayAddr{NodeID: srvID},
+		PacketConn:   cliRelayConn,
+		Secret:       testSecret(),
+		ServerPubKey: srvPub,
+		Label:        "ws-relay",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := cli.Ping(ctx); err != nil {
+		t.Fatalf("Ping over WS relay: %v", err)
+	}
+	if err := cli.CreateSession(ctx, "ws-s1", map[string]any{"kind": "geminus"}, "h1karu", "chrome"); err != nil {
+		t.Fatalf("CreateSession over WS relay: %v", err)
+	}
+	msg, err := cli.Post(ctx, "ws-s1", "h1karu", "hello through blind ws relay", map[string]any{"v": 1})
+	if err != nil {
+		t.Fatalf("Post over WS relay: %v", err)
+	}
+	msgs, err := cli.Messages(ctx, "ws-s1")
+	if err != nil || len(msgs) != 1 || msgs[0].ID != msg.ID {
+		t.Fatalf("Messages over WS relay: %+v err=%v", msgs, err)
 	}
 }

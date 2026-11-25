@@ -1,7 +1,8 @@
-// Command geminised is the standalone Transport v2 daemon for the geminise
-// family. It operates in two modes:
+// Command geminised is the standalone End-to-End (P2P) transport daemon for
+// the geminise family, operating alongside Central (Honcho) transport.
+// It operates in two modes:
 //
-//   - relay: stateless rendezvous and blind encrypted UDP relay (for sibyl / VPS)
+//   - relay: blind encrypted relay (HTTPS/WebSocket behind cloudflared, or UDP)
 //   - node:  edge P2P listener backed by a local session store (for chrome / mirai)
 package main
 
@@ -63,11 +64,11 @@ func run(args []string) int {
 }
 
 func printUsage() {
-	fmt.Print(`geminised — Transport v2 relay and edge node daemon
+	fmt.Print(`geminised — End-to-End (P2P) relay and edge node daemon
 
 Usage:
-  geminised relay [--listen :4433] [--secret <text>] [--secret-file <path>]
-  geminised node  [--listen :4433] [--relay <addr>] [--store <dir>] [--peer <name>] [--key-file <path>] [--lan] [--pad <bytes>]
+  geminised relay [--http 127.0.0.1:8652 --path /geminise/relay] [--listen :4433] [--secret <text>] [--secret-file <path>]
+  geminised node  [--listen :4433] [--relay <url-or-host:port>] [--store <dir>] [--peer <name>] [--key-file <path>] [--lan] [--pad <bytes>]
   geminised version
 `)
 }
@@ -138,7 +139,9 @@ func loadOrCreateNodeKey(path string) (ed25519.PrivateKey, error) {
 
 func runRelay(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("relay", flag.ContinueOnError)
-	listen := fs.String("listen", ":4433", "UDP listen address")
+	listen := fs.String("listen", "", "UDP listen address (defaults to :4433 when --http is not set)")
+	httpAddr := fs.String("http", "", "HTTP/WebSocket blind relay listen address (e.g. 127.0.0.1:8652 behind cloudflared)")
+	httpPath := fs.String("path", "/geminise/relay", "HTTP/WebSocket blind relay path")
 	secretVal := fs.String("secret", "", "group secret (defaults to GEMINISE_SECRET or Hermes profile)")
 	secretFile := fs.String("secret-file", "", "path to file containing group secret")
 	if err := fs.Parse(args); err != nil {
@@ -148,21 +151,46 @@ func runRelay(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	rs, err := p2p.ListenRelay(*listen, secret)
-	if err != nil {
-		return err
+	if *listen == "" && *httpAddr == "" {
+		*listen = ":4433"
 	}
-	defer rs.Close()
-	fmt.Printf("geminised relay listening on udp://%s (blind encrypted mode, silent drop active)\n", rs.Addr())
+
+	var udpSrv *p2p.RelayServer
+	if *listen != "" {
+		udpSrv, err = p2p.ListenRelay(*listen, secret)
+		if err != nil {
+			return err
+		}
+		defer udpSrv.Close()
+		fmt.Printf("geminised relay listening on udp://%s (blind encrypted mode, silent drop active)\n", udpSrv.Addr())
+	}
+
+	var httpSrv *p2p.HTTPRelayServer
+	if *httpAddr != "" {
+		httpSrv, err = p2p.ListenHTTPRelay(*httpAddr, *httpPath, secret)
+		if err != nil {
+			return err
+		}
+		defer httpSrv.Close()
+		fmt.Printf("geminised relay listening on http://%s%s (blind encrypted WebSocket mode)\n", httpSrv.Addr(), httpSrv.Path())
+	}
+
 	<-ctx.Done()
-	fmt.Printf("geminised relay stopping (silently dropped %d unauthenticated packets)\n", rs.DroppedPackets())
+	var dropped uint64
+	if udpSrv != nil {
+		dropped += udpSrv.DroppedPackets()
+	}
+	if httpSrv != nil {
+		dropped += httpSrv.DroppedPackets()
+	}
+	fmt.Printf("geminised relay stopping (silently dropped %d unauthenticated packets)\n", dropped)
 	return nil
 }
 
 func runNode(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("node", flag.ContinueOnError)
 	listen := fs.String("listen", ":4433", "UDP listen address for direct connections")
-	relayAddr := fs.String("relay", "", "optional blind relay UDP address (host:port)")
+	relayAddr := fs.String("relay", "", "optional blind relay address (https://.../geminise/relay or host:port)")
 	storeDir := fs.String("store", "", "directory for local session store (empty = in-memory)")
 	peerName := fs.String("peer", "", "peer name for LAN discovery beacon")
 	keyFile := fs.String("key-file", "", "path to persistent Ed25519 node identity key")
@@ -193,7 +221,7 @@ func runNode(ctx context.Context, args []string) error {
 	if *relayAddr != "" {
 		var id [ed25519.PublicKeySize]byte
 		copy(id[:], pub)
-		pc, err = p2p.NewRelayPacketConn(*relayAddr, secret, id)
+		pc, err = p2p.DialRelayPacketConn(*relayAddr, secret, id)
 		if err != nil {
 			return err
 		}
