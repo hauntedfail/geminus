@@ -31,6 +31,7 @@ const usage = `geminus talks to the agents on your other computers, through Honc
 
 Usage:
   geminus                  talk to the default persona, or pick one
+  geminus NAME [HARNESS]   talk to NAME (optionally with HARNESS)
   geminus persona          list personas and exit
   geminus persona NAME     talk to NAME
   geminus update           install the latest release of geminus
@@ -211,6 +212,7 @@ type request struct {
 
 func parseArgs(args []string) request {
 	var r request
+	usedPersonaCmd := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		value := func() string {
@@ -222,18 +224,39 @@ func parseArgs(args []string) request {
 			return args[i]
 		}
 		switch {
-		case len(args) == 1 && (arg == "version" || arg == "--version" || arg == "-v"):
-			r.version = true
-		case len(args) == 1 && (arg == "help" || arg == "--help" || arg == "-h"):
-			r.help = true
-		case arg == "update" && len(args) == 1:
-			r.update = true
-		case arg == "keygen" && len(args) == 1:
-			r.keygen = true
-		case arg == "release" && i == 0 && len(args) == 2:
-			r.release = args[1]
-			i = 1
-		case arg == "persona" && i == 0:
+		case i == 0 && (arg == "version" || arg == "--version" || arg == "-v"):
+			if len(args) != 1 {
+				r.badUsage = true
+			} else {
+				r.version = true
+			}
+		case i == 0 && (arg == "help" || arg == "--help" || arg == "-h"):
+			if len(args) != 1 {
+				r.badUsage = true
+			} else {
+				r.help = true
+			}
+		case i == 0 && arg == "update":
+			if len(args) != 1 {
+				r.badUsage = true
+			} else {
+				r.update = true
+			}
+		case i == 0 && arg == "keygen":
+			if len(args) != 1 {
+				r.badUsage = true
+			} else {
+				r.keygen = true
+			}
+		case i == 0 && arg == "release":
+			if len(args) != 2 {
+				r.badUsage = true
+			} else {
+				r.release = args[1]
+				i = 1
+			}
+		case i == 0 && arg == "persona":
+			usedPersonaCmd = true
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
 				r.persona = args[i]
@@ -241,13 +264,21 @@ func parseArgs(args []string) request {
 				r.list = true
 			}
 		case arg == "--harness" || arg == "-H":
-			r.harness = value()
+			if r.harness != "" {
+				r.badUsage = true
+			} else {
+				r.harness = value()
+			}
 		case arg == "--cwd":
 			r.cwd = value()
 		case arg == "--resume":
 			r.resume = value()
 		case arg == "--continue" || arg == "-c":
 			r.latest = true
+		case arg != "" && !strings.HasPrefix(arg, "-") && !r.list && r.persona == "":
+			r.persona = arg
+		case arg != "" && !strings.HasPrefix(arg, "-") && !r.list && !usedPersonaCmd && r.harness == "":
+			r.harness = arg
 		default:
 			r.badUsage = true
 		}

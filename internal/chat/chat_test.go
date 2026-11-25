@@ -364,13 +364,42 @@ func TestHarnessFlagAndWhatIsNotThere(t *testing.T) {
 	}
 }
 
+func TestPositionalPersonaAndHarness(t *testing.T) {
+	w := newWorld(t)
+	w.talk([]string{"chrome", "claude", "--cwd", "/src"}, [2]string{"hi", "echo: hi"})
+	w.expect("● chrome [THIS COMPUTER]  Claude Code", "in /src")
+
+	w = newWorld(t)
+	w.talk([]string{"sibyl"}, [2]string{"hi", "echo: hi"})
+	w.expect("● sibyl [REMOTE]  Hermes Agent")
+
+	w = newWorld(t)
+	if code := w.run([]string{"sibyl", "claude"}); code != 1 || !strings.Contains(w.errs.String(), `sibyl's computer has no harness "claude" (it has: hermes)`) {
+		t.Errorf("exit %d, stderr %q", code, w.errs)
+	}
+	w = newWorld(t)
+	if code := w.run([]string{"nobody"}); code != 1 || !strings.Contains(w.errs.String(), `no persona named "nobody"`) {
+		t.Errorf("exit %d, stderr %q", code, w.errs)
+	}
+}
+
 func TestUnknownPersonaAndBadUsage(t *testing.T) {
 	w := newWorld(t)
 	if code := w.run([]string{"persona", "nobody"}); code != 1 || !strings.Contains(w.errs.String(), `no persona named "nobody"`) {
 		t.Errorf("exit %d, stderr %q", code, w.errs)
 	}
-	for _, args := range [][]string{{"run"}, {"persona", "sibyl", "--bogus"}, {"persona", "--continue"}, {"--harness"},
-		{"persona", "sibyl", "--continue", "--resume", "x"}, {"sibyl"}} {
+	for _, args := range [][]string{
+		{"persona", "sibyl", "--bogus"},
+		{"persona", "--continue"},
+		{"--harness"},
+		{"persona", "sibyl", "--continue", "--resume", "x"},
+		{"chrome", "claude", "extra"},
+		{"chrome", "claude", "--harness", "hermes"},
+		{"chrome", "claude", "--continue"},
+		{"update", "extra"},
+		{"release"},
+		{"version", "extra"},
+	} {
 		if code := newWorld(t).run(args); code != 2 {
 			t.Errorf("%v: exit %d, want 2", args, code)
 		}
