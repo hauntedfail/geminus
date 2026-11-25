@@ -204,6 +204,9 @@ func (a *App) maybeAutoUpdate() {
 	if a.live != nil && a.live.hasDraft() {
 		return
 	}
+	if len(a.lines) > 0 {
+		return
+	}
 	if err := a.slashUpdate(); err != nil {
 		a.autoUpdateFailed = v
 		a.Out.line(a.Out.fail("✗ auto-" + err.Error()))

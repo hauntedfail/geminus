@@ -98,6 +98,8 @@ func (a *App) handle(line string) error {
 		a.Out.line(a.status())
 	case "/default":
 		return a.setDefaults(arg)
+	case "/config":
+		return a.slashConfig(arg)
 	case "/ui":
 		return a.setUI(arg)
 	case "/update":
@@ -132,7 +134,7 @@ func (a *App) tune(kind, value string) error {
 		a.Out.line(fmt.Sprintf("%s: %s  (this conversation only; /%s default goes back to %s's own)", kind, oneLine(*current), kind, oneLine(a.harness.Name)))
 	}
 	if value == "" {
-		if kind == "model" && a.live != nil {
+		if (kind == "model" || kind == "effort") && a.live != nil {
 			if len(a.harness.Options) == 0 {
 				return fmt.Errorf("the bridge on %s's computer is too old to pass a %s: geminish 0.6 or later must be running there. Prompts without one still work", a.cur.Name, kind)
 			}
@@ -140,24 +142,49 @@ func (a *App) tune(kind, value string) error {
 				return fmt.Errorf("%s takes no %s setting from geminus on %s's computer", oneLine(a.harness.Name), kind, a.cur.Name)
 			}
 			disp := a.harnessDisplay(*a.harness)
-			cfg := menuConfig{
-				title:             "Select model",
-				subtitle:          fmt.Sprintf("Model for this conversation · %s", disp),
-				searchPlaceholder: "Type to search models…",
-				customTitle:       "Custom model",
-				customSubtitle:    fmt.Sprintf("Enter any model name for %s (or \"default\" to reset)", disp),
-				customPlaceholder: "e.g. group/lvmh, opus, sonnet",
-				items:             a.modelMenuItems(),
-				validate: func(v string) error {
-					if !wire.ValidSetting("model", v) {
-						return fmt.Errorf("%q is not a usable model name (letters, digits and . _ - : / @ # + [ ])", oneLine(v))
-					}
-					return nil
-				},
+			var cfg menuConfig
+			if kind == "model" {
+				cfg = menuConfig{
+					title:             "Select model",
+					subtitle:          fmt.Sprintf("Model for this conversation · %s", disp),
+					searchPlaceholder: "Type to search models…",
+					customTitle:       "Custom model",
+					customSubtitle:    fmt.Sprintf("Enter any model name for %s (or \"default\" to reset)", disp),
+					customPlaceholder: "e.g. group/lvmh, opus, sonnet",
+					customEmptyErr:    "enter a model name, or press Esc to go back",
+					items:             a.modelMenuItems(),
+					validate: func(v string) error {
+						if !wire.ValidSetting("model", v) {
+							return fmt.Errorf("%q is not a usable model name (letters, digits and . _ - : / @ # + [ ])", oneLine(v))
+						}
+						return nil
+					},
+				}
+			} else {
+				saved := ""
+				if a.cur != nil {
+					saved = a.defaults.Personas[a.cur.Name].Effort
+				}
+				cfg = menuConfig{
+					title:             "Select effort",
+					subtitle:          fmt.Sprintf("Reasoning effort for this conversation · %s", disp),
+					searchPlaceholder: "Type to search effort levels…",
+					customTitle:       "Custom effort",
+					customSubtitle:    fmt.Sprintf("Enter any effort level for %s (or \"default\" to reset)", disp),
+					customPlaceholder: "e.g. low, medium, high, max",
+					customEmptyErr:    "enter an effort level, or press Esc to go back",
+					items:             effortMenuItems(a.tuning.Effort, saved, a.harness.Name),
+					validate: func(v string) error {
+						if !wire.ValidSetting("effort", v) {
+							return fmt.Errorf("%q is not a usable effort level (letters, digits and . _ -)", oneLine(v))
+						}
+						return nil
+					},
+				}
 			}
 			picked, ok := a.live.selectOption(a.ctx, cfg)
 			if !ok {
-				a.Out.line(a.Out.dim("model unchanged"))
+				a.Out.line(a.Out.dim(kind + " unchanged"))
 				return nil
 			}
 			value = picked

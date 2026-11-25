@@ -283,7 +283,7 @@ func isGeminusCommand(line string) bool {
 	cmd, _, _ := strings.Cut(line, " ")
 	switch cmd {
 	case "/help", "/status", "/persona", "/personas", "/harness", "/new", "/cwd",
-		"/sessions", "/resume", "/default", "/ui", "/update", "/model", "/effort", "/quit", "/exit":
+		"/sessions", "/resume", "/default", "/config", "/ui", "/update", "/model", "/effort", "/quit", "/exit":
 		return true
 	}
 	return false

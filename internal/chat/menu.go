@@ -29,6 +29,8 @@ type menuConfig struct {
 	customTitle       string
 	customSubtitle    string
 	customPlaceholder string
+	customEmptyErr    string
+	initialValue      string
 	items             []menuItem
 	validate          func(string) error
 }
@@ -87,10 +89,22 @@ func (m *selectMenu) refreshFilter(selectCurrent bool) {
 		m.offset = 0
 		if selectCurrent {
 			m.cursor = 0
-			for i, it := range m.filtered {
-				if it.current {
-					m.cursor = i
-					break
+			matched := false
+			if m.cfg.initialValue != "" {
+				for i, it := range m.filtered {
+					if it.value == m.cfg.initialValue {
+						m.cursor = i
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched {
+				for i, it := range m.filtered {
+					if it.current {
+						m.cursor = i
+						break
+					}
 				}
 			}
 		} else if len(m.filtered) == 0 {
@@ -355,7 +369,11 @@ func (m *selectMenu) handleCustomKey(k key) (closed bool) {
 	case keyEnter:
 		val := strings.TrimSpace(e.String())
 		if val == "" {
-			m.errMsg = "enter a model name, or press Esc to go back"
+			if m.cfg.customEmptyErr != "" {
+				m.errMsg = m.cfg.customEmptyErr
+			} else {
+				m.errMsg = "enter a value, or press Esc to go back"
+			}
 			return false
 		}
 		if val == "default" || val == "none" {
@@ -680,8 +698,14 @@ var harnessModelPresets = map[string][]struct{ id, desc string }{
 // modelMenuItems builds the deduplicated option list for /model on the
 // currently selected persona and harness.
 func (a *App) modelMenuItems() []menuItem {
+	return a.modelMenuItemsFor(a.tuning.Model)
+}
+
+// modelMenuItemsFor builds the deduplicated model option list with activeModel
+// marked as current.
+func (a *App) modelMenuItemsFor(activeModel string) []menuItem {
 	h := *a.harness
-	curModel := a.tuning.Model
+	curModel := activeModel
 	savedHere := ""
 	if a.cur != nil {
 		savedHere = a.defaults.Personas[a.cur.Name].Model
@@ -789,4 +813,68 @@ func appendTag(base, tag string) string {
 		return base
 	}
 	return base + " · " + tag
+}
+
+// effortPresets are standard reasoning effort levels offered in /effort and
+// /config menus. Custom levels remain available via the custom input option.
+var effortPresets = []struct{ id, desc string }{
+	{"low", "Fastest, minimal reasoning"},
+	{"medium", "Balanced speed and reasoning depth"},
+	{"high", "Thorough reasoning for complex tasks"},
+	{"max", "Maximum reasoning depth"},
+}
+
+// effortMenuItems builds the option list for /effort or default effort menus.
+func effortMenuItems(active, saved, harnessName string) []menuItem {
+	defaultDesc := "Harness default"
+	if harnessName != "" {
+		defaultDesc = oneLine(harnessName) + "'s own default"
+	}
+	items := []menuItem{
+		{
+			value:   "",
+			label:   "default",
+			desc:    defaultDesc,
+			current: active == "",
+		},
+	}
+	seen := map[string]int{"": 0}
+	add := func(id, desc string) {
+		id = strings.TrimSpace(id)
+		if id == "" || !wire.ValidSetting("effort", id) {
+			return
+		}
+		if idx, ok := seen[id]; ok {
+			if items[idx].desc == "" && desc != "" {
+				items[idx].desc = desc
+			}
+			return
+		}
+		seen[id] = len(items)
+		items = append(items, menuItem{
+			value:   id,
+			label:   id,
+			desc:    desc,
+			current: active == id,
+		})
+	}
+	for _, p := range effortPresets {
+		desc := p.desc
+		if saved == p.id {
+			desc = appendTag(desc, "saved default")
+		}
+		add(p.id, desc)
+	}
+	if saved != "" {
+		add(saved, "Saved default")
+	}
+	if active != "" {
+		add(active, "Current setting")
+	}
+	items = append(items, menuItem{
+		label:  "Custom effort…",
+		desc:   "Enter any effort level",
+		custom: true,
+	})
+	return items
 }
