@@ -108,7 +108,7 @@ var slashCommands = []struct{ name, args, what string }{
 	{"/sessions", "", "list your conversations"},
 	{"/resume", "[ID|N]", "reopen a conversation"},
 	{"/status", "", "show where things stand"},
-	{"/update", "", "install the latest geminus, stay in this conversation"},
+	{"/update", "[auto on|off]", "install the latest geminus, or toggle auto-update"},
 	{"/default", "…", "show or change your defaults"},
 	{"/ui", "…", "customize prompt box display"},
 	{"/help", "", "list geminus commands"},

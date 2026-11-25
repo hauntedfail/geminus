@@ -42,3 +42,5 @@ func termSize(out *os.File) (cols, rows int) {
 	}
 	return int(size.Col), int(size.Row)
 }
+
+func cancelInputRead(*os.File) {}

@@ -87,7 +87,17 @@ func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
 		var parser keyParser
 		buf := make([]byte, 4096)
 		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
 			n, err := inFile.Read(buf)
+			select {
+			case <-done:
+				return
+			default:
+			}
 			if n > 0 && lv.feed(parser.feed(buf[:n]), lines) {
 				cancel() // do not wait for a request that is under way
 				return
@@ -104,6 +114,7 @@ func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
 		}
 		stopped = true
 		close(done)
+		cancelInputRead(inFile)
 		lv.close()
 		restore()
 		cancel()
@@ -195,6 +206,10 @@ func (a *App) loopLive() {
 	defer ticker.Stop()
 	refreshed := a.Now()
 	a.sync()
+	a.maybeAutoUpdate()
+	if a.restarting {
+		return
+	}
 	for {
 		select {
 		case line, ok := <-a.lines:
@@ -216,7 +231,21 @@ func (a *App) loopLive() {
 				return
 			}
 			a.goOnReading(line)
+			a.maybeAutoUpdate()
+			if a.restarting {
+				return
+			}
+		case v := <-a.newerFound:
+			a.newer = v
+			a.maybeAutoUpdate()
+			if a.restarting {
+				return
+			}
 		case <-ticker.C:
+			a.maybeAutoUpdate()
+			if a.restarting {
+				return
+			}
 			if len(a.waiting) > 0 && a.session != "" {
 				_, _, err := a.poll("")
 				a.linked(err)

@@ -101,7 +101,7 @@ func (a *App) handle(line string) error {
 	case "/ui":
 		return a.setUI(arg)
 	case "/update":
-		return a.slashUpdate()
+		return a.slashUpdateCmd(arg)
 	case "/model", "/effort":
 		return a.tune(cmd[1:], arg)
 	default:
@@ -258,6 +258,14 @@ func (a *App) setDefaults(arg string) error {
 		}
 		a.Out.line(head + ")")
 		a.Out.line("  persona  " + show(a.defaults.Persona))
+		autoStatus := "off"
+		if a.autoUpdateEnabled() {
+			autoStatus = "on"
+		}
+		if src := a.autoUpdateSource(); src != "" {
+			autoStatus += " (" + src + ")"
+		}
+		a.Out.line("  auto_update  " + autoStatus)
 		names := make([]string, 0, len(a.defaults.Personas))
 		for name := range a.defaults.Personas {
 			names = append(names, name)
@@ -341,8 +349,24 @@ func (a *App) setDefaults(arg string) error {
 		}
 		pd.Effort = value
 		d.Personas[a.cur.Name] = pd
+	case "auto_update", "autoupdate":
+		if value == "" {
+			d.AutoUpdate = nil
+			said = "default auto_update: (none)"
+		} else {
+			on, err := parseBoolToggle(value)
+			if err != nil {
+				return errors.New("usage: /default auto_update on|off (or none)")
+			}
+			d.AutoUpdate = &on
+			if on {
+				said = "default auto_update: on"
+			} else {
+				said = "default auto_update: off"
+			}
+		}
 	default:
-		return errors.New("usage: /default [save | persona NAME | harness ID | cwd DIR | model NAME | effort LEVEL]")
+		return errors.New("usage: /default [save | persona NAME | harness ID | cwd DIR | model NAME | effort LEVEL | auto_update on|off]")
 	}
 	if err := a.saveDefaults(d); err != nil {
 		return err
@@ -351,6 +375,9 @@ func (a *App) setDefaults(arg string) error {
 		said = fmt.Sprintf("default %s: %s", key, show(value))
 	}
 	a.Out.line(said + " (saved in Honcho)")
+	if (key == "auto_update" || key == "autoupdate") && a.autoUpdateEnabled() {
+		a.checkAndAutoUpdateNow()
+	}
 	return nil
 }
 
@@ -382,6 +409,10 @@ func (a *App) cloneDefaults() wire.Defaults {
 			}
 		}
 		d.UI = &u
+	}
+	if a.defaults.AutoUpdate != nil {
+		v := *a.defaults.AutoUpdate
+		d.AutoUpdate = &v
 	}
 	return d
 }

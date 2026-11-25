@@ -547,3 +547,141 @@ func TestSlashUpdateShowsVersionTransitionInRelaunchedAltScreen(t *testing.T) {
 	typed2("/quit\r")
 	<-done2
 }
+
+func TestAutoUpdateConfigToggleAndPersistence(t *testing.T) {
+	w := newWorld(t)
+	w.talk([]string{"persona", "chrome", "--harness", "claude"},
+		[2]string{"/update auto", "auto_update: off (default)"},
+		[2]string{"/update auto on", "auto_update: on (saved in Honcho)"},
+		[2]string{"/default", "auto_update  on (Honcho)"},
+		[2]string{"/update auto off", "auto_update: off (saved in Honcho)"},
+		[2]string{"/default auto_update on", "default auto_update: on (saved in Honcho)"},
+		[2]string{"/update auto", "auto_update: on (Honcho)"},
+		[2]string{"/default auto_update none", "default auto_update: (none) (saved in Honcho)"},
+		[2]string{"/update auto", "auto_update: off (default)"})
+}
+
+func TestAutoUpdateCatchesReleaseDuringActiveSession(t *testing.T) {
+	running(t, "0.4.0")
+	w := newWorld(t)
+	r := newReleases(t, w)
+	w.app.UpdateCheck = 20 * time.Millisecond
+	term, typed, done := w.onTerminal(t, "persona", "chrome", "--harness", "claude")
+	term.waitFor(t, "╭─ Claude Code · model:default · effort:default ─", "chrome ─╮")
+	typed("/update auto on\r")
+	term.waitFor(t, "auto_update: on (saved in Honcho)")
+	typed("remember this\r")
+	term.waitFor(t, "echo: remember this")
+
+	// Publish a newer release while the session is open.
+	r.publish("0.5.0", true)
+	var args []string
+	select {
+	case args = <-r.restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("geminus did not auto-update during active session:\n%s", term.text())
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("geminus did not exit after auto-update")
+	}
+	sessions := w.srv.Sessions()
+	if len(sessions) != 1 {
+		t.Fatalf("%d conversations", len(sessions))
+	}
+	want := []string{r.exe, "persona", "chrome", "--resume", sessions[0].ID}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("restarted with %v, want %v", args, want)
+	}
+	if got := r.program(); got != "the program of 0.5.0" {
+		t.Errorf("program = %q", got)
+	}
+}
+
+func TestAutoUpdateDefersWhileTypingDraft(t *testing.T) {
+	running(t, "0.4.0")
+	w := newWorld(t)
+	r := newReleases(t, w)
+	on := true
+	w.app.Profile.AutoUpdate = &on
+	w.app.UpdateCheck = 20 * time.Millisecond
+	term, typed, done := w.onTerminal(t, "persona", "chrome", "--harness", "claude")
+	term.waitFor(t, "╭─ Claude Code · model:default · effort:default ─", "chrome ─╮")
+
+	// Start typing without submitting.
+	typed("still typing")
+	term.waitFor(t, "still typing")
+
+	// Publish a release: must not restart while draft is in the box.
+	r.publish("0.5.0", true)
+	term.waitFor(t, "update 0.5.0 · /update")
+	select {
+	case args := <-r.restarted:
+		t.Fatalf("auto-updated while user had an unsent draft: %v", args)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// Submit the draft: prompt goes out, then auto-update restarts immediately.
+	typed("\r")
+	var args []string
+	select {
+	case args = <-r.restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("geminus did not auto-update after draft was sent:\n%s", term.text())
+	}
+	<-done
+	sessions := w.srv.Sessions()
+	if len(sessions) != 1 {
+		t.Fatalf("%d conversations", len(sessions))
+	}
+	want := []string{r.exe, "persona", "chrome", "--resume", sessions[0].ID}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("restarted with %v, want %v", args, want)
+	}
+}
+
+func TestAutoUpdateFromProfileConfigOnStartup(t *testing.T) {
+	running(t, "0.4.0")
+	w := newWorld(t)
+	r := newReleases(t, w)
+	r.publish("0.5.0", true)
+	on := true
+	w.app.Profile.AutoUpdate = &on
+	w.app.UpdateCheck = 20 * time.Millisecond
+	_, _, done := w.onTerminal(t, "persona", "chrome", "--harness", "claude")
+	select {
+	case args := <-r.restarted:
+		want := []string{r.exe, "persona", "chrome", "--harness", "claude"}
+		if strings.Join(args, " ") != strings.Join(want, " ") {
+			t.Errorf("restarted with %v, want %v", args, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("geminus did not auto-update on startup")
+	}
+	<-done
+	if got := r.program(); got != "the program of 0.5.0" {
+		t.Errorf("program = %q", got)
+	}
+}
+
+func TestAutoUpdateDisabledShowsNoticeDuringSessionWithoutRestart(t *testing.T) {
+	running(t, "0.4.0")
+	w := newWorld(t)
+	r := newReleases(t, w)
+	w.app.UpdateCheck = 20 * time.Millisecond
+	term, typed, done := w.onTerminal(t, "persona", "chrome", "--harness", "claude")
+	term.waitFor(t, "╭─ Claude Code · model:default · effort:default ─")
+	r.publish("0.5.0", true)
+	term.waitFor(t, "update 0.5.0 · /update")
+	select {
+	case args := <-r.restarted:
+		t.Fatalf("auto-updated while disabled: %v", args)
+	case <-time.After(150 * time.Millisecond):
+	}
+	typed("/quit\r")
+	<-done
+}

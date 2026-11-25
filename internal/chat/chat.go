@@ -61,11 +61,11 @@ const commandHelp = `geminus commands
                          selector on a terminal; /model default resets)
   /effort [LEVEL]        effort for this conversation (/effort default)
   /status                show persona, harness, bridge and conversation
-  /update                install the latest release of geminus and carry on
-                         in this conversation
+  /update [auto on|off]  install the latest release of geminus and carry on
+                         in this conversation, or toggle automatic updates
   /default               show your defaults; /default save keeps the current
                          persona, harness, directory, model and effort;
-                         /default persona|harness|cwd|model|effort VALUE (or none)
+                         /default persona|harness|cwd|model|effort|auto_update VALUE (or none)
   /ui                    show or customize prompt box display
                          (/ui model|effort|node on|off, /ui label ID NAME, /ui reset)
   /quit                  leave geminus
@@ -92,11 +92,12 @@ type App struct {
 	Out     *Printer
 	Profile profile.Profile
 	Honcho  *honcho.Client
-	// Now and the two intervals are replaceable for tests.
-	Now       func() time.Time
-	Watch     time.Duration
-	Idle      time.Duration
-	SlowAfter time.Duration
+	// Now and the intervals are replaceable for tests.
+	Now         func() time.Time
+	Watch       time.Duration
+	Idle        time.Duration
+	SlowAfter   time.Duration
+	UpdateCheck time.Duration
 
 	ctx   context.Context
 	lines <-chan string
@@ -153,11 +154,12 @@ type App struct {
 	// newerFound has delivered it. restarting is set by /update when the
 	// new program is to take over, with restartWith as its arguments and
 	// restartNotice printed on the primary screen after leaving alt-screen.
-	newer         string
-	newerFound    <-chan string
-	restarting    bool
-	restartWith   []string
-	restartNotice string
+	newer            string
+	newerFound       <-chan string
+	autoUpdateFailed string
+	restarting       bool
+	restartWith      []string
+	restartNotice    string
 	// readOn tells the keyboard reader, which stops after an /update line,
 	// to read on.
 	readOn chan<- struct{}
@@ -501,8 +503,20 @@ func (a *App) loop() {
 					}
 				}
 				break wait
+			case v := <-a.newerFound:
+				a.newer = v
+				if a.autoUpdateEnabled() && v != a.autoUpdateFailed {
+					a.Out.line("")
+					a.maybeAutoUpdate()
+					break wait
+				}
 			case <-idle.C:
 				// Results are asynchronous: show what arrived while idle.
+				if a.autoUpdateEnabled() && a.newerRelease() != "" && a.newerRelease() != a.autoUpdateFailed {
+					a.Out.line("")
+					a.maybeAutoUpdate()
+					break wait
+				}
 				if len(a.waiting) > 0 && a.session != "" && a.arrivals() {
 					break wait
 				}

@@ -56,6 +56,8 @@ type Profile struct {
 	HumanPubKeys []ed25519.PublicKey
 	// RequireEd25519 is true when geminise.json sets geminus.human_auth = "ed25519_only".
 	RequireEd25519 bool
+	// AutoUpdate holds the optional local geminise.json geminus.auto_update setting.
+	AutoUpdate *bool
 }
 
 // IsAgent reports whether name is an agent of the group.
@@ -191,10 +193,17 @@ func loadFrom(home string) (Profile, error) {
 	}
 	if len(group.Geminus) > 0 {
 		var gOpts struct {
-			HumanAuth string `json:"human_auth"`
+			HumanAuth  string `json:"human_auth"`
+			AutoUpdate *bool  `json:"auto_update"`
 		}
-		if json.Unmarshal(group.Geminus, &gOpts) == nil && strings.EqualFold(strings.TrimSpace(gOpts.HumanAuth), "ed25519_only") {
-			p.RequireEd25519 = true
+		if json.Unmarshal(group.Geminus, &gOpts) == nil {
+			if strings.EqualFold(strings.TrimSpace(gOpts.HumanAuth), "ed25519_only") {
+				p.RequireEd25519 = true
+			}
+			if gOpts.AutoUpdate != nil {
+				v := *gOpts.AutoUpdate
+				p.AutoUpdate = &v
+			}
 		}
 	}
 	keyPath := filepath.Join(home, HumanKeyFile)

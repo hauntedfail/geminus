@@ -398,6 +398,14 @@ type Defaults struct {
 	Personas map[string]PersonaDefaults `json:"personas,omitempty"`
 	// UI holds prompt-box display preferences; nil means built-in defaults.
 	UI *UIDefaults `json:"ui,omitempty"`
+	// AutoUpdate enables automatic installation and relaunch when a newer
+	// geminus release is published; nil means unset (default off).
+	AutoUpdate *bool `json:"auto_update,omitempty"`
+}
+
+// AutoUpdateEnabled reports whether automatic updates are enabled in defaults.
+func (d Defaults) AutoUpdateEnabled() bool {
+	return d.AutoUpdate != nil && *d.AutoUpdate
 }
 
 // PersonaDefaults are the preselected harness, directory and tuning on one persona.
