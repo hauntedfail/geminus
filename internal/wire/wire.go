@@ -348,6 +348,12 @@ type NodeCard struct {
 	// names none, with a signature of its own. It is only ever shown.
 	CWD    string `json:"cwd,omitempty"`
 	CWDSig string `json:"cwd_sig,omitempty"`
+	// Proto, BridgeVersion, and Capabilities declare the bridge's wire protocol
+	// version and supported features, authenticated by CapsSig.
+	Proto         int      `json:"proto,omitempty"`
+	BridgeVersion string   `json:"bridge_version,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
+	CapsSig       string   `json:"caps_sig,omitempty"`
 }
 
 // ParseNodeCard returns the card a member computer signed for exactly this
@@ -385,6 +391,10 @@ func ParseNodeCard(secret []byte, peer string, raw json.RawMessage) (NodeCard, b
 	// Likewise a directory nobody signed is not shown.
 	if card.CWD == "" || !Verify(secret, card.CWD, CWDLabel(peer), card.TS, card.CWDSig) {
 		card.CWD, card.CWDSig = "", ""
+	}
+	// Likewise protocol/capabilities claims nobody signed are ignored.
+	if card.CapsSig == "" || card.Proto <= 0 || !Verify(secret, CapsText(card.Proto, card.BridgeVersion, card.Capabilities), CapsLabel(peer), card.TS, card.CapsSig) {
+		card.Proto, card.BridgeVersion, card.Capabilities, card.CapsSig = 0, "", nil, ""
 	}
 	return card, true
 }

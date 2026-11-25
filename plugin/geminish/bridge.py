@@ -612,21 +612,42 @@ class Api:
 
 # ----- the node card ---------------------------------------------------------------
 
+PROTOCOL_VERSION = 1
+BRIDGE_CAPABILITIES = ("ed25519", "model_menu", "multi_pubkey", "provider_model")
+
+
+def caps_label(peer: str) -> str:
+    return f"geminus-node-caps:{peer}"
+
+
+def caps_text(proto: int, bridge_version: str, caps) -> str:
+    norm = sorted({str(c).strip() for c in caps if str(c).strip()})
+    return f"v{int(proto)}:{str(bridge_version).strip()}:{','.join(norm)}"
+
+
 def card_text(harnesses) -> str:
     """What the options signature of a node card covers: each program's id followed by its options."""
     return ",".join(":".join((h.id, *h.options)) for h in harnesses)
 
 
 def node_card(secret: bytes, peer: str, harnesses, now: float, cwd: str = "",
-              models: dict[str, list[str]] | None = None) -> dict:
+              models: dict[str, list[str]] | None = None,
+              bridge_version: str | None = None,
+              capabilities: tuple[str, ...] | list[str] | None = None,
+              proto: int = PROTOCOL_VERSION) -> dict:
     """``sig`` covers the program ids, as it always has, so a geminus from before options existed
-    still reads the card. ``options_sig`` covers the ids with their options, and ``cwd_sig`` the
-    directory a prompt runs in when its conversation names none, which geminus shows.
+    still reads the card. ``options_sig`` covers the ids with their options, ``cwd_sig`` the
+    directory a prompt runs in when its conversation names none, and ``caps_sig`` covers the
+    wire protocol version, geminish version, and supported capabilities.
 
     Optional ``models`` maps harness id to a list of advertised model names for geminus's ``/model``
     selector; older clients ignore it and signatures stay backward compatible."""
     stamp = int(now)
     models_map = models or {}
+    if bridge_version is None:
+        from . import __version__ as _bridge_version
+        bridge_version = _bridge_version
+    caps = sorted({str(c).strip() for c in (BRIDGE_CAPABILITIES if capabilities is None else capabilities) if str(c).strip()})
     entries = []
     for h in harnesses:
         entry: dict = {"id": h.id, "name": h.name, "options": list(h.options)}
@@ -636,7 +657,9 @@ def node_card(secret: bytes, peer: str, harnesses, now: float, cwd: str = "",
         entries.append(entry)
     card = {"v": 1, "harnesses": entries,
             "ts": stamp, "sig": sign(secret, ",".join(h.id for h in harnesses), node_label(peer), stamp),
-            "options_sig": sign(secret, card_text(harnesses), options_label(peer), stamp)}
+            "options_sig": sign(secret, card_text(harnesses), options_label(peer), stamp),
+            "proto": int(proto), "bridge_version": str(bridge_version), "capabilities": caps,
+            "caps_sig": sign(secret, caps_text(proto, bridge_version, caps), caps_label(peer), stamp)}
     if cwd:
         card.update(cwd=cwd, cwd_sig=sign(secret, cwd, cwd_label(peer), stamp))
     return card
@@ -974,7 +997,9 @@ class Bridge:
             if not verify(self.cfg.secret, content, label, sent_at, sig):
                 return False, "the signature does not verify"
             return True, ""
-        return False, "unsupported signature algorithm"
+        from . import __version__ as _bridge_version
+        supported = "ed25519" if self.human_auth == "ed25519_only" else "ed25519, hmac-sha256"
+        return False, f"unsupported signature algorithm {sig_alg!r} (geminish {_bridge_version} supports {supported})"
 
     def _state(self, sid: str, message: dict, state: str, detail: str = "") -> None:
         metadata = dict(message.get("metadata") or {})

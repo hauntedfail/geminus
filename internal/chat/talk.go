@@ -210,6 +210,9 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				}
 			case wire.StateRefused:
 				a.Out.line(a.Out.fail(fmt.Sprintf("✗ %s refused the prompt: %s", a.cur.Name, oneLine(meta.Detail))))
+				if hint := wire.RefusalHint(a.cur.Name, a.cur.Card, meta.Detail, len(a.humanAuth().Priv) > 0); hint != "" {
+					a.Out.line(a.Out.warn("! " + hint))
+				}
 				delete(a.waiting, m.ID)
 				printed = true
 				done = done || m.ID == turn

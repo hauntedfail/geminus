@@ -270,7 +270,27 @@ class TestBridgeModelDiscovery(unittest.TestCase):
         self.assertEqual(card_with["sig"], card_without["sig"])
         self.assertEqual(card_with["options_sig"], card_without["options_sig"])
         self.assertEqual(card_with["cwd_sig"], card_without["cwd_sig"])
+        self.assertEqual(card_with["caps_sig"], card_without["caps_sig"])
         self.assertEqual(card_with["harnesses"][0]["models"], ["sibyl:group/lvmh", "sibyl:group/yvng"])
+
+    def test_node_card_signs_protocol_and_capabilities(self):
+        secret = hashlib.sha256(b"test-group-secret").digest()
+        hermes = next(h for h in bridge.HARNESSES if h.id == "hermes")
+        card = bridge.node_card(secret, "chrome", [hermes], 1700000000.0, "/tmp")
+        self.assertEqual(card["proto"], bridge.PROTOCOL_VERSION)
+        self.assertTrue(card["bridge_version"])
+        self.assertIn("ed25519", card["capabilities"])
+        self.assertIn("model_menu", card["capabilities"])
+        self.assertIn("multi_pubkey", card["capabilities"])
+        self.assertTrue(
+            bridge.verify(
+                secret,
+                bridge.caps_text(card["proto"], card["bridge_version"], card["capabilities"]),
+                bridge.caps_label("chrome"),
+                card["ts"],
+                card["caps_sig"],
+            )
+        )
 
 
 if __name__ == "__main__":

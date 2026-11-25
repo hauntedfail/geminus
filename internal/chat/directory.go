@@ -32,6 +32,8 @@ type Persona struct {
 	// Home is the directory the bridge runs a prompt in when the
 	// conversation names none; "" when the bridge did not say.
 	Home string
+	// Card is the verified node card published by this persona's bridge.
+	Card wire.NodeCard
 	// endpoint is the computer's doorbell, if it published one.
 	endpoint string
 }
@@ -76,7 +78,7 @@ func (a *App) loadDirectory() error {
 		}
 		p := Persona{Name: peer.ID, Local: peer.ID == a.Profile.Local}
 		if card, ok := wire.ParseNodeCard(a.Profile.Secret, peer.ID, peer.Metadata[wire.NodeKey]); ok {
-			p.Reported, p.Harnesses, p.Seen, p.Home = true, card.Harnesses, time.Unix(card.TS, 0), card.CWD
+			p.Reported, p.Harnesses, p.Seen, p.Home, p.Card = true, card.Harnesses, time.Unix(card.TS, 0), card.CWD, card
 		}
 		p.endpoint, _ = wire.Endpoint(a.Profile.Secret, peer.ID, peer.Metadata[wire.PushKey])
 		a.personas = append(a.personas, p)
@@ -157,6 +159,11 @@ func (a *App) selectPersona(name string) error {
 	a.cur, a.harness, a.session, a.title, a.tuning = &p, nil, "", "", wire.Tuning{}
 	a.cwd = a.defaults.Personas[p.Name].CWD
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
+	if a.Out != nil {
+		for _, w := range wire.CheckBridgeCompatibility(p.Name, p.Card, len(a.humanAuth().Priv) > 0) {
+			a.Out.line(a.Out.warn("! " + w))
+		}
+	}
 	return nil
 }
 
