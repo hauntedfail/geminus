@@ -196,24 +196,24 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 	// was written or retained in the latest window.
 	failedDetail := map[string]string{}
 	donePrompts := map[string]bool{}
-	resolvedTurns := map[string]bool{}
+	finishedTurns := map[string]bool{}
 	for _, m := range messages {
 		meta, ok := parseMeta(m)
 		if !ok {
 			continue
 		}
 		switch meta.Role {
+		case wire.RolePrompt:
+			if meta.State == wire.StateDone || meta.State == wire.StateFailed || meta.State == wire.StateRefused {
+				finishedTurns[m.ID] = true
+			}
 		case wire.RoleAnswer:
 			if a.ownAnswer(m, meta) {
 				a.markAskAnswered(meta.Request)
 			}
 		case wire.RoleOutput:
 			if meta.Final && a.genuine(m, meta) {
-				resolvedTurns[meta.Turn] = true
-			}
-		case wire.RoleState:
-			if (meta.Phase == "answered" || meta.Phase == "timeout") && a.genuineState(m, meta) {
-				resolvedTurns[meta.Turn] = true
+				finishedTurns[meta.Turn] = true
 			}
 		}
 	}
@@ -315,7 +315,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 			a.shown[m.ID] = true
 			if a.genuineAsk(m, meta) {
 				a.showBridgeAsk(m.Content, meta)
-				if !a.answeredAsk[meta.Request] && !resolvedTurns[meta.Turn] &&
+				if !a.answeredAsk[meta.Request] && !finishedTurns[meta.Turn] &&
 					(meta.Deadline == 0 || a.Now().Unix() < meta.Deadline) {
 					a.setPendingAsk(&pendingAsk{
 						Turn:     meta.Turn,
@@ -641,24 +641,24 @@ func (a *App) resume(want string) error {
 	}
 
 	a.Out.line(a.Out.dim("── conversation so far ──"))
-	resolvedTurns := map[string]bool{}
+	finishedTurns := map[string]bool{}
 	for _, m := range messages {
 		meta, ok := parseMeta(m)
 		if !ok {
 			continue
 		}
 		switch meta.Role {
+		case wire.RolePrompt:
+			if meta.State == wire.StateDone || meta.State == wire.StateFailed || meta.State == wire.StateRefused {
+				finishedTurns[m.ID] = true
+			}
 		case wire.RoleAnswer:
 			if a.ownAnswer(m, meta) {
 				a.markAskAnswered(meta.Request)
 			}
 		case wire.RoleOutput:
 			if meta.Final && a.genuine(m, meta) {
-				resolvedTurns[meta.Turn] = true
-			}
-		case wire.RoleState:
-			if (meta.Phase == "answered" || meta.Phase == "timeout") && a.genuineState(m, meta) {
-				resolvedTurns[meta.Turn] = true
+				finishedTurns[meta.Turn] = true
 			}
 		}
 	}
@@ -700,9 +700,12 @@ func (a *App) resume(want string) error {
 			}
 		case meta.Role == wire.RoleState && a.genuineState(m, meta):
 			a.showBridgeState(m.Content, meta)
+			if (meta.Phase == "answered" || meta.Phase == "timeout") && a.pendingAsk != nil && a.pendingAsk.Turn == meta.Turn {
+				a.clearPendingAsk()
+			}
 		case meta.Role == wire.RoleAsk && a.genuineAsk(m, meta):
 			a.showBridgeAsk(m.Content, meta)
-			if !a.answeredAsk[meta.Request] && !resolvedTurns[meta.Turn] &&
+			if !a.answeredAsk[meta.Request] && !finishedTurns[meta.Turn] &&
 				(meta.Deadline == 0 || a.Now().Unix() < meta.Deadline) {
 				a.setPendingAsk(&pendingAsk{
 					Turn:     meta.Turn,

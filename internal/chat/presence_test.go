@@ -122,3 +122,64 @@ func TestBridgeAskAndSignedAnswer(t *testing.T) {
 		t.Fatalf("already-answered ask should not re-arm on resume: %+v", w.app.pendingAsk)
 	}
 }
+
+func TestMultipleSequentialAsksInSameTurn(t *testing.T) {
+	w := newWorld(t)
+	w.talk([]string{"persona", "sibyl"}, [2]string{"hello", "echo: hello"})
+	sid := w.srv.Sessions()[0].ID
+
+	ts := now.Unix()
+	turn := "turn-multi-ask"
+	appendAsk := func(reqID, q string) {
+		w.srv.Append(sid, "sibyl", q, map[string]any{wire.Kind: wire.Message{
+			V: 1, Role: wire.RoleAsk, Turn: turn, Request: reqID, Tool: "Bash",
+			Detail: q, Choices: []string{"allow", "deny"}, Deadline: ts + 1800, TS: ts,
+			Sig: wire.Sign(w.prof.Secret, q, wire.AskLabel(sid, turn, reqID, q, "allow,deny"), ts),
+		}})
+	}
+	appendState := func(phase, text string) {
+		w.srv.Append(sid, "sibyl", text, map[string]any{wire.Kind: wire.Message{
+			V: 1, Role: wire.RoleState, Turn: turn, Phase: phase, Detail: text, TS: ts,
+			Sig: wire.Sign(w.prof.Secret, text, wire.StateLabel(sid, turn, phase), ts),
+		}})
+	}
+
+	// Ask #1 arrives -> user allows -> bridge emits state=answered for the same turn.
+	appendAsk("req-1", "Run good-morning.mjs")
+	if _, _, err := w.app.poll(turn); err != nil {
+		t.Fatalf("poll ask 1: %v", err)
+	}
+	if w.app.pendingAsk == nil || w.app.pendingAsk.Request != "req-1" {
+		t.Fatalf("pendingAsk after ask 1 = %+v, want req-1", w.app.pendingAsk)
+	}
+	if err := w.app.handle("allow"); err != nil {
+		t.Fatalf("answer ask 1: %v", err)
+	}
+	appendState("answered", "answered: allow")
+
+	// Ask #2 arrives in the SAME turn after state=answered: must arm pendingAsk.
+	appendAsk("req-2", "Run git status")
+	if _, _, err := w.app.poll(turn); err != nil {
+		t.Fatalf("poll ask 2: %v", err)
+	}
+	if w.app.pendingAsk == nil || w.app.pendingAsk.Request != "req-2" {
+		t.Fatalf("pendingAsk after ask 2 = %+v, want req-2 (state=answered must not poison the turn)", w.app.pendingAsk)
+	}
+
+	// Ask #2 times out -> bridge emits state=timeout -> Ask #3 arrives in the SAME turn.
+	appendState("timeout", "timeout: no answer in 1800 seconds")
+	appendAsk("req-3", "Run fetch_backlog_updates.mjs")
+	if _, _, err := w.app.poll(turn); err != nil {
+		t.Fatalf("poll ask 3: %v", err)
+	}
+	if w.app.pendingAsk == nil || w.app.pendingAsk.Request != "req-3" {
+		t.Fatalf("pendingAsk after ask 3 = %+v, want req-3 (state=timeout must not poison later asks)", w.app.pendingAsk)
+	}
+
+	// Reopening the session must leave Ask #3 armed (not cleared by earlier answered/timeout states).
+	w.newApp()
+	w.talk([]string{"persona", "sibyl", "--continue"})
+	if w.app.pendingAsk == nil || w.app.pendingAsk.Request != "req-3" {
+		t.Fatalf("pendingAsk after resume = %+v, want req-3", w.app.pendingAsk)
+	}
+}
