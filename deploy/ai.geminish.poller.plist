@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- geminish poller for macOS. Replace every HOME_DIR with your home directory, then:
+       cp ai.geminish.poller.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.geminish.poller.plist
+     Stop and remove: launchctl bootout gui/$(id -u)/ai.geminish.poller -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.geminish.poller</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>HOME_DIR/.hermes/plugins/geminish/cli.py</string>
+    <string>poll</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>HOME_DIR/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HERMES_HOME</key><string>HOME_DIR/.hermes</string>
+  </dict>
+  <key>WorkingDirectory</key><string>HOME_DIR/.hermes</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>HOME_DIR/.hermes/geminise/poller.out.log</string>
+  <key>StandardErrorPath</key><string>HOME_DIR/.hermes/geminise/poller.err.log</string>
+</dict>
+</plist>

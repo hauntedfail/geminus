@@ -35,13 +35,16 @@ Three properties define it:
 
 ## Parts
 
-| Part | What it is |
-|---|---|
-| geminus | This repository: the client. One static binary, no dependencies outside the Go standard library. |
-| The bridge | A part of [geminish](docs/architecture.md#the-bridge) 0.5 or later, the resident poller that already runs on each computer. It picks prompts up from Honcho and runs them. |
-| geminus-latest-channel | Also this repository (`cmd/geminus-latest-channel`): the small server on sibyl that builds, signs and hands out geminus releases. See [Updating](#updating). |
+This repository is the monorepo for the runtime products in the family:
 
-geminus and geminish are separate products that share a Honcho workspace. geminish's agent-to-agent mail and geminus's conversations are told apart by their metadata and never mix. `docs/protocol.md` is the contract between the two.
+| Part | Where it lives | What it is |
+|---|---|---|
+| `geminus` | `cmd/geminus`, `internal/` | The terminal client. One static binary, no dependencies outside the Go standard library. |
+| `geminish` | `plugin/geminish`, `plugin/install.py`, `deploy/` | The Hermes plugin, resident poller, and [bridge](docs/architecture.md#the-bridge) (0.5+). Picks prompts up from Honcho, runs them, and handles agent-to-agent mail and OTA updates. See [plugin/README.md](plugin/README.md). |
+| `geminus-latest-channel` | `cmd/geminus-latest-channel`, `deploy/` | The small server that builds, signs, and serves `geminus` and `geminish` releases. See [Updating](#updating). |
+| `geminised` | `cmd/geminised` (`feat/transport-v2`), `deploy/geminised-relay.service` | Experimental end-to-end (P2P) blind encrypted relay and edge daemon on the `feat/transport-v2` branch. |
+
+`geminus` and `geminish` share a Honcho workspace and this repository, while their traffic stays strictly separated by metadata (`docs/protocol.md` is the contract between the two).
 
 ## Install
 
@@ -254,6 +257,8 @@ The wording of a prompt is never part of this. Nothing is added to what you type
 go build ./...
 go vet ./...
 go test ./... -count=1 -race
+python3 -m unittest discover -s plugin/geminish/tests -v
+GEMINISE_CONFIG=/nonexistent pytest -p no:cacheprovider plugin/tests -q
 bash scripts/test-linux.sh        # the same tests in a Linux container
 bash scripts/crossbuild.sh
 ```

@@ -1,0 +1,16 @@
+# systemd user unit for the geminised blind encrypted WebSocket relay.
+# Runs behind cloudflared (or another HTTPS reverse proxy) with no open firewall ports.
+#   cp deploy/geminised-relay.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now geminised-relay.service
+[Unit]
+Description=geminised End-to-End (P2P) blind encrypted WebSocket relay
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/geminised relay --http 127.0.0.1:8652 --path /geminise/relay
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
