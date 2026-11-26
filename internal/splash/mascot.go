@@ -6,25 +6,29 @@ import (
 	"strings"
 )
 
-// The mascot is the logo as a small figure of block characters: what sits
-// beside the name when geminus opens. It is drawn by hand on a grid of
-// mascotW by mascotH dots, two across and two down to a character, and it
-// moves now and then.
+// The mascot is a small figure of block characters: what sits beside the
+// name when geminus opens. It is the logo's head, round, horned and
+// long-eared, with one face that can be read at this size: a grotesque
+// carved in stone, gloating. The eyes are half shut under heavy lids and
+// look sideways, at the name beside it. The grin is as wide as the face, its
+// corners drawn up to the cheekbones, both rows of uneven teeth clenched and
+// a tusk at each corner hanging down past the jaw. It is drawn by hand on a
+// grid of mascotW by mascotH dots, two across and two down to a character,
+// and it moves now and then.
 
 // MascotCols and MascotRows are the mascot's size in characters.
 const (
-	MascotCols, MascotRows = 12, 5
+	MascotCols, MascotRows = 14, 6
 	mascotW, mascotH       = MascotCols * 2, MascotRows * 2
 )
 
-// A dot of the mascot: nothing, lime shell, bone (horns, the broken rim, the
-// white of the eye), the olive of the face inside, or ink.
+// A dot of the mascot: nothing, lime (the head), bone (horns, teeth, the
+// white of an eye) or ink.
 const (
-	dotNone  = '.'
-	dotLime  = 'L'
-	dotBone  = 'B'
-	dotOlive = 'O'
-	dotInk   = 'K'
+	dotNone = '.'
+	dotLime = 'L'
+	dotBone = 'B'
+	dotInk  = 'K'
 )
 
 type sprite [mascotH][mascotW]byte
@@ -39,58 +43,50 @@ func parseSprite(rows [mascotH]string) (s sprite) {
 	return s
 }
 
-// broken is the mascot as the logo shows it: the shell smiling with its eye
-// shut on the left, broken away on the right, and the other face inside.
-var broken = parseSprite([mascotH]string{
-	".....BB..........BB.....",
-	"....BBBBLLLLBBOOBBBB....",
-	".....LLLLLLBBKOOOOL.....",
-	"....LLLLLLLLBBKKOOLL....",
-	".LLLLLKLLKLBBKBBOOOLLLL.",
-	".LLLLLLKKLLLBBKBOOOLLLL.",
-	".LLLLKLLLLLBBKOOOOOLLLL.",
-	"....LLKKKKKLBBOKKOOL....",
-	".....LLLLLLBBOKOOKL.....",
-	"........LLLLBOOL........",
+// face is the mascot at rest. No character of it holds more than two
+// colours, so it is drawn exactly.
+var face = parseSprite([mascotH]string{
+	"...BB..LLLLLLLLLLLLLL..BB...",
+	"..BBBBLLLLLLLLLLLLLLLLBBBB..",
+	"....LLKKKKLLLLLLKKKKLLLL....",
+	"..LLLLBBBBKKLLLLBBBBKKLLLL..",
+	"LLLKLLLLLLLLLLLLLLLLLLLLKLLL",
+	"LLLLKLLLLLLKLLKLLLLLLLKLLLLL",
+	"LKLLLKKKKKKKKKKKKKKKKKKLLLKL",
+	"LLLLLKBBKBBKBBBKBKBKBBKLLLLL",
+	"..LLLLBBKKKKKKKKKKKKBBLLLL..",
+	"...LLLBBKBKBBKBBBKBKBBLLL...",
+	".....LBBLKKKKKKKKKKLBBL.....",
+	"........LLLLLLLLLLLL........",
 })
 
-// whole is the shell before it broke: the left half and its reflection.
-var whole = func() sprite {
-	s := broken
-	for y := range s {
-		for x := range s[y] {
-			if x >= mascotW/2 {
-				s[y][x] = s[y][mascotW-1-x]
-			}
-			// No crack yet: where the rim will be is still shell.
-			if s[y][x] == dotBone && y > 1 {
-				s[y][x] = dotLime
-			}
-		}
-	}
-	return s
-}()
+// Where the features are, in dots.
+const (
+	// An eye is eyeW dots wide on row eyeY: the white, and the dark at one
+	// end. The lid lies on the row over it, over the white; wide open the
+	// eye takes that row as well. The left eye starts at
+	// eyeX, the right eye as far from the other side. Both look the same
+	// way, so they are drawn alike.
+	eyeY, eyeX, eyeW = 3, 6, 6
+	// The teeth: the upper row from teethX on teethY, teethW wide; the
+	// lower row two rows down, under the line where they meet.
+	teethY, teethX, teethW = 7, 6, 16
+	// The tusks: tuskW dots wide from tuskX and from as far from the other
+	// side, at the ends of the upper teeth, down past the jaw.
+	tuskX, tuskW, tuskRows = 6, 2, 4
+)
 
-// The inner face's eye is two dots by two, at (eyeX, eyeY): white, with
-// the pupil in a lower corner.
-const eyeX, eyeY = 14, 4
-
-// eye redraws the inner face's eye: looking the other way, or shut.
-func (s *sprite) eye(other, shut bool) {
-	switch {
-	case shut:
-		s[eyeY][eyeX], s[eyeY][eyeX+1] = dotOlive, dotOlive
-		s[eyeY+1][eyeX], s[eyeY+1][eyeX+1] = dotInk, dotInk
-	case other:
-		s[eyeY+1][eyeX], s[eyeY+1][eyeX+1] = dotBone, dotInk
+// eyes redraws both eyes: the row over the eye and the eye's own, each eyeW
+// dots from left to right.
+func (s *sprite) eyes(over, eye string) {
+	for _, x := range [2]int{eyeX, mascotW - eyeX - eyeW} {
+		copy(s[eyeY-1][x:x+eyeW], over)
+		copy(s[eyeY][x:x+eyeW], eye)
 	}
 }
 
-// opening reports whether a dot is where the shell is broken away.
-func opening(x, y int) bool { return broken[y][x] != whole[y][x] }
-
 // MascotAnims names what the mascot can do.
-var MascotAnims = []string{"crack", "look", "shine", "glitch", "spin"}
+var MascotAnims = []string{"laugh", "ogle", "shine", "glitch", "spin"}
 
 // Mascot is the mascot doing one of the things it can do, over and over.
 type Mascot struct {
@@ -113,14 +109,14 @@ func NewMascot(name string, n uint32) Mascot {
 func (m Mascot) Name() string { return MascotAnims[m.anim] }
 
 // frame is the mascot's dots t seconds after it appeared. Every animation
-// is at rest, as the logo shows it, for most of its period.
+// starts at rest and is at rest for most of its period.
 func (m Mascot) frame(t float64) sprite {
 	t = math.Max(t, 0)
 	switch MascotAnims[m.anim] {
-	case "crack":
-		return m.crack(t)
-	case "look":
-		return m.look(t)
+	case "laugh":
+		return m.laugh(t)
+	case "ogle":
+		return m.ogle(t)
 	case "shine":
 		return m.shine(t)
 	case "glitch":
@@ -129,85 +125,44 @@ func (m Mascot) frame(t float64) sprite {
 	return m.spin(t)
 }
 
-// blink shuts the inner eye for a moment every few seconds.
-func blink(s *sprite, t float64) {
-	if p := math.Mod(t, 4.3); p > 3.9 && p < 4.05 {
-		s.eye(false, true)
-	}
-}
-
-// crack starts with the shell whole. A crack runs down it, the right half
-// falls away from the face inside, and later it closes again.
-func (m Mascot) crack(t float64) sprite {
-	const period = 10.0
-	p := math.Mod(t, period)
-	// How far the broken part has fallen, in dots: 0 is whole, mascotH gone.
-	var fallen float64
-	switch {
-	case p < 1.6:
-		fallen = 0
-	case p < 2.6:
-		// The crack first, then the fall.
-		fallen = math.Max(p-2.0, 0) / 0.6 * mascotH
-	case p < 8.4:
-		fallen = mascotH
-	case p < 9.0:
-		fallen = (9.0 - p) / 0.6 * mascotH
-	}
-	s := broken
-	if fallen < mascotH {
-		d := int(fallen)
-		for y := 0; y < mascotH; y++ {
-			for x := 0; x < mascotW; x++ {
-				if !opening(x, y) {
-					continue
-				}
-				// The shell that was d dots higher is here now, if it was
-				// part of what broke away.
-				if from := y - d; from >= 0 && opening(x, from) {
-					s[y][x] = whole[from][x]
-				}
-			}
-		}
-	}
-	// The crack itself shows from the moment it starts to run.
-	if p < 1.6 || p >= 9.0 {
-		return whole
-	}
-	if p < 2.0 {
-		s = whole
-		reach := int((p - 1.6) / 0.4 * mascotH)
-		for y := 0; y <= reach && y < mascotH; y++ {
-			for x := 0; x < mascotW; x++ {
-				if broken[y][x] == dotBone && whole[y][x] == dotLime {
-					s[y][x] = dotBone
-				}
-			}
-		}
+// laugh screws the eyes shut and opens and shuts the jaw a few times: the
+// lower teeth drop out of sight and come back.
+func (m Mascot) laugh(t float64) sprite {
+	s := face
+	p := math.Mod(t, 5.0) - 3.6
+	if p < 0 {
 		return s
 	}
-	if fallen >= mascotH {
-		blink(&s, t)
+	s.eyes("LLLLLL", "KKKKKK")
+	if int(p*9)%2 == 1 {
+		return s
+	}
+	// The tusks belong to the upper jaw: they stay.
+	for x := tuskX + tuskW; x < mascotW-tuskX-tuskW; x++ {
+		if s[teethY+2][x] == dotBone {
+			s[teethY+2][x] = dotInk
+		}
 	}
 	return s
 }
 
-// look lets the eye of the face inside wander and blink.
-func (m Mascot) look(t float64) sprite {
-	s := broken
-	switch p := math.Mod(t, 6.0); {
-	case p > 1.5 && p < 2.6:
-		s.eye(true, false)
-	case p > 3.4 && p < 3.55, p > 3.75 && p < 3.9:
-		s.eye(false, true)
+// ogle opens the eyes wide, as at something it wants, looks the other way
+// and back, and narrows them again.
+func (m Mascot) ogle(t float64) sprite {
+	s := face
+	switch p := math.Mod(t, 6.0) - 3.8; {
+	case p < 0:
+	case p >= 0.5 && p < 1.1:
+		s.eyes("KKBBBB", "KKBBBB")
+	case p < 1.9:
+		s.eyes("BBBBKK", "BBBBKK")
 	}
 	return s
 }
 
-// shine runs a gleam across the shell.
+// shine runs a gleam across the head.
 func (m Mascot) shine(t float64) sprite {
-	s := broken
-	// At rest first, as in every animation: geminus opens on the logo.
+	s := face
 	if p := math.Mod(t, 5.0) - 4.0; p >= 0 {
 		at := int(p*float64(mascotW+2*mascotH+6)) - 3
 		for y := range s {
@@ -218,14 +173,13 @@ func (m Mascot) shine(t float64) sprite {
 			}
 		}
 	}
-	blink(&s, t)
 	return s
 }
 
 // glitch shows the mascot as a bad signal now and then: rows of it jump
 // sideways.
 func (m Mascot) glitch(t float64) sprite {
-	s := broken
+	s := face
 	if p := math.Mod(t, 4.5); p >= 3.8 {
 		tick := uint32(t * 12)
 		for y := 0; y < mascotH; y += 2 {
@@ -238,15 +192,13 @@ func (m Mascot) glitch(t float64) sprite {
 				for x := range row {
 					row[x] = dotNone
 					if from := x - shift; from >= 0 && from < mascotW {
-						row[x] = broken[y+dy][from]
+						row[x] = face[y+dy][from]
 					}
 				}
 				s[y+dy] = row
 			}
 		}
-		return s
 	}
-	blink(&s, t)
 	return s
 }
 
@@ -254,9 +206,7 @@ func (m Mascot) glitch(t float64) sprite {
 func (m Mascot) spin(t float64) sprite {
 	p := math.Mod(t, 6.0) - 4.2
 	if p < 0 {
-		s := broken
-		blink(&s, t)
-		return s
+		return face
 	}
 	turn := math.Cos(2 * math.Pi * smooth(p/1.8))
 	var s sprite
@@ -273,7 +223,7 @@ func (m Mascot) spin(t float64) sprite {
 			}
 			from := int(math.Round(centre + (float64(x)-centre)/turn))
 			if from >= 0 && from < mascotW {
-				s[y][x] = broken[y][from]
+				s[y][x] = face[y][from]
 			}
 		}
 	}
@@ -284,11 +234,11 @@ func (m Mascot) spin(t float64) sprite {
 // are filled: 1 upper left, 2 upper right, 4 lower left, 8 lower right.
 var quadrants = [16]string{" ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█"}
 
-var dotColour = map[byte]rgb{dotLime: lime, dotBone: bone, dotOlive: olive, dotInk: {0, 0, 0}, dotNone: {0, 0, 0}}
+var dotColour = map[byte]rgb{dotLime: lime, dotBone: bone, dotInk: {0, 0, 0}, dotNone: {0, 0, 0}}
 
 // dotOrder breaks ties when a character holds more colours than it can
 // show: what carries the features wins.
-const dotOrder = "KBLO."
+const dotOrder = "KBL."
 
 // pair picks the two colours a character shows for its four dots, and says
 // which dots are in the first.
@@ -368,7 +318,11 @@ func (m Mascot) Rows(t float64, mode ColorMode) [MascotRows]string {
 			case fg == bg && fg == dotNone:
 				mask = 0
 			case fg == bg:
-				mask, bg = 15, back
+				// Two colours the same: a solid character, with the
+				// terminal's own background showing behind it. The
+				// background the last character set would hide the
+				// difference between lime and bone.
+				mask, bg = 15, 0
 			case fg == dotNone:
 				fg, bg, mask = second, 0, 15^mask
 			case bg == dotNone:

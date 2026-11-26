@@ -224,14 +224,14 @@ func newMascotLive(cols, rows int, doing string) (*vt, *live, *time.Time) {
 	term := newVT(cols, rows)
 	clock := noon
 	lv := newLive(term, cols, rows, palette{}, func() time.Time { return clock })
-	lv.banner = &banner{mascot: splash.NewMascot(doing, 0), mode: splash.Mono, start: clock,
+	lv.banner = &banner{mascot: splash.NewMascot(doing, 0), mode: splash.Color256, start: clock,
 		lines: []string{"geminus 9.9.9", "me · Honcho workspace ws"}}
 	lv.set(sibylView())
 	return term, lv, &clock
 }
 
 func TestTheMascotStandsBesideTheNameAtTheTop(t *testing.T) {
-	term, lv, _ := newMascotLive(72, 24, "look")
+	term, lv, _ := newMascotLive(72, 24, "ogle")
 	lv.Write([]byte("first line\n"))
 	rows := strings.Split(term.text(), "\n")
 	// Row 0 is the sticky header; the mascot's five rows follow, then an
@@ -247,8 +247,8 @@ func TestTheMascotStandsBesideTheNameAtTheTop(t *testing.T) {
 	if !strings.HasSuffix(rows[2], "  geminus 9.9.9") || !strings.HasSuffix(rows[3], "  me · Honcho workspace ws") {
 		t.Errorf("beside the mascot: %q / %q", rows[2], rows[3])
 	}
-	if strings.ContainsAny(rows[1], "9w") || rows[6] != "" || rows[7] != "first line" {
-		t.Errorf("around the banner: %q / %q / %q", rows[1], rows[6], rows[7])
+	if strings.ContainsAny(rows[1], "9w") || rows[splash.MascotRows+1] != "" || rows[splash.MascotRows+2] != "first line" {
+		t.Errorf("around the banner: %q / %q / %q", rows[1], rows[splash.MascotRows+1], rows[splash.MascotRows+2])
 	}
 	// No key is waited for: the box is there at once.
 	if !strings.Contains(term.text(), "╭─ Hermes Agent") {
@@ -284,7 +284,7 @@ func TestTheMascotMovesAndComesToRestAgain(t *testing.T) {
 }
 
 func TestTheMascotScrollsAwayWithWhatWasSaid(t *testing.T) {
-	term, lv, clock := newMascotLive(72, 16, "look")
+	term, lv, clock := newMascotLive(72, 16, "ogle")
 	// Nothing on this screen ages, so only the mascot could change it.
 	lv.set(view{persona: "sibyl", harness: "Hermes Agent"})
 	for i := 0; i < 30; i++ {
@@ -312,7 +312,7 @@ func TestTheMascotScrollsAwayWithWhatWasSaid(t *testing.T) {
 }
 
 func TestTheMascotFitsANarrowTerminalAndLeavesNoColourOn(t *testing.T) {
-	b := &banner{mascot: splash.NewMascot("look", 0), mode: splash.TrueColor, start: noon,
+	b := &banner{mascot: splash.NewMascot("ogle", 0), mode: splash.TrueColor, start: noon,
 		lines: []string{"\x1b[1mgeminus\x1b[0m\x1b[2m 9.9.9\x1b[0m", "\x1b[2mme · Honcho workspace ws\x1b[0m"}}
 	for _, width := range []int{120, 30, 20, 9, 1} {
 		rows := b.rows(noon, width)
@@ -328,8 +328,19 @@ func TestTheMascotFitsANarrowTerminalAndLeavesNoColourOn(t *testing.T) {
 			}
 		}
 	}
-	if rows := b.rows(noon, 120); !strings.Contains(rows[0], "\x1b[38;2;239;228;157m") || !strings.Contains(rows[2], "\x1b[38;2;202;212;47m") {
-		t.Errorf("the mascot is not in the logo's colours: %q / %q", rows[0], rows[2])
+	boneRow, limeRow := -1, -1
+	for i, row := range b.rows(noon, 120) {
+		if strings.Contains(row, "\x1b[38;2;239;228;157m") {
+			if boneRow < 0 {
+				boneRow = i
+			}
+		}
+		if limeRow < 0 && strings.Contains(row, "\x1b[38;2;202;212;47m") {
+			limeRow = i
+		}
+	}
+	if boneRow != 0 || limeRow != 0 {
+		t.Errorf("the mascot's first row shows its horns from row %d and its head from row %d", boneRow, limeRow)
 	}
 }
 
@@ -337,7 +348,7 @@ func TestTheNameIsBesideTheMascotOnlyWhenThereIsOne(t *testing.T) {
 	w := newWorld(t)
 	term := newVT(81, 40)
 	lv := newLive(term, 81, 40, palette{}, w.app.Now)
-	lv.banner = &banner{mascot: splash.NewMascot("look", 0), mode: splash.Mono, start: w.app.Now()}
+	lv.banner = &banner{mascot: splash.NewMascot("ogle", 0), mode: splash.Mono, start: w.app.Now()}
 	w.app.attach(lv, make(chan string, 1))
 	got := term.text()
 	if strings.Contains(got, "◆ geminus "+version.Version) || !strings.Contains(got, "  geminus "+version.Version) ||

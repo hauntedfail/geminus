@@ -140,14 +140,15 @@ When geminus is not on a terminal (piped input, `TERM=dumb`) it works line by li
 geminus opens with its mascot beside its name, at the top of what is said:
 
 ```
-   ▟▙▄▄▄ ▟▙
-   ▟███▙  ▙    geminus 0.6.16
- ▐██▞▚█▙▜ ▐█▌  you · Honcho workspace home
- ▝▀▙▀▀▜▙  ▐▀▘
-   ▝▀██▌▗ ▘
+ ▟▙▟██████▙▟▙
+ ▄█▄▄▀██▄▄▀█▄   geminus 0.6.16
+█▙▜██▛█▜███▜▟█  you · Honcho workspace home
+▙█▌▄▗▖▄▖▖▖▄▐█▟
+ ▜██▗▗▖▄▖▖██▛
+  ▝▀▙▄▄▄▄▟▀▘
 ```
 
-(Here without its colours.) It is the logo as a small figure of block characters, in the logo's colours: the shell smiling with its eye shut on the left, broken away on the right, and the other face inside. Nothing waits for a key, and it scrolls away with the conversation. Now and then it moves. Each start it does one of five things, chosen at random: the shell cracks open and closes again (`crack`), the eye inside looks about (`look`), a gleam runs over the shell (`shine`), it breaks up like a bad signal (`glitch`), or it turns like a coin (`spin`).
+(Here without its colours.) It is the logo's head as a small figure of block characters, in the logo's colours: a round horned head with a gloating grin, its eyes half shut and looking sideways, both rows of teeth clenched and a tusk at each corner. Nothing waits for a key, and it scrolls away with the conversation. Now and then it moves. Each start it does one of five things, chosen at random: the jaw opens and shuts (`laugh`), the eyes open wide and look about (`ogle`), a gleam runs over the head (`shine`), it breaks up like a bad signal (`glitch`), or it turns like a coin (`spin`).
 
 `GEMINUS_SPLASH=off` opens without it. With `NO_COLOR` it is drawn without colours.
 
