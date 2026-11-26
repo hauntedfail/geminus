@@ -14,9 +14,16 @@ func TestAltScreenAndWindowsConPTYLifecycleRestore(t *testing.T) {
 	lv := newLive(term, 72, 20, palette{On: true}, func() time.Time { return noon })
 	lv.set(sibylView())
 
-	// Entering live mode must enable alt-screen, bracketed paste, and SGR mouse reporting.
+	// Entering live mode must enable alt-screen, bracketed paste, and the wheel
+	// as arrow keys. It must not ask for mouse reports, which would take text
+	// selection away from Windows Terminal.
 	raw := term.raw.String()
-	for _, seq := range []string{altScreenOn, pasteModeOn, mouseModeOn} {
+	for _, seq := range mouseReports {
+		if strings.Contains(raw, seq) {
+			t.Fatalf("live startup asked for mouse reports with %q", seq)
+		}
+	}
+	for _, seq := range []string{altScreenOn, pasteModeOn, altScrollOn} {
 		if !strings.Contains(raw, seq) {
 			t.Fatalf("live startup missing terminal mode sequence %q", seq)
 		}
@@ -33,10 +40,10 @@ func TestAltScreenAndWindowsConPTYLifecycleRestore(t *testing.T) {
 		t.Fatalf("editor buffer after IME + CRLF paste = %q, want %q", got, "日本語テスト\n二行目")
 	}
 
-	// Closing live mode must disable mouse, paste, restore cursor visibility, and leave alt-screen.
+	// Closing live mode must disable paste, restore cursor visibility, and leave alt-screen.
 	lv.close()
 	raw = term.raw.String()
-	for _, seq := range []string{mouseModeOff, pasteModeOf, cursorShow, altScreenOff} {
+	for _, seq := range []string{pasteModeOf, cursorShow, altScreenOff} {
 		if !strings.Contains(raw, seq) {
 			t.Fatalf("live close missing restore sequence %q", seq)
 		}

@@ -79,7 +79,7 @@ func TestPostHumanLiveModalEditingAndBadges(t *testing.T) {
 	if !strings.Contains(raw, cursorDefault) {
 		t.Fatalf("close did not restore default cursor shape")
 	}
-	if !strings.HasSuffix(raw, cursorShow+mouseModeOff+altScreenOff+pasteModeOf) {
+	if !strings.HasSuffix(raw, cursorShow+altScreenOff+pasteModeOf) {
 		t.Fatalf("close did not end with standard restore sequences")
 	}
 }

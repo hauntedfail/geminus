@@ -20,8 +20,11 @@ func TestWindowsRawConsoleModes(t *testing.T) {
 	if rawIn&WinEnableVirtualTerminalInput == 0 {
 		t.Fatalf("rawIn missing ENABLE_VIRTUAL_TERMINAL_INPUT: 0x%x", rawIn)
 	}
-	if rawIn&WinEnableMouseInput == 0 {
-		t.Fatalf("rawIn missing ENABLE_MOUSE_INPUT: 0x%x", rawIn)
+	if rawIn&WinEnableMouseInput != 0 {
+		t.Fatalf("rawIn asks for mouse input, which stops the console selecting text: 0x%x", rawIn)
+	}
+	if withMouse, _ := WindowsRawConsoleModes(inMode|WinEnableMouseInput, outMode); withMouse&WinEnableMouseInput == 0 {
+		t.Fatalf("rawIn dropped ENABLE_MOUSE_INPUT that was already set: 0x%x", withMouse)
 	}
 	if rawIn&quickEdit == 0 {
 		t.Fatalf("rawIn dropped unrelated flag 0x%x: 0x%x", quickEdit, rawIn)

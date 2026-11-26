@@ -42,9 +42,14 @@ const (
 	syncEnd          = "\x1b[?2026l"
 	pasteModeOn      = "\x1b[?2004h" // mark pasted text, so a pasted line break is not Enter
 	pasteModeOf      = "\x1b[?2004l"
-	mouseModeOn      = "\x1b[?1000h\x1b[?1006h" // report mouse wheel & clicks in SGR format (avoids alternate-scroll arrow keys)
-	mouseModeOff     = "\x1b[?1006l\x1b[?1000l"
-	mouseScrollLines = 3
+	// altScrollOn asks the terminal to send the wheel as the up and down
+	// arrow keys while the alternate screen is shown. geminus never asks for
+	// mouse reports: a terminal that sends them stops selecting text on a
+	// drag and shows another pointer, and there is no report for the wheel
+	// alone. The mode is left on at exit, since what it was before cannot be
+	// read back and it acts on the alternate screen only.
+	altScrollOn      = "\x1b[?1007h"
+	mouseScrollLines = 3 // rows per wheel report, from a terminal that sends them unasked
 )
 
 type transcriptLine struct {
@@ -94,7 +99,7 @@ func newLive(out io.Writer, cols, rows int, pal palette, now func() time.Time) *
 	l := &live{out: out, cols: cols, rows: rows, pal: pal, now: now}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	io.WriteString(out, altScreenOn+pasteModeOn+mouseModeOn)
+	io.WriteString(out, altScreenOn+pasteModeOn+altScrollOn)
 	l.draw()
 	return l
 }
@@ -404,6 +409,17 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 		l.draw()
 		return "", false, false
 	}
+	// The up and down arrows scroll what was said. The wheel arrives as these
+	// keys (altScrollOn) and cannot be told from them, so they never move the
+	// cursor or bring back a prompt: Ctrl-P and Ctrl-N do that.
+	if k.Ctrl == 0 {
+		switch k.Kind {
+		case keyUp:
+			k.Kind = keyScrollUp
+		case keyDown:
+			k.Kind = keyScrollDown
+		}
+	}
 	e := &l.ed
 	asking := l.v.ask != ""
 	if k.Kind != keyInterrupt {
@@ -617,7 +633,7 @@ func (l *live) selectOption(ctx context.Context, cfg menuConfig) (string, bool) 
 	}
 }
 
-// close leaves the alternate screen buffer and restores mouse and paste modes.
+// close leaves the alternate screen buffer and switches paste marking off.
 func (l *live) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -633,6 +649,6 @@ func (l *live) close() {
 		reset = cursorDefault
 		l.cursorStyled = false
 	}
-	io.WriteString(l.out, reset+cursorShow+mouseModeOff+altScreenOff+pasteModeOf)
+	io.WriteString(l.out, reset+cursorShow+altScreenOff+pasteModeOf)
 	l.closed = true
 }

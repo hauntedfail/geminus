@@ -205,7 +205,7 @@ func TestTheBoxShowsWhoWhatAndWhere(t *testing.T) {
 │ ❯ Type a prompt for hermes on sibyl                                │
 ╰────────────────────────────────────────────────────────────────────╯
   ● bridge seen 15s ago · in /srv/app · new conversation
-  / commands · Enter send · PgUp/PgDn scroll · Alt+Enter new line · C…`
+  / commands · Enter send · ↑↓ scroll · Ctrl-P history · Alt+Enter ne…`
 	if got != want {
 		t.Errorf("empty box:\n%s\nwant:\n%s", got, want)
 	}
@@ -463,7 +463,7 @@ func TestALongTranscriptScrollsAndTheBoxStaysWhole(t *testing.T) {
 	// A very long line with no end wraps inside the viewport without pushing the box away.
 	lv.Write([]byte(strings.Repeat("x", 41*30)))
 	got = term.text()
-	if strings.Count(got, "╭─ Hermes Agent") != 1 || !strings.HasSuffix(got, "PgUp/PgDn s…") || !strings.Contains(got, "xxxx") {
+	if strings.Count(got, "╭─ Hermes Agent") != 1 || !strings.HasSuffix(got, "↑↓ scroll ·…") || !strings.Contains(got, "xxxx") {
 		t.Errorf("screen after an endless line:\n%s", got)
 	}
 	if term.cursor() != "│ ❯ 日本語で書く" {
@@ -526,10 +526,10 @@ func TestAQuestionTakesAnEmptyAnswerAndCanBeCancelled(t *testing.T) {
 	if lines, quit := typeKeys(t, lv, "\x03"); quit || len(lines) != 1 || lines[0] != cancelled {
 		t.Errorf("Ctrl-C at a question = %q, quit %v", lines, quit)
 	}
-	// Answers are not prompts: they do not come back with the up arrow.
+	// Answers are not prompts: Ctrl-P does not bring them back.
 	typeKeys(t, lv, "2\r")
 	lv.set(sibylView())
-	typeKeys(t, lv, "\x1b[A")
+	typeKeys(t, lv, "\x10")
 	if !lv.ed.Empty() {
 		t.Errorf("an answer was remembered as a prompt: %q", lv.ed.String())
 	}
@@ -561,8 +561,8 @@ func TestResizingAndClosingLeaveNoBoxBehind(t *testing.T) {
 		t.Errorf("after close:\n%q", got)
 	}
 	raw := term.raw.String()
-	if !strings.Contains(raw, altScreenOn+pasteModeOn+mouseModeOn) || !strings.HasSuffix(raw, cursorShow+mouseModeOff+altScreenOff+pasteModeOf) {
-		t.Error("alternate screen / paste / mouse reporting was not switched on and off again")
+	if !strings.Contains(raw, altScreenOn+pasteModeOn+altScrollOn) || !strings.HasSuffix(raw, cursorShow+altScreenOff+pasteModeOf) {
+		t.Error("alternate screen / paste marking was not switched on and off again")
 	}
 }
 
@@ -694,10 +694,94 @@ func TestMouseWheelScrollsViewportWithoutMovingPromptHistory(t *testing.T) {
 		t.Errorf("mouse wheel down changed prompt box to %q", lv.ed.String())
 	}
 
-	// Up arrow still recalls prompt history.
-	typeKeys(t, lv, "\x1b[A")
+	// Ctrl-P still recalls prompt history.
+	typeKeys(t, lv, "\x10")
 	if lv.ed.String() != "older prompt" {
-		t.Errorf("up arrow after mouse scroll = %q, want %q", lv.ed.String(), "older prompt")
+		t.Errorf("Ctrl-P after mouse scroll = %q, want %q", lv.ed.String(), "older prompt")
+	}
+}
+
+// mouseReports are the modes that make a terminal send clicks and drags to the
+// program instead of selecting text with them.
+var mouseReports = []string{"\x1b[?9h", "\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1005h", "\x1b[?1006h", "\x1b[?1015h"}
+
+func TestTheTerminalKeepsItsOwnSelectionAndTheWheelStillScrolls(t *testing.T) {
+	term := newVT(71, 16)
+	lv := newLive(term, 71, 16, palette{}, func() time.Time { return noon })
+	lv.set(sibylView())
+
+	lv.ed.Insert("older prompt")
+	lv.ed.Take(true)
+	typeKeys(t, lv, "line one\x1b\rline two")
+	const draft = "line one\nline two"
+	if lv.ed.String() != draft {
+		t.Fatalf("draft = %q", lv.ed.String())
+	}
+	pos := lv.ed.Pos()
+
+	lv.setPrompt("turn 1 prompt")
+	for i := 0; i < 40; i++ {
+		lv.Write([]byte("row-" + string(rune('a'+i%26)) + "\n"))
+	}
+
+	// With no mouse reports the wheel is the arrow keys, in either form a
+	// terminal sends them. They scroll, and leave the box and its cursor alone.
+	typeKeys(t, lv, "\x1b[A\x1b[A\x1b[A", "\x1bOA")
+	if lv.scroll != 4 {
+		t.Errorf("after four arrows up, scroll = %d, want 4", lv.scroll)
+	}
+	if first := strings.SplitN(term.text(), "\n", 2)[0]; !strings.Contains(first, "↑ 4L") {
+		t.Errorf("after four arrows up, header = %q", first)
+	}
+	typeKeys(t, lv, "\x1b[B", "\x1bOB\x1bOB\x1b[B\x1b[B")
+	if lv.scroll != 0 {
+		t.Errorf("after arrows down past the bottom, scroll = %d, want 0", lv.scroll)
+	}
+	if lv.ed.String() != draft || lv.ed.Pos() != pos {
+		t.Errorf("arrows changed the box: %q at %d, want %q at %d", lv.ed.String(), lv.ed.Pos(), draft, pos)
+	}
+
+	// Ctrl-P and Ctrl-N are the keys for the line above and below, and from
+	// the first line for the prompt sent before.
+	typeKeys(t, lv, "\x10")
+	if lv.ed.String() != draft || lv.ed.Pos() >= pos-len("line two") {
+		t.Errorf("Ctrl-P did not move to the first line: %q at %d", lv.ed.String(), lv.ed.Pos())
+	}
+	typeKeys(t, lv, "\x10")
+	if lv.ed.String() != "older prompt" {
+		t.Errorf("Ctrl-P on the first line = %q, want %q", lv.ed.String(), "older prompt")
+	}
+	typeKeys(t, lv, "\x0e")
+	if lv.ed.String() != draft {
+		t.Errorf("Ctrl-N back = %q, want %q", lv.ed.String(), draft)
+	}
+
+	// The same holds in Post-Human mode, in Insert and in Normal.
+	v := sibylView()
+	v.postHuman = true
+	lv.set(v)
+	typeKeys(t, lv, "\x1b[A\x1b[A")
+	if lv.scroll != 2 {
+		t.Errorf("Post-Human Insert: after two arrows up, scroll = %d, want 2", lv.scroll)
+	}
+	typeKeys(t, lv, "\x1b")
+	typeKeys(t, lv, "\x1b[A", "\x1b[B\x1b[B\x1b[B")
+	if lv.scroll != 0 {
+		t.Errorf("Post-Human Normal: scroll = %d, want 0", lv.scroll)
+	}
+	if lv.ed.String() != draft {
+		t.Errorf("Post-Human: arrows changed the box: %q", lv.ed.String())
+	}
+
+	lv.close()
+	raw := term.raw.String()
+	for _, seq := range mouseReports {
+		if strings.Contains(raw, seq) {
+			t.Errorf("geminus asked the terminal for mouse reports (%q): text can no longer be selected with a drag", seq)
+		}
+	}
+	if !strings.Contains(raw, altScrollOn) {
+		t.Error("the terminal was not asked to send the wheel as arrow keys")
 	}
 }
 

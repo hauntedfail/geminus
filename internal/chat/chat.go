@@ -79,9 +79,11 @@ const commandHelp = `geminus commands
                          own slash commands; //help sends /help
   !anything else         goes to the agent as typed
   On a terminal the box takes the next prompt while an answer is still
-  arriving. Enter sends, PageUp/PageDown scrolls the transcript while keeping
-  focus in the box, Alt+Enter (or a backslash before Enter) starts a new line,
-  Tab completes a geminus command, the up arrow brings back earlier prompts,
+  arriving. Enter sends; the wheel, the up and down arrows and
+  PageUp/PageDown scroll the transcript while keeping focus in the box;
+  Alt+Enter (or a backslash before Enter) starts a new line, Tab completes a
+  geminus command, Ctrl-P brings back earlier prompts. Text is selected and
+  copied with the mouse as anywhere else in the terminal.
   Ctrl-C clears the box and pressed twice quits. Quitting never stops an
   agent: the answer stays in Honcho.`
 

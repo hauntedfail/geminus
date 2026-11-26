@@ -14,10 +14,12 @@ const (
 )
 
 // WindowsRawConsoleModes computes the input and output console modes needed
-// for raw virtual-terminal interaction on Windows ConPTY / PowerShell.
+// for raw virtual-terminal interaction on Windows ConPTY / PowerShell. Mouse
+// input is left as found: geminus does not read the mouse, and asking for it
+// takes text selection away from the console window.
 func WindowsRawConsoleModes(inMode, outMode uint32) (rawIn, rawOut uint32) {
 	rawOut = outMode | WinEnableProcessedOutput | WinEnableVirtualTerminalOutput
 	rawIn = inMode&^(WinEnableProcessedInput|WinEnableLineInput|WinEnableEchoInput) |
-		WinEnableVirtualTerminalInput | WinEnableMouseInput
+		WinEnableVirtualTerminalInput
 	return rawIn, rawOut
 }

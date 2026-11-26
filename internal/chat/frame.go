@@ -573,5 +573,5 @@ func hintRows(in frameInput, width int) []string {
 		}
 		return one("i/a insert · v select · w/b/e/x/% motion · d/c/y/p edit · g/m/z minor · Enter send")
 	}
-	return one("/ commands · Enter send · PgUp/PgDn scroll · Alt+Enter new line · Ctrl-C twice to quit")
+	return one("/ commands · Enter send · ↑↓ scroll · Ctrl-P history · Alt+Enter new line · Ctrl-C twice to quit")
 }
