@@ -77,7 +77,7 @@ metadata  {"kind": "geminus",
                        "pending": true, "updated": 1795083503, "sig": "…"}}
 ```
 
-`harness` and `cwd` are fixed when the session is created: a conversation belongs to one agent program in one directory. Until then the owner can name any directory (`/cwd`, `/new DIR`, `--cwd` in geminus); geminus does not check it, because only that computer knows what is there.
+`harness` and `cwd` are fixed when the session is created: a conversation belongs to one agent program in one directory. Until then the owner can name any directory (`/cwd`, `/new DIR`, `--cwd` in geminus); geminus does not check it, because only that computer knows what is there. `!cd DIR` in geminus names one relative to the directory chosen so far: geminus joins the two as text and, when the node card says which directory the bridge starts in, sends the full path, since the bridge reads a relative `cwd` from its own default and not from an earlier choice.
 
 The bridge reads `cwd` the way its owner would type it on that computer: `~` is their home directory, a relative path starts at the bridge's default directory, and an empty `cwd` is the default directory itself. A directory that does not exist fails the prompt with a message naming it. What is signed is the text as typed, not what it resolves to.
 

@@ -158,6 +158,7 @@ func (a *App) selectPersona(name string) error {
 	}
 	a.cur, a.harness, a.session, a.title, a.tuning = &p, nil, "", "", wire.Tuning{}
 	a.cwd = a.defaults.Personas[p.Name].CWD
+	a.lastCwd, a.wasElsewhere = "", false
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 	if a.Out != nil {
 		for _, w := range wire.CheckBridgeCompatibility(p.Name, p.Card, len(a.humanAuth().Priv) > 0) {
@@ -320,6 +321,7 @@ func (a *App) chdir(dir string) error {
 	if err := validDir(dir); err != nil {
 		return err
 	}
+	a.lastCwd, a.wasElsewhere = a.cwd, true
 	a.cwd = dir
 	a.Out.line("directory: " + a.where() + " on " + name + a.dirNote())
 	return nil
@@ -331,7 +333,7 @@ func (a *App) dirNote() string {
 	case a.session != "":
 		return "  (fixed for this conversation; /new DIR starts another one in DIR)"
 	case a.cwd == "":
-		return "  (/cwd DIR sets another for the conversation the next prompt starts)"
+		return "  (/cwd DIR sets another for the conversation the next prompt starts; !cd DIR moves from here)"
 	}
-	return "  (for the conversation the next prompt starts; /cwd default goes back to the bridge's own)"
+	return "  (for the conversation the next prompt starts; /cwd default goes back to the bridge's own; !cd DIR moves from here)"
 }

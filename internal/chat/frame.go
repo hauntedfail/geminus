@@ -540,6 +540,9 @@ func hintRows(in frameInput, width int) []string {
 	if v.ask != "" {
 		return one("Enter takes the one in [brackets] · Ctrl-C cancels")
 	}
+	if hint, ok := shellHint(string(in.text), v); ok {
+		return one(hint)
+	}
 	if word, ok := slashWord(in.text); ok {
 		if strings.HasPrefix(word, "//") {
 			return one("sent to " + v.target() + " as " + word[1:])

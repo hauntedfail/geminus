@@ -812,6 +812,14 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 	typed("/cwd default\r")
 	term.waitFor(t, "● bridge seen 5s ago · default directory · new conversation")
 
+	// !cd moves from the directory chosen so far, like a shell there.
+	typed("!c")
+	term.waitFor(t, "!cd DIR moves on chrome from the default directory")
+	typed("d projekt/api\r")
+	term.waitFor(t, "❯ !cd projekt/api", "● bridge seen 5s ago · in projekt/api · new conversation")
+	typed("!cd ..\r")
+	term.waitFor(t, "● bridge seen 5s ago · in projekt · new conversation")
+
 	typed("\x03", "\x03")
 	select {
 	case code := <-done:

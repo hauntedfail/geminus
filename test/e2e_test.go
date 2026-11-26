@@ -283,6 +283,19 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	expect(out, "directory: sub on mirai", "working in sub",
 		"this conversation runs in sub on mirai and stays there",
 		"The working directory nowhere ("+filepath.Join(work, "nowhere")+") does not exist on mirai.")
+
+	// !cd moves from the directory chosen so far, as a shell there would,
+	// and the bridge runs the prompt where that leads.
+	if err := os.Mkdir(filepath.Join(work, "sub", "deep"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, errs, code = run("!cd sub\n!cd deep\n!cd ../deep\n!pwd\nwhere\n!cd ..\n", "persona", "mirai", "--harness", "hermes")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	deep := filepath.Join(work, "sub", "deep")
+	expect(out, "directory: "+filepath.Join(work, "sub")+" on mirai", "directory: "+deep+" on mirai", "working in deep",
+		"this conversation runs in "+deep+" on mirai and stays there")
 }
 
 func TestEd25519OnlyBridgeAcceptsHumanKeyAndRefusesGroupHMAC(t *testing.T) {

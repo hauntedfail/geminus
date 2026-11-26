@@ -278,6 +278,9 @@ func (a *App) linked(err error) {
 // isGeminusCommand reports whether line is handled locally by geminus rather
 // than sent to the remote agent as a prompt.
 func isGeminusCommand(line string) bool {
+	if _, _, ok := shellLine(line); ok {
+		return true
+	}
 	if !strings.HasPrefix(line, "/") || strings.HasPrefix(line, "//") {
 		return false
 	}

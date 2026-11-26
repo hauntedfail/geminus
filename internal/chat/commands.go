@@ -13,6 +13,9 @@ import (
 )
 
 func (a *App) handle(line string) error {
+	if cmd, arg, ok := shellLine(line); ok {
+		return a.shell(cmd, arg)
+	}
 	if !strings.HasPrefix(line, "/") {
 		return a.say(line)
 	}

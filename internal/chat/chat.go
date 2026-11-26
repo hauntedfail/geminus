@@ -54,6 +54,10 @@ const commandHelp = `geminus commands
   /cwd [DIR]             directory on that computer for the conversation the
                          next prompt starts (/cwd default: the bridge's own);
                          a conversation stays in the directory it started in
+  !cd [DIR]              move from the directory chosen so far, as a shell
+                         there would: !cd projekt, !cd .., !cd ~/src, !cd -
+                         (the one before), !cd alone (the bridge's own);
+                         !pwd shows it. Until the conversation starts
   /new [DIR]             start a new conversation (optionally in DIR there)
   /sessions              list your conversations with this persona
   /resume [ID|N]         reopen a conversation (default: the latest)
@@ -73,6 +77,7 @@ const commandHelp = `geminus commands
   /quit                  leave geminus
   /anything else         goes to the agent as typed, for the agent program's
                          own slash commands; //help sends /help
+  !anything else         goes to the agent as typed
   On a terminal the box takes the next prompt while an answer is still
   arriving. Enter sends, PageUp/PageDown scrolls the transcript while keeping
   focus in the box, Alt+Enter (or a backslash before Enter) starts a new line,
@@ -118,6 +123,10 @@ type App struct {
 	// cwd is the directory for the next new conversation; session is the
 	// open conversation, or "" before the first prompt creates one.
 	cwd, session string
+	// lastCwd is the directory chosen before the current one, for "!cd -";
+	// wasElsewhere says there was one.
+	lastCwd      string
+	wasElsewhere bool
 	// title is the open conversation's title.
 	title string
 	// tuning is the model and effort set for the open conversation (or for
