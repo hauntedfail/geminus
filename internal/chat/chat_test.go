@@ -72,7 +72,9 @@ type world struct {
 	tuned []wire.Tuning
 	// homes is the default directory a persona's bridge reports, if it does.
 	homes map[string]string
-	mu    sync.Mutex
+	// missing holds the directories no persona's computer has.
+	missing map[string]bool
+	mu      sync.Mutex
 }
 
 func newWorld(t *testing.T) *world {
@@ -174,6 +176,18 @@ func (w *world) bridge(persona string) {
 				}
 				if m.PeerID != "h1karu" || !wire.Verify(w.prof.Secret, m.Content, label, meta.TS, meta.Sig) {
 					state(wire.StateRefused, "the signature does not verify")
+					continue
+				}
+				w.mu.Lock()
+				gone := w.missing[cwd]
+				w.mu.Unlock()
+				if gone {
+					// As the real bridge does: the state first, then one failed piece, and no run.
+					state(wire.StateFailed, wire.DetailNoDirectory)
+					piece := "The working directory " + cwd + " does not exist on " + persona + "."
+					out := wire.Message{V: 1, Role: wire.RoleOutput, Turn: m.ID, Seq: 1, Final: true, TS: now.Unix()}
+					out.Sig = wire.Sign(w.prof.Secret, piece, wire.OutputLabel(s.ID, m.ID, out.Seq, out.Final, out.OK, out.Native), out.TS)
+					w.srv.Append(s.ID, persona, piece, map[string]any{wire.Kind: out})
 					continue
 				}
 				state(wire.StateRunning, "")

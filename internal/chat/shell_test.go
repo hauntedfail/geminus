@@ -192,3 +192,63 @@ func TestShellLinesAndTheirHint(t *testing.T) {
 		t.Errorf("hint with no persona: %q", got)
 	}
 }
+
+// A directory that is not on the persona's computer is found out by the first
+// prompt. Nothing ran, so the conversation is not kept and another directory
+// can be named, as after a cd that failed.
+func TestADirectoryThatIsNotThereDoesNotHoldTheConversation(t *testing.T) {
+	w := newWorld(t)
+	w.homes = map[string]string{"mirai": `C:\Users\h.ota`}
+	w.missing = map[string]bool{`C:\Users\h.ota\projekt\miracle`: true}
+	w.card("mirai", now.Add(-5*time.Second), "hermes")
+	w.talk([]string{"persona", "mirai"},
+		[2]string{`!cd projekt\miracle`, `directory: C:\Users\h.ota\projekt\miracle on mirai`},
+		[2]string{"おはよう", `Back in C:\Users\h.ota (default): !cd DIR to move, then send the prompt again`},
+		[2]string{"!pwd", `directory: C:\Users\h.ota (default) on mirai  (/cwd DIR sets another`},
+		// Read from the bridge's own again, not from the place that is not there.
+		[2]string{`!cd projects\miracle`, `directory: C:\Users\h.ota\projects\miracle on mirai`},
+		[2]string{"おはよう", "echo: おはよう"},
+		[2]string{"!cd ..", `this conversation runs in C:\Users\h.ota\projects\miracle on mirai and stays there`})
+	w.expect(`The working directory C:\Users\h.ota\projekt\miracle does not exist on mirai.`,
+		"nothing ran on mirai, and no conversation was started")
+	if got := strings.Join(w.ran, "|"); got != "mirai/hermes: おはよう" {
+		t.Errorf("ran = %q: the prompt must reach an agent once, in the directory that exists", got)
+	}
+}
+
+// A conversation an agent has answered in belongs to its directory. If that
+// directory goes away later, the conversation is still the one that is open.
+func TestAConversationThatRanKeepsItsDirectoryEvenWhenItIsGone(t *testing.T) {
+	w := newWorld(t)
+	w.homes = map[string]string{"sibyl": "/home/sibyl"}
+	w.card("sibyl", now.Add(-5*time.Second), "hermes")
+	w.talk([]string{"persona", "sibyl"},
+		[2]string{"!cd work", "directory: /home/sibyl/work on sibyl"},
+		[2]string{"first", "echo: first"})
+	w.mu.Lock()
+	w.missing = map[string]bool{"/home/sibyl/work": true}
+	w.mu.Unlock()
+	w.newApp()
+	w.talk([]string{"persona", "sibyl", "--continue"},
+		[2]string{"second", "The working directory /home/sibyl/work does not exist on sibyl."},
+		[2]string{"!cd /tmp", "this conversation runs in /home/sibyl/work on sibyl and stays there"})
+	w.expectNot("no conversation was started")
+}
+
+// The other way round: a conversation reopened from the list in which nothing
+// ever ran is let go by its next prompt as well.
+func TestAReopenedConversationThatNeverRanIsLetGo(t *testing.T) {
+	w := newWorld(t)
+	w.homes = map[string]string{"sibyl": "/home/sibyl"}
+	w.missing = map[string]bool{"/home/sibyl/nowhere": true}
+	w.card("sibyl", now.Add(-5*time.Second), "hermes")
+	w.talk([]string{"persona", "sibyl"},
+		[2]string{"!cd nowhere", "directory: /home/sibyl/nowhere on sibyl"},
+		[2]string{"first", "no conversation was started"})
+	w.newApp()
+	w.talk([]string{"persona", "sibyl", "--continue"},
+		[2]string{"again", "Back in /home/sibyl (default): !cd DIR to move"},
+		[2]string{"!cd -", "directory: /home/sibyl/nowhere on sibyl"},
+		[2]string{"!cd", "directory: /home/sibyl (default) on sibyl"},
+		[2]string{"third", "echo: third"})
+}

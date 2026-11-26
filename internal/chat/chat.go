@@ -127,6 +127,9 @@ type App struct {
 	// wasElsewhere says there was one.
 	lastCwd      string
 	wasElsewhere bool
+	// ranIn is the conversation an agent is known to have answered in. Until
+	// one has, the conversation holds nothing that ties it to its directory.
+	ranIn string
 	// title is the open conversation's title.
 	title string
 	// tuning is the model and effort set for the open conversation (or for

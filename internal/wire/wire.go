@@ -35,6 +35,10 @@ const (
 	StateFailed  = "failed"
 	StateRefused = "refused"
 
+	// DetailNoDirectory is the detail of a prompt the bridge did not run
+	// because the conversation's directory is not on its computer.
+	DetailNoDirectory = "the working directory does not exist"
+
 	// AlgHMAC is the legacy shared-secret signature algorithm (also implied when sig_alg is empty).
 	AlgHMAC = "hmac-sha256"
 	// AlgEd25519 is the asymmetric human signature algorithm.

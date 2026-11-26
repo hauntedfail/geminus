@@ -168,6 +168,9 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 	if err != nil {
 		return false, false, err
 	}
+	// noDir holds the prompts the bridge did not run for want of the
+	// directory; lost says the answer to one of them has just been shown.
+	noDir, lost := map[string]bool{}, false
 	for _, m := range messages {
 		meta, ok := parseMeta(m)
 		if !ok {
@@ -175,6 +178,9 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 		}
 		switch meta.Role {
 		case wire.RolePrompt:
+			if meta.State == wire.StateFailed && meta.Detail == wire.DetailNoDirectory {
+				noDir[m.ID] = true
+			}
 			if !a.shown[m.ID] {
 				a.shown[m.ID] = true
 				printed = true
@@ -229,13 +235,35 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 			}
 			printed = true
 			a.show(m.Content, meta)
+			if meta.OK && meta.Final {
+				a.ranIn = a.session
+			}
 			if meta.Final {
 				delete(a.waiting, meta.Turn)
 				done = done || meta.Turn == turn
+				lost = lost || !meta.OK && noDir[meta.Turn]
 			}
 		}
 	}
+	if lost && a.ranIn != a.session {
+		a.letGo()
+	}
 	return done, printed, nil
+}
+
+// letGo leaves a conversation in which nothing ran because its directory is
+// not on the persona's computer. Staying would send every later prompt to
+// the same missing place, with no way to name another. As after a failed cd,
+// the directory is the one from before: the bridge's own, which exists.
+func (a *App) letGo() {
+	name := oneLine(a.cur.Name)
+	a.session, a.title = "", ""
+	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
+	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
+	a.lastCwd, a.wasElsewhere = a.cwd, true
+	a.cwd = ""
+	a.Out.line(a.Out.warn("! nothing ran on " + name + ", and no conversation was started. Back in " + a.where() +
+		": !cd DIR to move, then send the prompt again"))
 }
 
 // genuine reports whether an output message was written by the persona's
@@ -472,6 +500,9 @@ func (a *App) resume(want string) error {
 			}
 		case meta.Role == wire.RoleOutput && a.genuine(m, meta):
 			a.show(m.Content, meta)
+			if meta.OK && meta.Final {
+				a.ranIn = a.session
+			}
 			if meta.Final {
 				delete(a.waiting, meta.Turn)
 			}

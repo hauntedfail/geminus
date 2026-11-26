@@ -296,6 +296,40 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	deep := filepath.Join(work, "sub", "deep")
 	expect(out, "directory: "+filepath.Join(work, "sub")+" on mirai", "directory: "+deep+" on mirai", "working in deep",
 		"this conversation runs in "+deep+" on mirai and stays there")
+
+	// A directory that is not there is found out by the first prompt. Nothing
+	// ran, so geminus lets the conversation go and the next !cd is read from
+	// the bridge's own directory again.
+	out, errs, code = run("!cd projekt\nwhere\n!pwd\n!cd sub\nwhere\n", "persona", "mirai", "--harness", "hermes")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	expect(out, "The working directory "+filepath.Join(work, "projekt")+" does not exist on mirai.",
+		"nothing ran on mirai, and no conversation was started. Back in "+work+" (default)",
+		"directory: "+filepath.Join(work, "sub")+" on mirai", "working in sub")
+
+	// The directory is handed to the agent program as its working directory
+	// and is never part of a command line: a name made of shell syntax is
+	// only a name, whether or not a directory is called that.
+	traps := []string{here, there, work, filepath.Join(work, "sub")}
+	if wd, err := os.Getwd(); err == nil {
+		traps = append(traps, wd)
+	}
+	odd := "a b;touch PWNED;$(touch PWNED)`touch PWNED`&&touch PWNED|'\""
+	if err := os.Mkdir(filepath.Join(work, odd), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, errs, code = run("!cd "+odd+"\nwhere\n/new\n!cd\n!cd x;touch PWNED;$(touch PWNED)\nwhere\n", "persona", "mirai", "--harness", "hermes")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	expect(out, "directory: "+filepath.Join(work, odd)+" on mirai", "working in "+odd,
+		"The working directory "+filepath.Join(work, "x;touch PWNED;$(touch PWNED)")+" does not exist on mirai.")
+	for _, dir := range append(traps, filepath.Join(work, odd)) {
+		if _, err := os.Stat(filepath.Join(dir, "PWNED")); err == nil {
+			t.Errorf("a directory name was run as a command: %s has a PWNED file", dir)
+		}
+	}
 }
 
 func TestEd25519OnlyBridgeAcceptsHumanKeyAndRefusesGroupHMAC(t *testing.T) {
