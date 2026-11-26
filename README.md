@@ -135,11 +135,27 @@ The prompt box stays at the bottom. Its top edge names the persona and the harne
 
 When geminus is not on a terminal (piped input, `TERM=dumb`) it works line by line instead: one prompt per line, and it waits for each answer.
 
+### The mascot
+
+geminus opens with its mascot beside its name, at the top of what is said:
+
+```
+   ▟▙▄▄▄ ▟▙
+   ▟███▙  ▙    geminus 0.6.16
+ ▐██▞▚█▙▜ ▐█▌  you · Honcho workspace home
+ ▝▀▙▀▀▜▙  ▐▀▘
+   ▝▀██▌▗ ▘
+```
+
+(Here without its colours.) It is the logo as a small figure of block characters, in the logo's colours: the shell smiling with its eye shut on the left, broken away on the right, and the other face inside. Nothing waits for a key, and it scrolls away with the conversation. Now and then it moves. Each start it does one of five things, chosen at random: the shell cracks open and closes again (`crack`), the eye inside looks about (`look`), a gleam runs over the shell (`shine`), it breaks up like a bad signal (`glitch`), or it turns like a coin (`spin`).
+
+`GEMINUS_SPLASH=off` opens without it. With `NO_COLOR` it is drawn without colours.
+
 ### The opening screen
 
-geminus opens with its logo drawn in characters over the whole terminal, moving, until a key is pressed. geminus starts behind it, so nothing waits for the key. Enter, an arrow or Esc only takes it away; anything typed takes it away and starts the prompt.
+`GEMINUS_SPLASH=full` also opens with the logo drawn in characters over the whole terminal, moving, until a key is pressed. geminus starts behind it, so nothing waits for the key. Enter, an arrow or Esc only takes it away; anything typed takes it away and starts the prompt.
 
-There are seven animations, and each start shows one of them at random:
+There are seven animations; `full` shows one at random, and the name of one shows that one (`GEMINUS_SPLASH=rain`):
 
 | Name | |
 |---|---|
@@ -151,7 +167,7 @@ There are seven animations, and each start shows one of them at random:
 | `static` | Noise settles into the logo and loses it again. |
 | `ripple` | The logo sways like a reflection while rings run outward. |
 
-`GEMINUS_SPLASH` names the one to show (`GEMINUS_SPLASH=rain`), or switches the opening screen off (`GEMINUS_SPLASH=off`). It is not shown when a new version takes over after `/update`. Colours are 24-bit where the terminal says it shows them (`COLORTERM=truecolor`), the 256 indexed colours otherwise, and none with `NO_COLOR`.
+It is not shown when a new version takes over after `/update`. Colours are 24-bit where the terminal says it shows them (`COLORTERM=truecolor`), the 256 indexed colours otherwise, and none with `NO_COLOR`.
 
 ## Commands
 
@@ -241,6 +257,6 @@ bash scripts/crossbuild.sh
 
 `bash scripts/release.sh X.Y.Z` makes a release (see [Updating](#updating)).
 
-The opening screen picks, for each cell, the character whose shape is closest to that part of the logo. The shapes are in `internal/splash/glyphs.go`, written by `python3 scripts/splash-glyphs.py FONT` (needs Pillow) from a monospaced font; geminus itself reads no font.
+The mascot is drawn by hand, dot by dot, in `internal/splash/mascot.go`. The opening screen picks, for each cell, the character whose shape is closest to that part of the logo. The shapes are in `internal/splash/glyphs.go`, written by `python3 scripts/splash-glyphs.py FONT` (needs Pillow) from a monospaced font; geminus itself reads no font.
 
 Unit tests use an in-memory Honcho (`internal/honcho/honchotest`) and never call a model. `test/` runs the built binary against the real bridge (the geminish installed on this computer, or `GEMINISH_SRC`) with that in-memory Honcho between them; it is skipped where no geminish with the bridge is found.

@@ -96,6 +96,8 @@ type live struct {
 
 	// splash is the opening screen while it covers everything else.
 	splash *splashScreen
+	// banner is the mascot at the top of the transcript; nil for none.
+	banner *banner
 }
 
 func newLive(out io.Writer, cols, rows int, pal palette, now func() time.Time) *live {
@@ -133,6 +135,9 @@ func (l *live) hasDraft() bool {
 // transcript and unfinished tail at width w.
 func (l *live) wrappedCount(w int) int {
 	n := 0
+	if l.banner != nil {
+		n = bannerRows
+	}
 	for _, entry := range l.lines {
 		n += len(wrapText(entry.text, w))
 	}
@@ -143,7 +148,13 @@ func (l *live) wrappedCount(w int) int {
 }
 
 func (l *live) wrapAll(w int) []wrappedLine {
-	out := make([]wrappedLine, 0, len(l.lines)+1)
+	out := make([]wrappedLine, 0, len(l.lines)+1+bannerRows)
+	if l.banner != nil {
+		// Drawn anew each time: the mascot moves.
+		for _, row := range l.banner.rows(l.now(), w) {
+			out = append(out, wrappedLine{text: row})
+		}
+	}
 	for _, entry := range l.lines {
 		for _, row := range wrapText(entry.text, w) {
 			out = append(out, wrappedLine{text: row, prompt: entry.prompt})

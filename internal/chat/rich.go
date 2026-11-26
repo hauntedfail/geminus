@@ -48,11 +48,12 @@ func (a *App) startLive(in io.Reader, withSplash bool) (stop func(), ok bool) {
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.ctx = ctx
-	var opening *splashScreen
-	if withSplash {
-		opening = newSplash(os.Getenv, a.Out.color, a.Now(), rand.Uint32())
+	screen, mascot := opening(os.Getenv, a.Out.color, a.Now(), rand.Uint32())
+	if !withSplash {
+		screen = nil
 	}
-	lv := newLiveBehind(outFile, cols, rows, palette{On: a.Out.color}, a.Now, opening)
+	lv := newLiveBehind(outFile, cols, rows, palette{On: a.Out.color}, a.Now, screen)
+	lv.banner = mascot
 	lv.size = func() (int, int) { return termSize(outFile) }
 	lines := make(chan string, 256)
 	a.attach(lv, lines)
@@ -88,7 +89,7 @@ func (a *App) startLive(in io.Reader, withSplash bool) (stop func(), ok bool) {
 			}
 		}
 	}()
-	if opening != nil {
+	if screen != nil {
 		go func() {
 			ticker := time.NewTicker(splashEvery)
 			defer ticker.Stop()
@@ -172,8 +173,16 @@ func (a *App) attach(lv *live, lines <-chan string) {
 	a.sentAt = map[string]time.Time{}
 	a.shownTurn = map[string]bool{}
 	a.turnPrompt = map[string]string{}
-	a.Out.line(a.Out.accent("◆ geminus") + a.Out.dim(" "+version.Version+" · "+oneLine(a.Profile.Human)+
-		" · Honcho workspace "+oneLine(a.Profile.Workspace)))
+	who, where := oneLine(a.Profile.Human), "Honcho workspace "+oneLine(a.Profile.Workspace)
+	if lv.banner != nil {
+		// The mascot stands for the mark; the same facts beside it.
+		lv.mu.Lock()
+		lv.banner.lines = []string{a.Out.bold("geminus") + a.Out.dim(" "+version.Version), a.Out.dim(who + " · " + where)}
+		lv.draw()
+		lv.mu.Unlock()
+		return
+	}
+	a.Out.line(a.Out.accent("◆ geminus") + a.Out.dim(" "+version.Version+" · "+who+" · "+where))
 }
 
 // sync shows the current state around the box.

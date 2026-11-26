@@ -1,9 +1,13 @@
 package chat
 
-// The opening screen: the geminus logo, drawn in characters and moving, over
-// the whole terminal. It is shown when geminus opens and goes on until a key
-// is pressed. geminus starts behind it, so whatever was to be on the screen
-// by then is there when it goes.
+// How geminus opens. The mascot, the logo as a small figure of block
+// characters, stands beside the name at the top of what is said, and moves
+// now and then. It is part of the transcript: it scrolls away with it.
+//
+// The opening screen is the logo drawn in characters and moving, over the
+// whole terminal, until a key is pressed. It is shown only when asked for.
+// geminus starts behind it, so whatever was to be on the screen by then is
+// there when it goes.
 
 import (
 	"io"
@@ -15,8 +19,10 @@ import (
 )
 
 const (
-	// splashEnv chooses the opening screen: "off" for none, the name of an
-	// animation for that one. Anything else, or nothing, is one at random.
+	// splashEnv chooses how geminus opens: "off" for neither mascot nor
+	// opening screen, "full" for the opening screen with an animation at
+	// random, the name of one of its animations for that one. Anything
+	// else, or nothing, is the mascot alone.
 	splashEnv = "GEMINUS_SPLASH"
 	// splashEvery is how often the animation is drawn.
 	splashEvery = 70 * time.Millisecond
@@ -37,20 +43,78 @@ type splashScreen struct {
 	shown, next *splash.Canvas
 }
 
-// newSplash returns the opening screen for this start: the animation n
-// selects, or the one the environment names. It returns nil when there is to
-// be none.
-func newSplash(getenv func(string) string, color bool, now time.Time, n uint32) *splashScreen {
+// opening is how this start opens: the opening screen and the mascot, either
+// of which may be nil. n is what chance chose.
+func opening(getenv func(string) string, color bool, now time.Time, n uint32) (*splashScreen, *banner) {
 	want := strings.ToLower(strings.TrimSpace(getenv(splashEnv)))
 	switch want {
 	case "off", "0", "no", "false", "none":
-		return nil
+		return nil, nil
+	}
+	mode := splash.DetectMode(getenv, color)
+	mascot := &banner{mascot: splash.NewMascot("", n), mode: mode, start: now}
+	full := want == "full"
+	for _, a := range splash.Anims {
+		full = full || a.Name == want
+	}
+	if !full {
+		return nil, mascot
 	}
 	art, err := splash.Load(logo.PNG)
 	if err != nil {
-		return nil
+		return nil, mascot
 	}
-	return &splashScreen{art: art, anim: splash.Pick(want, n), mode: splash.DetectMode(getenv, color), seed: n, start: now}
+	return &splashScreen{art: art, anim: splash.Pick(want, n), mode: mode, seed: n, start: now}, mascot
+}
+
+// banner is the mascot with the lines that stand beside it.
+type banner struct {
+	mascot splash.Mascot
+	mode   splash.ColorMode
+	start  time.Time
+	// lines stand to the right of the mascot, from its second row down.
+	lines []string
+}
+
+// bannerRows is how many rows of the transcript the banner takes: the
+// mascot and an empty row under it.
+const bannerRows = splash.MascotRows + 1
+
+// rows draws the banner as it is now, no wider than width.
+func (b *banner) rows(now time.Time, width int) []string {
+	out := make([]string, 0, bannerRows)
+	for i, row := range b.mascot.Rows(now.Sub(b.start).Seconds(), b.mode) {
+		row = " " + row
+		if k := i - 1; k >= 0 && k < len(b.lines) {
+			row += "  " + b.lines[k]
+		}
+		out = append(out, clipStyled(row, width))
+	}
+	return append(out, "")
+}
+
+// clipStyled cuts s to at most width columns. Colour sequences take no
+// room, and a row that was cut does not leave its colours on.
+func clipStyled(s string, width int) string {
+	if textWidth(s) <= width {
+		return s
+	}
+	var b strings.Builder
+	used := 0
+	for i := 0; i < len(s); {
+		if n := skipStyle(s[i:]); n > 0 {
+			b.WriteString(s[i : i+n])
+			i += n
+			continue
+		}
+		r, size := decodeRune(s[i:])
+		if used += runeWidth(r); used > width {
+			break
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String() + "\x1b[0m"
 }
 
 // drawSplash writes the animation's frame for now: the rows that changed.
