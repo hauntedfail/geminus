@@ -72,10 +72,10 @@ Releases come from `https://sibyl.haunted.fail/geminus/updates` (`GEMINUS_UPDATE
 Releasing one, on a computer of the group with the repository:
 
 ```sh
-bash scripts/release.sh 0.5.0     # tests, tags v0.5.0, pushes the tag, has sibyl build and sign it
+bash scripts/release.sh 0.5.0     # tests, tags v0.5.0, pushes, builds/signs on sibyl, and publishes GitHub Release
 ```
 
-Nothing is built or uploaded from that computer. A release is whatever the tag holds, so the right to push a tag to the repository is the right to release.
+Nothing is built locally: sibyl builds every target from the tag and signs the manifest, then `release.sh` downloads the verified binaries from sibyl and publishes them with `SHA256SUMS` to GitHub Releases via `gh` (set `SKIP_GITHUB_RELEASE=1` for OTA-only). A release is whatever the tag holds, so the right to push a tag to the repository is the right to release.
 
 `deploy/README.md` says how the server was put on sibyl.
 

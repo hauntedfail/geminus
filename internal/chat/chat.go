@@ -237,10 +237,11 @@ type request struct {
 	latest                  bool
 	version, help, badUsage bool
 	// update is `geminus update`; release is the version of
-	// `geminus release VERSION`; keygen is `geminus keygen`.
-	update  bool
-	keygen  bool
-	release string
+	// `geminus release VERSION [--download DIR]`; keygen is `geminus keygen`.
+	update     bool
+	keygen     bool
+	release    string
+	releaseOut string
 }
 
 func parseArgs(args []string) request {
@@ -282,12 +283,17 @@ func parseArgs(args []string) request {
 				r.keygen = true
 			}
 		case i == 0 && arg == "release":
-			if len(args) != 2 {
-				r.badUsage = true
-			} else {
+			switch {
+			case len(args) == 2 && args[1] != "" && !strings.HasPrefix(args[1], "-"):
 				r.release = args[1]
-				i = 1
+			case len(args) == 4 && args[1] != "" && !strings.HasPrefix(args[1], "-") &&
+				args[2] == "--download" && args[3] != "" && !strings.HasPrefix(args[3], "-"):
+				r.release = args[1]
+				r.releaseOut = args[3]
+			default:
+				r.badUsage = true
 			}
+			i = len(args) - 1
 		case i == 0 && arg == "persona":
 			usedPersonaCmd = true
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
@@ -354,7 +360,7 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		a.Out.line(`  "human_pubkeys": {"<your-human-peer>": "` + pubHex + `"}`)
 		return 0
 	case req.release != "":
-		return a.releaseCommand(req.release, errw)
+		return a.releaseCommand(req.release, req.releaseOut, errw)
 	}
 	if err := validDir(req.cwd); err != nil {
 		fmt.Fprintln(errw, "geminus: --cwd:", err)

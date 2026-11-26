@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Release geminus: test, tag, and have the release server build the tag.
-# Every geminus then gets it with `geminus update` or /update.
+# Release geminus: test, tag, have the release server build the tag, and
+# publish the signed binaries to GitHub Releases.
+# Every geminus then gets it with `geminus update` or /update, and GitHub
+# Releases stays in sync with the exact binaries built by sibyl.
 #
 #   bash scripts/release.sh 0.5.0
 #
@@ -9,14 +11,19 @@
 # repository, builds every target and signs the release with a key only it
 # holds. Run this on a computer of the group; the request to the server is
 # signed with the group secret of this computer's Hermes profile.
-# GEMINUS_UPDATES_URL names another server than
-# https://sibyl.haunted.fail/geminus/updates.
+#
+# Optional environment variables:
+#   GEMINUS_UPDATES_URL   update server URL (default: https://sibyl.haunted.fail/geminus/updates)
+#   SKIP_GITHUB_RELEASE   set to 1 to skip publishing to GitHub Releases
+#   RELEASE_NOTES         markdown body for the GitHub release
+#   RELEASE_NOTES_FILE    path to a markdown file for the GitHub release body
 #
 # Run again after a failure that was not in the source (the server was
-# restarted, it could not reach the repository): a tag that is already on
-# this commit is used as it is. If the source at the tag does not build, the
-# release was never published, so either release the fix as the next version
-# or move the tag: the script says how.
+# restarted, it could not reach the repository, or GitHub release upload
+# failed): a tag that is already on this commit is used as it is. If the
+# source at the tag does not build, the release was never published, so
+# either release the fix as the next version or move the tag: the script
+# says how.
 set -euo pipefail
 
 version="${1:-}"
@@ -28,6 +35,23 @@ tag="v${version}"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+
+gh_publish=0
+if [ "${SKIP_GITHUB_RELEASE:-0}" != "1" ]; then
+	if ! command -v gh >/dev/null 2>&1; then
+		echo "release: gh CLI is required for GitHub Releases (or set SKIP_GITHUB_RELEASE=1)" >&2
+		exit 1
+	fi
+	if ! gh auth status >/dev/null 2>&1; then
+		echo "release: gh is not authenticated; run 'gh auth login' (or set SKIP_GITHUB_RELEASE=1)" >&2
+		exit 1
+	fi
+	if [ -n "${RELEASE_NOTES_FILE:-}" ] && [ ! -r "$RELEASE_NOTES_FILE" ]; then
+		echo "release: RELEASE_NOTES_FILE is not readable: ${RELEASE_NOTES_FILE}" >&2
+		exit 1
+	fi
+	gh_publish=1
+fi
 
 # What is released is what is committed and tagged. Other untracked files are
 # left alone, but an untracked Go file would make the tests here differ from
@@ -69,4 +93,55 @@ if [ -z "$remote" ]; then
 	git push origin "$tag"
 fi
 
-go run ./cmd/geminus release "$version"
+if [ "$gh_publish" != "1" ]; then
+	go run ./cmd/geminus release "$version"
+	exit 0
+fi
+
+if gh release view "$tag" >/dev/null 2>&1; then
+	go run ./cmd/geminus release "$version"
+	echo "release: GitHub release ${tag} already exists; skipping"
+	exit 0
+fi
+
+tmp_root="${TMPDIR:-/tmp}"
+assets_dir="$(mktemp -d "${tmp_root%/}/geminus-release.XXXXXX")"
+trap 'rm -rf "$assets_dir"' EXIT
+
+go run ./cmd/geminus release "$version" --download "$assets_dir"
+
+notes_args=()
+if [ -n "${RELEASE_NOTES_FILE:-}" ]; then
+	notes_args=(--notes-file "$RELEASE_NOTES_FILE")
+elif [ -n "${RELEASE_NOTES:-}" ]; then
+	notes_args=(--notes "$RELEASE_NOTES")
+else
+	prev_tag="$(git tag --list 'v*' --merged "$tag" --sort=-v:refname | awk -v t="$tag" '$0 != t && !found { print; found=1 }')"
+	notes_body=""
+	if [ -n "$prev_tag" ]; then
+		commits="$(git log --no-merges --format='- %s (%h)' "${prev_tag}..${tag}")"
+		if [ -n "$commits" ]; then
+			notes_body="$(printf 'Changes since %s:\n\n%s\n' "$prev_tag" "$commits")"
+		fi
+	fi
+	if [ -n "$notes_body" ]; then
+		notes_args=(--notes "$notes_body")
+	else
+		notes_args=(--generate-notes)
+	fi
+fi
+
+shopt -s nullglob
+bins=("$assets_dir"/geminus-*)
+shopt -u nullglob
+if [ "${#bins[@]}" -eq 0 ] || [ ! -f "$assets_dir/SHA256SUMS" ]; then
+	echo "release: expected downloaded binaries and SHA256SUMS in ${assets_dir}" >&2
+	exit 1
+fi
+
+gh release create "$tag" \
+	--verify-tag \
+	--title "geminus ${tag}" \
+	"${notes_args[@]}" \
+	"${bins[@]}" \
+	"$assets_dir/SHA256SUMS"

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -497,7 +499,13 @@ func TestReleaseAsksTheServerToBuildAndWaits(t *testing.T) {
 			t.Errorf("%s: exit %d, stderr %q", args, code, got)
 		}
 	}
-	for _, args := range [][]string{{"release"}, {"release", "0.6.0", "dist"}} {
+	for _, args := range [][]string{
+		{"release"},
+		{"release", "0.6.0", "dist"},
+		{"release", "0.6.0", "--download"},
+		{"release", "0.6.0", "--download", "-x"},
+		{"release", "0.6.0", "--other", "dist"},
+	} {
 		if code := w.run(args); code != 2 {
 			t.Errorf("%v: exit %d", args, code)
 		}
@@ -505,6 +513,59 @@ func TestReleaseAsksTheServerToBuildAndWaits(t *testing.T) {
 	w.newApp()
 	if code := w.run([]string{"release", "0.6.0"}); code != 1 || !strings.Contains(w.errs.String(), "no update server") {
 		t.Errorf("release without a server: exit %d, stderr %q", code, w.errs)
+	}
+}
+
+func TestReleaseDownloadWritesVerifiedAssetsAndChecksums(t *testing.T) {
+	w := newWorld(t)
+	r := newReleases(t, w)
+	r.targets["0.5.0"] = []string{"darwin-arm64", "linux-amd64", "windows-amd64"}
+	outDir := filepath.Join(t.TempDir(), "assets")
+	if code := w.run([]string{"release", "0.5.0", "--download", outDir}); code != 0 {
+		t.Fatalf("exit %d: %s", code, w.errs)
+	}
+	w.expect("released 0.5.0: 3 programs")
+	w.expect("downloaded 3 programs and SHA256SUMS to ")
+
+	wantBytes := []byte("the program of 0.5.0")
+	sum := sha256.Sum256(wantBytes)
+	wantHash := hex.EncodeToString(sum[:])
+
+	wantFiles := []string{
+		"geminus-darwin-arm64",
+		"geminus-linux-amd64",
+		"geminus-windows-amd64.exe",
+	}
+	for _, name := range wantFiles {
+		got, err := os.ReadFile(filepath.Join(outDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if !bytes.Equal(got, wantBytes) {
+			t.Fatalf("%s = %q, want %q", name, got, wantBytes)
+		}
+	}
+	sumsRaw, err := os.ReadFile(filepath.Join(outDir, "SHA256SUMS"))
+	if err != nil {
+		t.Fatalf("read SHA256SUMS: %v", err)
+	}
+	wantSums := wantHash + "  geminus-darwin-arm64\n" +
+		wantHash + "  geminus-linux-amd64\n" +
+		wantHash + "  geminus-windows-amd64.exe\n"
+	if string(sumsRaw) != wantSums {
+		t.Fatalf("SHA256SUMS =\n%s\nwant:\n%s", sumsRaw, wantSums)
+	}
+
+	// Re-running on an already-published version downloads the same assets cleanly.
+	outDir2 := filepath.Join(t.TempDir(), "assets-retry")
+	w.newApp()
+	r.attach()
+	if code := w.run([]string{"release", "0.5.0", "--download", outDir2}); code != 0 {
+		t.Fatalf("retry exit %d: %s", code, w.errs)
+	}
+	sumsRaw2, err := os.ReadFile(filepath.Join(outDir2, "SHA256SUMS"))
+	if err != nil || string(sumsRaw2) != wantSums {
+		t.Fatalf("retry SHA256SUMS = %q, err=%v", sumsRaw2, err)
 	}
 }
 

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -355,10 +357,11 @@ func (a *App) newerRelease() string {
 	return a.newer
 }
 
-// releaseCommand is `geminus release VERSION`, used by scripts/release.sh:
-// it asks the server to build the tag vVERSION, sign it and publish it, and
-// waits for that.
-func (a *App) releaseCommand(v string, errw io.Writer) int {
+// releaseCommand is `geminus release VERSION [--download DIR]`, used by
+// scripts/release.sh: it asks the server to build the tag vVERSION, sign it
+// and publish it, waits for that, and optionally downloads the verified
+// binaries and SHA256SUMS into outDir.
+func (a *App) releaseCommand(v, outDir string, errw io.Writer) int {
 	fail := func(err error) int {
 		fmt.Fprintln(errw, "geminus: release:", sanitize(err.Error()))
 		return 1
@@ -377,5 +380,59 @@ func (a *App) releaseCommand(v string, errw io.Writer) int {
 		return fail(err)
 	}
 	a.Out.line(fmt.Sprintf("released %s: %d programs", m.Version, len(m.Files)))
+	if outDir != "" {
+		n, err := a.downloadReleaseAssets(ctx, m, outDir)
+		if err != nil {
+			return fail(err)
+		}
+		a.Out.line(fmt.Sprintf("downloaded %d programs and SHA256SUMS to %s", n, sanitize(outDir)))
+	}
 	return 0
+}
+
+func releaseAssetName(target string) string {
+	name := "geminus-" + target
+	if strings.HasPrefix(target, "windows-") {
+		name += ".exe"
+	}
+	return name
+}
+
+func (a *App) downloadReleaseAssets(ctx context.Context, m updates.Manifest, dir string) (int, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return 0, fmt.Errorf("create download directory: %w", err)
+	}
+	targets := make([]string, 0, len(m.Files))
+	for target := range m.Files {
+		if !updates.ValidTarget(target) {
+			return 0, fmt.Errorf("manifest names invalid target %q", target)
+		}
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+
+	var sums strings.Builder
+	for _, target := range targets {
+		name := releaseAssetName(target)
+		dst := filepath.Join(dir, name)
+		f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		if err != nil {
+			return 0, fmt.Errorf("create %s: %w", name, err)
+		}
+		fetchErr := a.Updates.Fetch(ctx, m, target, f)
+		closeErr := f.Close()
+		if fetchErr != nil {
+			_ = os.Remove(dst)
+			return 0, fetchErr
+		}
+		if closeErr != nil {
+			_ = os.Remove(dst)
+			return 0, fmt.Errorf("close %s: %w", name, closeErr)
+		}
+		fmt.Fprintf(&sums, "%s  %s\n", m.Files[target].SHA256, name)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS"), []byte(sums.String()), 0o644); err != nil {
+		return 0, fmt.Errorf("write SHA256SUMS: %w", err)
+	}
+	return len(targets), nil
 }
