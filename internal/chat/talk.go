@@ -82,6 +82,9 @@ func (a *App) say(text string) error {
 		}
 		a.session = id
 	}
+	// Publish presence before posting the prompt so a resident bridge sees us
+	// attached immediately if the turn asks a permission question.
+	a.publishPresence(a.presenceSession != a.session)
 	nonce, err := randomHex(16)
 	if err != nil {
 		return err
@@ -141,8 +144,25 @@ func (a *App) watch(turn string) error {
 			a.Out.line(a.Out.dim(fmt.Sprintf("%s has not picked it up yet (bridge seen %s). It stays in Honcho and runs when the bridge reads it.",
 				a.cur.Name, a.ago(a.cur.Seen))))
 		}
+		var lines <-chan string
+		if a.pendingAsk != nil {
+			lines = a.lines
+		}
 		select {
+		case line, ok := <-lines:
+			if !ok {
+				return nil
+			}
+			a.entered(line)
+			if choice, matched := parseAskAnswer(line); matched {
+				if err := a.sendAnswer(choice); err != nil {
+					a.Out.line(a.Out.fail("✗ " + err.Error()))
+				}
+			} else if strings.TrimSpace(line) != "" {
+				a.Out.line(a.Out.warn("! permission question pending: type allow (y) or deny (n)"))
+			}
 		case <-ticker.C:
+			a.publishPresence(false)
 		case <-a.interrupt:
 			a.Out.line(a.Out.dim("(not watching any more; the agent keeps working and the answer appears when it arrives)"))
 			return nil
@@ -176,6 +196,27 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 	// was written or retained in the latest window.
 	failedDetail := map[string]string{}
 	donePrompts := map[string]bool{}
+	resolvedTurns := map[string]bool{}
+	for _, m := range messages {
+		meta, ok := parseMeta(m)
+		if !ok {
+			continue
+		}
+		switch meta.Role {
+		case wire.RoleAnswer:
+			if a.ownAnswer(m, meta) {
+				a.markAskAnswered(meta.Request)
+			}
+		case wire.RoleOutput:
+			if meta.Final && a.genuine(m, meta) {
+				resolvedTurns[meta.Turn] = true
+			}
+		case wire.RoleState:
+			if (meta.Phase == "answered" || meta.Phase == "timeout") && a.genuineState(m, meta) {
+				resolvedTurns[meta.Turn] = true
+			}
+		}
+	}
 	for _, m := range messages {
 		meta, ok := parseMeta(m)
 		if !ok {
@@ -249,6 +290,9 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 			}
 			if meta.Final {
 				delete(a.waiting, meta.Turn)
+				if a.pendingAsk != nil && a.pendingAsk.Turn == meta.Turn {
+					a.clearPendingAsk()
+				}
 				done = done || meta.Turn == turn
 				lost = lost || !meta.OK && noDir[meta.Turn]
 			}
@@ -257,8 +301,11 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				continue
 			}
 			a.shown[m.ID] = true
-			if m.PeerID == a.cur.Name {
+			if a.genuineState(m, meta) {
 				a.showBridgeState(m.Content, meta)
+				if (meta.Phase == "answered" || meta.Phase == "timeout") && a.pendingAsk != nil && a.pendingAsk.Turn == meta.Turn {
+					a.clearPendingAsk()
+				}
 				printed = true
 			}
 		case wire.RoleAsk:
@@ -266,9 +313,29 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				continue
 			}
 			a.shown[m.ID] = true
-			if m.PeerID == a.cur.Name {
+			if a.genuineAsk(m, meta) {
 				a.showBridgeAsk(m.Content, meta)
+				if !a.answeredAsk[meta.Request] && !resolvedTurns[meta.Turn] &&
+					(meta.Deadline == 0 || a.Now().Unix() < meta.Deadline) {
+					a.setPendingAsk(&pendingAsk{
+						Turn:     meta.Turn,
+						Request:  meta.Request,
+						Tool:     meta.Tool,
+						Question: m.Content,
+						Detail:   meta.Detail,
+						Choices:  meta.Choices,
+						Deadline: meta.Deadline,
+					})
+				}
 				printed = true
+			}
+		case wire.RoleAnswer:
+			if a.shown[m.ID] {
+				continue
+			}
+			a.shown[m.ID] = true
+			if a.ownAnswer(m, meta) {
+				a.markAskAnswered(meta.Request)
 			}
 		}
 	}
@@ -308,6 +375,7 @@ func (a *App) letGo() {
 	a.session, a.title = "", ""
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
+	a.resetAskState()
 	a.lastCwd, a.wasElsewhere = a.cwd, true
 	a.cwd = ""
 	a.Out.line(a.Out.warn("! nothing ran on " + name + ", and no conversation was started. Back in " + a.where() +
@@ -355,21 +423,32 @@ func (a *App) showBridgeState(content string, meta wire.Message) {
 }
 
 // showBridgeAsk surfaces a bridge-emitted interactive question so the owner
-// knows immediately why the remote agent is paused.
+// knows immediately why the remote agent is paused and how to answer it.
 func (a *App) showBridgeAsk(content string, meta wire.Message) {
 	text := oneLine(content)
+	detail := oneLine(meta.Detail)
 	if text == "" {
-		text = oneLine(meta.Detail)
+		text = detail
+		detail = ""
 	}
 	who := "bridge"
 	if a.cur != nil {
 		who = oneLine(a.cur.Name)
 	}
-	if text == "" {
-		a.Out.line(a.Out.warn(fmt.Sprintf("! %s is waiting for an interactive answer", who)))
-		return
+	tool := oneLine(meta.Tool)
+	head := fmt.Sprintf("! %s asks", who)
+	if tool != "" {
+		head += fmt.Sprintf(" [%s]", tool)
 	}
-	a.Out.line(a.Out.warn(fmt.Sprintf("! %s asks: %s", who, text)))
+	if text == "" {
+		a.Out.line(a.Out.warn(head + ": waiting for an interactive answer"))
+	} else {
+		a.Out.line(a.Out.warn(head + ": " + text))
+	}
+	if detail != "" && detail != text {
+		a.Out.line(a.Out.dim("  " + detail))
+	}
+	a.Out.line(a.Out.dim("  type allow (y) or deny (n)"))
 }
 
 // show prints one piece of an agent's output.
@@ -541,6 +620,7 @@ func (a *App) resume(want string) error {
 	a.tuning = wire.Tuning{Model: info.Model, Effort: info.Effort}
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
+	a.resetAskState()
 
 	// The description was verified when the conversations were listed. As a
 	// second check, the prompts were signed for the same harness and
@@ -561,6 +641,27 @@ func (a *App) resume(want string) error {
 	}
 
 	a.Out.line(a.Out.dim("── conversation so far ──"))
+	resolvedTurns := map[string]bool{}
+	for _, m := range messages {
+		meta, ok := parseMeta(m)
+		if !ok {
+			continue
+		}
+		switch meta.Role {
+		case wire.RoleAnswer:
+			if a.ownAnswer(m, meta) {
+				a.markAskAnswered(meta.Request)
+			}
+		case wire.RoleOutput:
+			if meta.Final && a.genuine(m, meta) {
+				resolvedTurns[meta.Turn] = true
+			}
+		case wire.RoleState:
+			if (meta.Phase == "answered" || meta.Phase == "timeout") && a.genuineState(m, meta) {
+				resolvedTurns[meta.Turn] = true
+			}
+		}
+	}
 	unsigned = 0
 	for _, m := range messages {
 		meta, ok := parseMeta(m)
@@ -597,10 +698,24 @@ func (a *App) resume(want string) error {
 			if meta.Final {
 				delete(a.waiting, meta.Turn)
 			}
-		case meta.Role == wire.RoleState && m.PeerID == a.cur.Name:
+		case meta.Role == wire.RoleState && a.genuineState(m, meta):
 			a.showBridgeState(m.Content, meta)
-		case meta.Role == wire.RoleAsk && m.PeerID == a.cur.Name:
+		case meta.Role == wire.RoleAsk && a.genuineAsk(m, meta):
 			a.showBridgeAsk(m.Content, meta)
+			if !a.answeredAsk[meta.Request] && !resolvedTurns[meta.Turn] &&
+				(meta.Deadline == 0 || a.Now().Unix() < meta.Deadline) {
+				a.setPendingAsk(&pendingAsk{
+					Turn:     meta.Turn,
+					Request:  meta.Request,
+					Tool:     meta.Tool,
+					Question: m.Content,
+					Detail:   meta.Detail,
+					Choices:  meta.Choices,
+					Deadline: meta.Deadline,
+				})
+			}
+		case meta.Role == wire.RoleAnswer && a.ownAnswer(m, meta):
+			a.Out.line(a.Out.dim("you answered: " + sanitize(m.Content)))
 		default:
 			unsigned++
 		}
@@ -612,5 +727,6 @@ func (a *App) resume(want string) error {
 	if len(a.waiting) > 0 {
 		a.Out.line(a.Out.dim(fmt.Sprintf("%d prompt(s) not answered yet; the answer appears when it arrives", len(a.waiting))))
 	}
+	a.publishPresence(true)
 	return nil
 }

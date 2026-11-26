@@ -94,6 +94,9 @@ const (
 	idleEvery = 4 * time.Second
 	// slowAfter is when geminus says that nothing has picked the prompt up.
 	slowAfter = 20 * time.Second
+	// presenceEvery is how often geminus refreshes geminus_presence in Honcho
+	// while a conversation is open (bridge freshness window is 60s).
+	presenceEvery = 20 * time.Second
 )
 
 // App is one run of the interface. The zero value is not usable; see Run.
@@ -102,11 +105,12 @@ type App struct {
 	Profile profile.Profile
 	Honcho  *honcho.Client
 	// Now and the intervals are replaceable for tests.
-	Now         func() time.Time
-	Watch       time.Duration
-	Idle        time.Duration
-	SlowAfter   time.Duration
-	UpdateCheck time.Duration
+	Now           func() time.Time
+	Watch         time.Duration
+	Idle          time.Duration
+	SlowAfter     time.Duration
+	UpdateCheck   time.Duration
+	PresenceEvery time.Duration
 
 	ctx   context.Context
 	lines <-chan string
@@ -146,6 +150,13 @@ type App struct {
 	// the last state seen for each.
 	waiting map[string]bool
 	state   map[string]string
+	// presenceSession and presenceSent track the last presence heartbeat sent.
+	presenceSession string
+	presenceSent    time.Time
+	// pendingAsk holds an unanswered permission question from the bridge, and
+	// answeredAsk remembers request IDs already answered or resolved.
+	pendingAsk  *pendingAsk
+	answeredAsk map[string]bool
 
 	// live is the prompt box at the bottom of a terminal; nil when geminus
 	// runs line by line. The rest is only used with it: the question the box
@@ -532,6 +543,9 @@ func (a *App) loop() {
 					a.Out.line("")
 					a.maybeAutoUpdate()
 					break wait
+				}
+				if a.session != "" {
+					a.publishPresence(false)
 				}
 				if len(a.waiting) > 0 && a.session != "" && a.arrivals() {
 					break wait

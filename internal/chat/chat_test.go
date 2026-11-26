@@ -799,12 +799,18 @@ func TestBridgeStateAskAndTerminalPromptWithoutOutput(t *testing.T) {
 	w.talk([]string{"persona", "sibyl"}, [2]string{"hello", "echo: hello"})
 	sid := w.srv.Sessions()[0].ID
 
-	// Inject a bridge state warning and an ask message (as emitted by a diverged
+	// Inject a signed bridge state warning and ask message (as emitted by a
 	// resident/interactive bridge) plus a failed prompt with no final RoleOutput.
-	w.srv.Append(sid, "sibyl", "waiting: the program is asking; nobody is attached, so the question is held",
-		map[string]any{wire.Kind: wire.Message{V: 1, Role: wire.RoleState, Phase: "waiting", TS: now.Unix()}})
-	w.srv.Append(sid, "sibyl", "Allow Bash(node script.mjs)?",
-		map[string]any{wire.Kind: wire.Message{V: 1, Role: wire.RoleAsk, TS: now.Unix()}})
+	stateText := "waiting: the program is asking; nobody is attached, so the question is held"
+	w.srv.Append(sid, "sibyl", stateText, map[string]any{wire.Kind: wire.Message{
+		V: 1, Role: wire.RoleState, Turn: "t1", Phase: "waiting", TS: now.Unix(),
+		Sig: wire.Sign(w.prof.Secret, stateText, wire.StateLabel(sid, "t1", "waiting"), now.Unix()),
+	}})
+	askText := "Allow Bash(node script.mjs)?"
+	w.srv.Append(sid, "sibyl", askText, map[string]any{wire.Kind: wire.Message{
+		V: 1, Role: wire.RoleAsk, Turn: "t1", Request: "req-1", Choices: []string{"allow", "deny"}, TS: now.Unix(),
+		Sig: wire.Sign(w.prof.Secret, askText, wire.AskLabel(sid, "t1", "req-1", askText, "allow,deny"), now.Unix()),
+	}})
 
 	// Resuming the conversation should display state & ask without miscounting them as unsigned.
 	w.newApp()

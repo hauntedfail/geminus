@@ -247,6 +247,9 @@ func (a *App) loopLive() {
 			if a.restarting {
 				return
 			}
+			if a.session != "" {
+				a.publishPresence(false)
+			}
 			if len(a.waiting) > 0 && a.session != "" {
 				_, _, err := a.poll("")
 				a.linked(err)
@@ -297,6 +300,11 @@ func isGeminusCommand(line string) bool {
 // echoPrompt puts what was entered into the transcript with a clear user
 // utterance boundary, and updates the sticky prompt header when it is a prompt.
 func (a *App) echoPrompt(text string) {
+	if a.pendingAsk != nil {
+		if _, ok := parseAskAnswer(text); ok {
+			return
+		}
+	}
 	if a.live != nil && !isGeminusCommand(text) {
 		prompt := text
 		if strings.HasPrefix(prompt, "//") {

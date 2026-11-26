@@ -25,13 +25,16 @@ const (
 	PushKey = "geminise_push"
 	// DefaultsKey is the key of the owner's defaults in their peer metadata.
 	DefaultsKey = "geminus"
+	// PresenceKey is the peer-metadata key of the owner's open conversation heartbeat.
+	PresenceKey = "geminus_presence"
 
 	RolePrompt = "prompt"
 	RoleOutput = "output"
-	// RoleState and RoleAsk are emitted by bridges with interactive/resident
-	// state reporting (e.g. waiting on a permission prompt or timing out).
-	RoleState = "state"
-	RoleAsk   = "ask"
+	// RoleState, RoleAsk, and RoleAnswer are exchanged with interactive/resident
+	// bridges for status updates and permission questions.
+	RoleState  = "state"
+	RoleAsk    = "ask"
+	RoleAnswer = "answer"
 
 	StateQueued  = "queued"
 	StateRunning = "running"
@@ -215,6 +218,50 @@ func OutputLabel(session, turn string, seq int, final, ok bool, native string) s
 	return fmt.Sprintf("geminus-output:%s:%s:%d:%d:%d:%s", session, turn, seq, bit(final), bit(ok), digest(native))
 }
 
+// PresenceLabel binds a presence heartbeat to the human peer and open conversation.
+func PresenceLabel(human, session string) string {
+	return fmt.Sprintf("geminus-presence:%s:%s", human, session)
+}
+
+// AskLabel binds a bridge permission question to its turn, request id, text, and choices.
+func AskLabel(session, turn, request, question, choices string) string {
+	return fmt.Sprintf("geminus-ask:%s:%s:%s:%s:%s", session, turn, request, digest(question), digest(choices))
+}
+
+// AnswerLabel binds the owner's answer to one permission question.
+func AnswerLabel(session, turn, request, human string) string {
+	return fmt.Sprintf("geminus-answer:%s:%s:%s:%s", session, turn, request, human)
+}
+
+// StateLabel binds a bridge status line to its turn and phase.
+func StateLabel(session, turn, phase string) string {
+	return fmt.Sprintf("geminus-state:%s:%s:%s", session, turn, phase)
+}
+
+// Presence is the "geminus_presence" object in the owner's peer metadata while
+// a conversation is open in geminus.
+type Presence struct {
+	V       int    `json:"v"`
+	Session string `json:"session"`
+	TS      int64  `json:"ts"`
+	Sig     string `json:"sig"`
+	SigAlg  string `json:"sig_alg,omitempty"`
+}
+
+// SealPresenceWith signs a presence record for (human, session) at ts.
+func SealPresenceWith(auth HumanAuth, human, session string, ts int64) Presence {
+	sig, alg := auth.Sign(session, PresenceLabel(human, session), ts)
+	return Presence{V: 1, Session: session, TS: ts, Sig: sig, SigAlg: alg}
+}
+
+// VerifyPresenceWith reports whether p is a valid presence record for human.
+func VerifyPresenceWith(auth HumanAuth, human string, p Presence) bool {
+	if p.Session == "" || p.TS == 0 {
+		return false
+	}
+	return auth.Verify(p.Session, PresenceLabel(human, p.Session), p.TS, p.Sig, p.SigAlg)
+}
+
 // DefaultsLabel binds stored defaults to the person they belong to.
 func DefaultsLabel(human string) string { return "geminus-defaults:" + human }
 
@@ -310,6 +357,12 @@ type Message struct {
 	OK     bool   `json:"ok,omitempty"`
 	Native string `json:"native,omitempty"`
 	Phase  string `json:"phase,omitempty"`
+
+	// Ask / answer fields.
+	Request  string   `json:"request,omitempty"`
+	Tool     string   `json:"tool,omitempty"`
+	Choices  []string `json:"choices,omitempty"`
+	Deadline int64    `json:"deadline,omitempty"`
 }
 
 // Harness is one agent program a computer offers.

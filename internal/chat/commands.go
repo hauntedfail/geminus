@@ -13,6 +13,18 @@ import (
 )
 
 func (a *App) handle(line string) error {
+	if a.pendingAsk != nil {
+		if choice, ok := parseAskAnswer(line); ok {
+			return a.sendAnswer(choice)
+		}
+		if !isGeminusCommand(line) {
+			what := oneLine(a.pendingAsk.Tool)
+			if what != "" {
+				return fmt.Errorf("permission question pending (%s): type allow (y) or deny (n)", what)
+			}
+			return errors.New("permission question pending: type allow (y) or deny (n)")
+		}
+	}
 	if cmd, arg, ok := shellLine(line); ok {
 		return a.shell(cmd, arg)
 	}
@@ -83,6 +95,7 @@ func (a *App) handle(line string) error {
 		a.tuning = a.defaultTuning(a.cur.Name, *a.harness)
 		a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 		a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
+		a.resetAskState()
 		if a.live != nil {
 			a.live.setPrompt("")
 		}
