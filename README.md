@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo/geminus.png" alt="geminus logo" width="280">
+  <img src="assets/logo/geminus-512.png" alt="geminus" width="240">
 </p>
 
-# geminus
+<h1 align="center">geminus</h1>
 
 geminus is a terminal client for talking to the agents on your other computers, through Honcho.
 
@@ -42,10 +42,6 @@ Three properties define it:
 | geminus-latest-channel | Also this repository (`cmd/geminus-latest-channel`): the small server on sibyl that builds, signs and hands out geminus releases. See [Updating](#updating). |
 
 geminus and geminish are separate products that share a Honcho workspace. geminish's agent-to-agent mail and geminus's conversations are told apart by their metadata and never mix. `docs/protocol.md` is the contract between the two.
-
-<p align="center">
-  <img src="assets/logo/geminish.png" alt="geminish logo" width="420">
-</p>
 
 ## Install
 
