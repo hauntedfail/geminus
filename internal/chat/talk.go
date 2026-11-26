@@ -171,6 +171,11 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 	// noDir holds the prompts the bridge did not run for want of the
 	// directory; lost says the answer to one of them has just been shown.
 	noDir, lost := map[string]bool{}, false
+	// terminalPrompts records prompts whose metadata already reached a terminal
+	// state (failed/done), so waiting is cleared even if no final output message
+	// was written or retained in the latest window.
+	failedDetail := map[string]string{}
+	donePrompts := map[string]bool{}
 	for _, m := range messages {
 		meta, ok := parseMeta(m)
 		if !ok {
@@ -222,6 +227,10 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				delete(a.waiting, m.ID)
 				printed = true
 				done = done || m.ID == turn
+			case wire.StateFailed:
+				failedDetail[m.ID] = meta.Detail
+			case wire.StateDone:
+				donePrompts[m.ID] = true
 			}
 		case wire.RoleOutput:
 			if a.shown[m.ID] {
@@ -243,7 +252,46 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				done = done || meta.Turn == turn
 				lost = lost || !meta.OK && noDir[meta.Turn]
 			}
+		case wire.RoleState:
+			if a.shown[m.ID] {
+				continue
+			}
+			a.shown[m.ID] = true
+			if m.PeerID == a.cur.Name {
+				a.showBridgeState(m.Content, meta)
+				printed = true
+			}
+		case wire.RoleAsk:
+			if a.shown[m.ID] {
+				continue
+			}
+			a.shown[m.ID] = true
+			if m.PeerID == a.cur.Name {
+				a.showBridgeAsk(m.Content, meta)
+				printed = true
+			}
 		}
+	}
+	for id, detail := range failedDetail {
+		if !a.waiting[id] {
+			continue
+		}
+		msg := oneLine(detail)
+		if msg == "" {
+			msg = "the prompt failed"
+		}
+		a.Out.line(a.Out.fail(fmt.Sprintf("✗ %s: %s", a.cur.Name, msg)))
+		delete(a.waiting, id)
+		printed = true
+		done = done || id == turn
+		lost = lost || noDir[id]
+	}
+	for id := range donePrompts {
+		if !a.waiting[id] {
+			continue
+		}
+		delete(a.waiting, id)
+		done = done || id == turn
 	}
 	if lost && a.ranIn != a.session {
 		a.letGo()
@@ -279,6 +327,49 @@ func (a *App) own(m honcho.Message, meta wire.Message) bool {
 	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, meta.Nonce, a.cwd,
 		wire.Tuning{Model: meta.Model, Effort: meta.Effort})
 	return m.PeerID == a.Profile.Human && a.humanAuth().Verify(m.Content, label, meta.TS, meta.Sig, meta.SigAlg)
+}
+
+// showBridgeState displays a bridge-emitted state message (e.g. waiting on a
+// permission prompt or timing out) so a diverged or interactive bridge never
+// appears as a silent hang.
+func (a *App) showBridgeState(content string, meta wire.Message) {
+	text := oneLine(content)
+	if text == "" {
+		text = oneLine(meta.Detail)
+	}
+	if text == "" {
+		text = oneLine(meta.Phase)
+	}
+	if text == "" {
+		return
+	}
+	who := "bridge"
+	if a.cur != nil {
+		who = oneLine(a.cur.Name)
+	}
+	if meta.Phase == "waiting" || meta.Phase == "timeout" {
+		a.Out.line(a.Out.warn(fmt.Sprintf("! %s: %s", who, text)))
+		return
+	}
+	a.Out.line(a.Out.dim(fmt.Sprintf("· %s: %s", who, text)))
+}
+
+// showBridgeAsk surfaces a bridge-emitted interactive question so the owner
+// knows immediately why the remote agent is paused.
+func (a *App) showBridgeAsk(content string, meta wire.Message) {
+	text := oneLine(content)
+	if text == "" {
+		text = oneLine(meta.Detail)
+	}
+	who := "bridge"
+	if a.cur != nil {
+		who = oneLine(a.cur.Name)
+	}
+	if text == "" {
+		a.Out.line(a.Out.warn(fmt.Sprintf("! %s is waiting for an interactive answer", who)))
+		return
+	}
+	a.Out.line(a.Out.warn(fmt.Sprintf("! %s asks: %s", who, text)))
 }
 
 // show prints one piece of an agent's output.
@@ -506,6 +597,10 @@ func (a *App) resume(want string) error {
 			if meta.Final {
 				delete(a.waiting, meta.Turn)
 			}
+		case meta.Role == wire.RoleState && m.PeerID == a.cur.Name:
+			a.showBridgeState(m.Content, meta)
+		case meta.Role == wire.RoleAsk && m.PeerID == a.cur.Name:
+			a.showBridgeAsk(m.Content, meta)
 		default:
 			unsigned++
 		}

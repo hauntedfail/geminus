@@ -705,6 +705,28 @@ def _decode_grok(text: str, state: dict) -> str:
     return str(result.get("text") or "")
 
 
+def _kill_tree(proc) -> None:
+    """Terminate ``proc`` and (on Windows) its child process tree."""
+    pid = getattr(proc, "pid", None)
+    if sys.platform == "win32" and isinstance(pid, int) and pid > 0:
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def run_prompt(harness: Harness, binary: str, session: str, native: str | None, prompt: str, *,
                cwd: str, emit, extra_args=(), timeout: float = DEFAULT_TIMEOUT, popen=subprocess.Popen,
                environ: dict | None = None, tune=()) -> Result:
@@ -762,7 +784,7 @@ def run_prompt(harness: Harness, binary: str, session: str, native: str | None, 
         except queue.Empty:
             if time.monotonic() > deadline:
                 timed_out = True
-                proc.kill()
+                _kill_tree(proc)
                 break
             continue
         if data is None:
@@ -931,12 +953,22 @@ class Bridge:
     def _serve_once(self, session: dict) -> bool:
         """Clear the pending mark, then run every prompt that is waiting. True means "look again"."""
         sid = str(session["id"])
-        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
-        info = metadata.get(KIND) if isinstance(metadata.get(KIND), dict) else {}
+        raw_meta = session.get("metadata")
+        metadata: dict = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+        raw_info = metadata.get(KIND)
+        info: dict = dict(raw_info) if isinstance(raw_info, dict) else {}
         # Cleared before the read: a prompt written after this is either in the read below or sets
-        # the mark again.
+        # the mark again. If the read itself fails transiently (e.g. Honcho 502), restore pending so
+        # queued prompts are never stranded.
         self.api.set_session_metadata(sid, {**metadata, KIND: {**info, "pending": False}})
-        messages = self.api.messages(sid)
+        try:
+            messages = self.api.messages(sid)
+        except MailboxError:
+            try:
+                self.api.set_session_metadata(sid, {**metadata, KIND: {**info, "pending": True}})
+            except MailboxError:
+                pass
+            raise
         ran = False
         for message in messages:
             if self._runnable(sid, info, message):
@@ -1131,19 +1163,23 @@ class Bridge:
                              timeout=self.timeout, tune=tune)
 
         result = None
-        for name, line in preludes:
-            # What the program says to a setting is shown when the owner has just changed it.
-            changed = asked[name] != (last.get(name) or "")
-            took = run(native, line, emit if changed else (lambda _text: None))
-            if not took.ok:
-                result = Result(False, took.native, f"{harness.name} did not take the {name} setting: {took.detail}")
-                break
-            native = took.native or native
-        if result is None:
-            result = run(native)
-            if not result.ok and native is None and seq == 0 and not buffer and "already in use" in result.detail:
-                # An earlier turn created the program's session but its output never reached Honcho.
-                result = run(harness.native_id(sid, None))
+        try:
+            for name, line in preludes:
+                # What the program says to a setting is shown when the owner has just changed it.
+                changed = asked[name] != (last.get(name) or "")
+                took = run(native, line, emit if changed else (lambda _text: None))
+                if not took.ok:
+                    result = Result(False, took.native, f"{harness.name} did not take the {name} setting: {took.detail}")
+                    break
+                native = took.native or native
+            if result is None:
+                result = run(native)
+                if not result.ok and native is None and seq == 0 and not buffer and "already in use" in result.detail:
+                    # An earlier turn created the program's session but its output never reached Honcho.
+                    result = run(harness.native_id(sid, None))
+        except Exception as exc:
+            log.exception("geminus: unexpected error running prompt %s of %s", turn, sid)
+            result = Result(False, native or "", f"{harness.name} runner failed: {exc.__class__.__name__}: {exc}")
         if result.native:
             native_box.append(result.native)
         rest = "".join(buffer)

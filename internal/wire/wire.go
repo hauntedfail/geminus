@@ -28,6 +28,10 @@ const (
 
 	RolePrompt = "prompt"
 	RoleOutput = "output"
+	// RoleState and RoleAsk are emitted by bridges with interactive/resident
+	// state reporting (e.g. waiting on a permission prompt or timing out).
+	RoleState = "state"
+	RoleAsk   = "ask"
 
 	StateQueued  = "queued"
 	StateRunning = "running"
@@ -299,12 +303,13 @@ type Message struct {
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
 
-	// Output fields.
+	// Output / state fields.
 	Turn   string `json:"turn,omitempty"`
 	Seq    int    `json:"seq,omitempty"`
 	Final  bool   `json:"final,omitempty"`
 	OK     bool   `json:"ok,omitempty"`
 	Native string `json:"native,omitempty"`
+	Phase  string `json:"phase,omitempty"`
 }
 
 // Harness is one agent program a computer offers.

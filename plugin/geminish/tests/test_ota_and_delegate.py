@@ -293,5 +293,82 @@ class TestBridgeModelDiscovery(unittest.TestCase):
         )
 
 
+class TestBridgeResilience(unittest.TestCase):
+    def test_serve_once_restores_pending_on_transient_read_error(self):
+        secret = hashlib.sha256(b"test-group-secret").digest()
+        with tempfile.TemporaryDirectory() as td:
+            cfg = _make_cfg("mirai", Path(td), secret)
+            cfg.state_dir.mkdir(parents=True)
+            store = Store(cfg.store_path)
+
+            class _FlakyApi:
+                def __init__(self):
+                    self.meta_writes: list[dict] = []
+
+                def set_session_metadata(self, sid, metadata):
+                    self.meta_writes.append(metadata)
+
+                def messages(self, sid):
+                    raise bridge.MailboxError("Honcho POST answered HTTP 502")
+
+            api = _FlakyApi()
+            br = bridge.Bridge(cfg, store, api)
+            session = {"id": "geminus-mirai-20261126-test", "metadata": {"kind": "geminus", "geminus": {"persona": "mirai", "pending": True}}}
+            with self.assertRaises(bridge.MailboxError):
+                br._serve_once(session)
+            self.assertEqual(len(api.meta_writes), 2)
+            self.assertFalse(api.meta_writes[0]["geminus"]["pending"])
+            self.assertTrue(api.meta_writes[1]["geminus"]["pending"])
+
+    def test_turn_records_failure_on_unexpected_runner_exception(self):
+        secret = hashlib.sha256(b"test-group-secret").digest()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = _make_cfg("mirai", root, secret)
+            cfg.state_dir.mkdir(parents=True)
+            store = Store(cfg.store_path)
+
+            class _FakeApi:
+                def __init__(self):
+                    self.posted: list[dict] = []
+                    self.states: list[dict] = []
+
+                def post(self, sid, peer, content, metadata):
+                    rec = {"id": f"m-{len(self.posted)+1}", "peer_id": peer, "content": content, "metadata": metadata}
+                    self.posted.append(rec)
+                    return rec
+
+                def set_message_metadata(self, sid, mid, metadata):
+                    self.states.append(metadata)
+
+            def _boom(*args, **kwargs):
+                raise RuntimeError("synthetic crash")
+
+            api = _FakeApi()
+            br = bridge.Bridge(cfg, store, api, find=lambda _b, _c: "/bin/echo", run=_boom)
+            sid = "geminus-mirai-20261126-boom"
+            info = {"persona": "mirai", "human": "h1karu", "harness": "claude", "cwd": str(root)}
+            msg = {"id": "p-1", "peer_id": "h1karu", "content": "hi", "metadata": {"geminus": {"role": "prompt", "nonce": "n1", "state": "queued"}}}
+            br._turn(sid, info, msg, [msg])
+            self.assertTrue(api.posted)
+            last_out = api.posted[-1]
+            self.assertFalse(last_out["metadata"]["geminus"]["ok"])
+            self.assertTrue(last_out["metadata"]["geminus"]["final"])
+            self.assertIn("synthetic crash", last_out["content"])
+            self.assertEqual(api.states[-1]["geminus"]["state"], "failed")
+
+    def test_kill_tree_calls_kill(self):
+        killed = []
+
+        class _Proc:
+            pid = 999999
+
+            def kill(self):
+                killed.append(True)
+
+        bridge._kill_tree(_Proc())
+        self.assertEqual(killed, [True])
+
+
 if __name__ == "__main__":
     unittest.main()

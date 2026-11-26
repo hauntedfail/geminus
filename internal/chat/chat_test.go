@@ -793,3 +793,53 @@ func TestVersionAndHelp(t *testing.T) {
 		t.Errorf("help: exit %d, %q", code, w.screen.String())
 	}
 }
+
+func TestBridgeStateAskAndTerminalPromptWithoutOutput(t *testing.T) {
+	w := newWorld(t)
+	w.talk([]string{"persona", "sibyl"}, [2]string{"hello", "echo: hello"})
+	sid := w.srv.Sessions()[0].ID
+
+	// Inject a bridge state warning and an ask message (as emitted by a diverged
+	// resident/interactive bridge) plus a failed prompt with no final RoleOutput.
+	w.srv.Append(sid, "sibyl", "waiting: the program is asking; nobody is attached, so the question is held",
+		map[string]any{wire.Kind: wire.Message{V: 1, Role: wire.RoleState, Phase: "waiting", TS: now.Unix()}})
+	w.srv.Append(sid, "sibyl", "Allow Bash(node script.mjs)?",
+		map[string]any{wire.Kind: wire.Message{V: 1, Role: wire.RoleAsk, TS: now.Unix()}})
+
+	// Resuming the conversation should display state & ask without miscounting them as unsigned.
+	w.newApp()
+	w.talk([]string{"persona", "sibyl", "--continue"})
+	w.expect(
+		"! sibyl: waiting: the program is asking; nobody is attached, so the question is held",
+		"! sibyl asks: Allow Bash(node script.mjs)?",
+	)
+	w.expectNot("are not signed and are not shown")
+
+	// A prompt that transitions to StateFailed without a matching final RoleOutput
+	// must still clear waiting and surface the error instead of hanging forever.
+	nonce := "n-failed-no-out"
+	ts := now.Unix()
+	label := wire.PromptLabel(sid, "sibyl", "hermes", "h1karu", nonce, "", wire.Tuning{})
+	sig := wire.Sign(w.prof.Secret, "stuck?", label, ts)
+	pm := w.srv.Append(sid, "h1karu", "stuck?", map[string]any{wire.Kind: wire.Message{
+		V: 1, Role: wire.RolePrompt, Nonce: nonce, TS: ts, State: wire.StateFailed,
+		Detail: "the conversation's process exited", Sig: sig,
+	}})
+	w.app.waiting[pm] = true
+	w.app.shown[pm] = true
+	done, printed, err := w.app.poll(pm)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if !done || !printed {
+		t.Fatalf("expected done=true printed=true, got done=%v printed=%v", done, printed)
+	}
+	if w.app.waiting[pm] {
+		t.Fatalf("prompt %s remained in waiting after StateFailed", pm)
+	}
+	w.expect("✗ sibyl: the conversation's process exited")
+
+	if !isGeminusCommand("/post-human") || !isGeminusCommand("/post-human on") || !isGeminusCommand("/helix") {
+		t.Fatalf("expected post-human/helix slash commands to be recognized as local geminus commands")
+	}
+}
