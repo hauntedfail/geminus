@@ -93,6 +93,8 @@ type live struct {
 
 	last   string
 	closed bool
+	// shortcuts is the expanded key list, opened with ? on an empty prompt.
+	shortcuts bool
 
 	// splash is the opening screen while it covers everything else.
 	splash *splashScreen
@@ -272,6 +274,7 @@ func (l *live) draw() {
 		now:          l.now(),
 		spin:         l.spin,
 		pal:          l.pal,
+		shortcuts:    l.shortcuts,
 	}
 	var f frame
 	hideCursor := false
@@ -464,6 +467,19 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 	}
 	e := &l.ed
 	asking := l.v.ask != ""
+	if k.Kind == keyRune && k.R == '?' && !asking && e.Empty() {
+		l.shortcuts = !l.shortcuts
+		l.draw()
+		return "", false, false
+	}
+	if l.shortcuts && k.Kind == keyEsc {
+		l.shortcuts = false
+		l.draw()
+		return "", false, false
+	}
+	if l.shortcuts && k.Kind == keyRune {
+		l.shortcuts = false
+	}
 	if k.Kind != keyInterrupt {
 		l.notice = ""
 	}

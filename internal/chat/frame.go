@@ -80,6 +80,7 @@ type frameInput struct {
 	now        time.Time
 	spin       int
 	pal        palette
+	shortcuts  bool
 }
 
 // frame is the rows to draw and where the cursor goes among them.
@@ -561,6 +562,9 @@ func hintRows(in frameInput, width int) []string {
 	if v.ask != "" {
 		return one("Enter takes the one in [brackets] · Ctrl-C cancels")
 	}
+	if in.shortcuts {
+		return shortcutRows(in, width)
+	}
 	if hint, ok := shellHint(string(in.text), v); ok {
 		return one(hint)
 	}
@@ -594,5 +598,38 @@ func hintRows(in frameInput, width int) []string {
 		}
 		return one("i/a insert · v select · w/b/e/x/% motion · d/c/y/p edit · g/m/z minor · Enter send")
 	}
-	return one("/ commands · Enter send · ↑↓ scroll · Ctrl-P history · Alt+Enter new line · Ctrl-C twice to quit")
+	return one("/ commands · Enter send · ↑↓ scroll · Ctrl-P history · Alt+Enter new line · Ctrl-C twice to quit · ? shortcuts")
+}
+
+// shortcutRows is the key list opened with ? while the prompt is empty.
+func shortcutRows(in frameInput, width int) []string {
+	pal := in.pal
+	items := [][2]string{
+		{"?", "hide this list"},
+		{"Enter", "send the prompt"},
+		{"Alt+Enter", "insert a new line"},
+		{"↑ ↓", "scroll the transcript"},
+		{"PgUp PgDn", "page through the transcript"},
+		{"Ctrl-P / Ctrl-N", "earlier or later prompt"},
+		{"Tab", "complete a slash command"},
+		{"/", "list geminus commands"},
+		{"Ctrl-A / Ctrl-E", "start or end of the line"},
+		{"Ctrl-U / Ctrl-K", "delete to the start or end"},
+		{"Ctrl-W", "delete the previous word"},
+		{"Ctrl-L", "redraw the screen"},
+		{"Ctrl-C", "clear the line; twice quits"},
+		{"Ctrl-D", "quit when the line is empty"},
+		{"Esc", "hide this list"},
+	}
+	rows := []string{"  " + pal.SGR("1;"+colorCyan, "Shortcuts") + pal.Dim("  ·  ? or Esc closes")}
+	room := max(width-2, 20)
+	for _, item := range items {
+		left := item[0]
+		line := left + "  " + item[1]
+		if textWidth(line) > room {
+			line = clipWidth(line, room)
+		}
+		rows = append(rows, "  "+pal.SGR(colorCyan, left)+pal.Dim(strings.TrimPrefix(line, left)))
+	}
+	return rows
 }
