@@ -37,7 +37,8 @@ func buildAs(t *testing.T, out, pkg, version, key string) {
 func tagged(t *testing.T, version string) string {
 	t.Helper()
 	repo := t.TempDir()
-	for _, dir := range []string{"cmd", "internal"} {
+	// assets holds the logo the program is built with.
+	for _, dir := range []string{"cmd", "internal", "assets"} {
 		if err := os.CopyFS(filepath.Join(repo, dir), os.DirFS(filepath.Join("..", dir))); err != nil {
 			t.Fatal(err)
 		}

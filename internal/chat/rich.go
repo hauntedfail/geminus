@@ -10,6 +10,7 @@ package chat
 import (
 	"context"
 	"io"
+	"math/rand/v2"
 	"os"
 	"strings"
 	"time"
@@ -28,7 +29,8 @@ const (
 
 // startLive takes over the terminal. It reports false, changing nothing,
 // when geminus is not on a terminal that can do it.
-func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
+// withSplash says whether the opening screen may be shown over it.
+func (a *App) startLive(in io.Reader, withSplash bool) (stop func(), ok bool) {
 	inFile, isIn := in.(*os.File)
 	a.Out.mu.Lock()
 	outFile, isOut := a.Out.w.(*os.File)
@@ -46,7 +48,11 @@ func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.ctx = ctx
-	lv := newLive(outFile, cols, rows, palette{On: a.Out.color}, a.Now)
+	var opening *splashScreen
+	if withSplash {
+		opening = newSplash(os.Getenv, a.Out.color, a.Now(), rand.Uint32())
+	}
+	lv := newLiveBehind(outFile, cols, rows, palette{On: a.Out.color}, a.Now, opening)
 	lv.size = func() (int, int) { return termSize(outFile) }
 	lines := make(chan string, 256)
 	a.attach(lv, lines)
@@ -82,6 +88,22 @@ func (a *App) startLive(in io.Reader) (stop func(), ok bool) {
 			}
 		}
 	}()
+	if opening != nil {
+		go func() {
+			ticker := time.NewTicker(splashEvery)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if !lv.splashTick() {
+						return
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
 	go func() {
 		defer close(lines)
 		var parser keyParser

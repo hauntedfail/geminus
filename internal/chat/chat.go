@@ -378,7 +378,9 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 	// On a terminal: the prompt box. Otherwise line by line.
 	stop := func() {}
 	if a.live == nil {
-		if stopLive, ok := a.startLive(in); ok {
+		// A program that took over from an older one after /update goes
+		// straight on with the conversation.
+		if stopLive, ok := a.startLive(in, updatedFrom == ""); ok {
 			stop = stopLive
 			defer stop()
 		} else {

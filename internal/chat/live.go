@@ -93,10 +93,18 @@ type live struct {
 
 	last   string
 	closed bool
+
+	// splash is the opening screen while it covers everything else.
+	splash *splashScreen
 }
 
 func newLive(out io.Writer, cols, rows int, pal palette, now func() time.Time) *live {
-	l := &live{out: out, cols: cols, rows: rows, pal: pal, now: now}
+	return newLiveBehind(out, cols, rows, pal, now, nil)
+}
+
+// newLiveBehind is newLive with an opening screen over it; nil for none.
+func newLiveBehind(out io.Writer, cols, rows int, pal palette, now func() time.Time, sp *splashScreen) *live {
+	l := &live{out: out, cols: cols, rows: rows, pal: pal, now: now, splash: sp}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	io.WriteString(out, altScreenOn+pasteModeOn+altScrollOn)
@@ -216,6 +224,10 @@ func (l *live) activeHeaderPrompt(wrapped []wrappedLine, start, end int) string 
 // prompt box) and writes it atomically when anything changed.
 func (l *live) draw() {
 	if l.closed {
+		return
+	}
+	if l.splash != nil {
+		l.drawSplash()
 		return
 	}
 	if l.notice != "" && !l.now().Before(l.noticeUntil) {
@@ -381,6 +393,9 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
+		return "", false, false
+	}
+	if l.splash != nil && !l.splashKey(k) {
 		return "", false, false
 	}
 	if l.menu != nil {
