@@ -492,11 +492,12 @@ func (a *App) show(content string, meta wire.Message) {
 			a.Out.line(a.Out.dim("── ") + a.Out.bold(speaker) + a.Out.dim(" ────────────────────────"))
 		}
 	}
+	text := a.takeMarkdown(meta.Turn, sanitize(content), meta.Final, !meta.OK)
 	if !meta.OK {
-		a.Out.line(a.Out.fail("✗ " + strings.TrimRight(sanitize(content), "\n")))
+		a.Out.line(a.Out.fail("✗ " + strings.TrimRight(text, "\n")))
 		return
 	}
-	a.Out.write(sanitize(content))
+	a.Out.write(text)
 	if meta.Final && a.live != nil {
 		a.Out.endLine() // the box keeps its own distance
 	} else if meta.Final {

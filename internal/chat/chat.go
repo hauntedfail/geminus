@@ -175,8 +175,11 @@ type App struct {
 	sentAt     map[string]time.Time
 	shownTurn  map[string]bool
 	turnPrompt map[string]string
-	rang       bool
-	link       string
+	// md buffers an agent's reply while its markdown is still split across
+	// the pieces the bridge posts.
+	md   map[string]*mdState
+	rang bool
+	link string
 
 	// Updates is the server geminus releases come from, Exe this program's
 	// own file, and Restart what starts it again in this process's place
