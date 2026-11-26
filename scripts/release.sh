@@ -108,7 +108,29 @@ tmp_root="${TMPDIR:-/tmp}"
 assets_dir="$(mktemp -d "${tmp_root%/}/geminus-release.XXXXXX")"
 trap 'rm -rf "$assets_dir"' EXIT
 
-go run ./cmd/geminus release "$version" --download "$assets_dir"
+# Select the tag-push run, even when several tags point at the same commit.
+run_id=""
+for ((attempt=0; attempt<30; attempt++)); do
+	run_id=$(gh run list --workflow release.yml --event push --commit "$head" \
+		--json databaseId,displayTitle --jq ".[] | select(.displayTitle == \"Build $tag\") | .databaseId" | sed -n '1p')
+	[ -n "$run_id" ] && break
+	sleep 2
+done
+if [ -z "$run_id" ]; then
+	echo "release: could not find the Release build run for $tag ($head)" >&2
+	exit 1
+fi
+gh run watch "$run_id" --exit-status
+stage="$assets_dir"
+assets_dir="$stage/actions"
+trap 'rm -rf "$stage"' EXIT
+gh run download "$run_id" --name "geminus-$tag-$head" --dir "$assets_dir"
+go run ./cmd/geminus release "$version" --download "$stage/ota"
+# Compare the complete directory trees, including the checksum file.
+if ! diff -qr "$stage/ota" "$assets_dir"; then
+	echo "release: GitHub Actions and signed OTA artifacts differ for $tag" >&2
+	exit 1
+fi
 
 notes_args=()
 if [ -n "${RELEASE_NOTES_FILE:-}" ]; then

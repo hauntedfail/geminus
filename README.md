@@ -75,7 +75,9 @@ Releasing one, on a computer of the group with the repository:
 bash scripts/release.sh 0.5.0     # tests, tags v0.5.0, pushes, builds/signs on sibyl, and publishes GitHub Release
 ```
 
-Nothing is built locally: sibyl builds every target from the tag and signs the manifest, then `release.sh` downloads the verified binaries from sibyl and publishes them with `SHA256SUMS` to GitHub Releases via `gh` (set `SKIP_GITHUB_RELEASE=1` for OTA-only). A release is whatever the tag holds, so the right to push a tag to the repository is the right to release.
+Pushing a version tag starts the **Release build** workflow on GitHub Actions. It cross-compiles the tagged CLI for macOS, Linux and Windows on amd64 and arm64. `release.sh` downloads that run’s binaries and `SHA256SUMS`, compares every file with sibyl’s independently built, signed OTA release, and publishes the matching Actions files through `gh`. The OTA signing key stays on sibyl. Both builders use the same Go patch version and build flags.
+
+Retry a failed Actions run from its run page, then rerun `release.sh` from the tagged commit. `SKIP_GITHUB_RELEASE=1` selects OTA-only publication. For a build-only check of an existing tag, run `gh workflow run release.yml --ref main -f tag=vX.Y.Z`.
 
 `deploy/README.md` says how the server was put on sibyl.
 
