@@ -879,15 +879,22 @@ func TestOnATerminalTheBoxTakesTheNextPromptWhileAnAnswerIsAwaited(t *testing.T)
 
 	// A question is asked in the box; cancelling it changes nothing.
 	typed("/persona\r")
-	term.waitFor(t, "╭─ persona ─", "a number or a name from the list", "  1  chrome")
+	// The list replaces the screen; it is not added under what was said.
+	term.waitFor(t, "Personas (Honcho workspace ws)", "1 chrome", "Ctrl-C cancel")
+	if strings.Contains(term.text(), "echo: /compact") {
+		t.Fatalf("the conversation stayed on screen under the list:\n%s", term.text())
+	}
 	typed("\x03")
-	term.waitFor(t, "╭─ hermes · fast-1 · effort:default ─")
+	term.waitFor(t, "╭─ hermes · fast-1 · effort:default ─", "echo: /compact")
 	typed("/persona\r")
-	term.waitFor(t, "╭─ persona ─")
+	term.waitFor(t, "Personas (Honcho workspace ws)")
 	typed("chrome\r")
-	term.waitFor(t, "persona ❯ chrome", "╭─ harness ─")
+	term.waitFor(t, "Harnesses on chrome")
 	typed("cl\r")
-	term.waitFor(t, "harness ❯ cl", "╭─ Claude Code · model:default · effort:default ─", "chrome ─╮", "● bridge seen 5s ago · default directory · new conversation")
+	term.waitFor(t, "persona ❯ chrome", "harness ❯ cl", "╭─ Claude Code · model:default · effort:default ─", "chrome ─╮", "● bridge seen 5s ago · default directory · new conversation")
+	if strings.Contains(term.text(), "1 chrome") || strings.Contains(term.text(), "1 claude") {
+		t.Fatalf("a list stayed in the conversation:\n%s", term.text())
+	}
 
 	// The directory is under the box, and can be changed there until the
 	// first prompt of the conversation is sent.

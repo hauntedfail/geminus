@@ -28,20 +28,20 @@ const (
 	// sessions stay bounded in memory.
 	maxTranscriptLines = 20000
 
-	altScreenOn      = "\x1b[?1049h" // switch to alternate screen buffer (isolates shell scrollback)
-	altScreenOff     = "\x1b[?1049l" // restore original terminal screen on exit
-	cursorHide       = "\x1b[?25l"   // hide cursor while navigating a select menu
-	cursorShow       = "\x1b[?25h"   // restore cursor visibility
-	cursorDefault    = "\x1b[0 q"    // restore default terminal cursor shape
-	cursorBlock      = "\x1b[2 q"    // steady block (Post-Human Normal)
-	cursorUnderline  = "\x1b[4 q"    // steady underline (Post-Human Select)
-	cursorBar        = "\x1b[6 q"    // steady bar (Post-Human Insert)
-	cursorHome       = "\x1b[H"
-	clearLineEnd     = "\x1b[K"
-	syncStart        = "\x1b[?2026h" // draw the following as one update, where supported
-	syncEnd          = "\x1b[?2026l"
-	pasteModeOn      = "\x1b[?2004h" // mark pasted text, so a pasted line break is not Enter
-	pasteModeOf      = "\x1b[?2004l"
+	altScreenOn     = "\x1b[?1049h" // switch to alternate screen buffer (isolates shell scrollback)
+	altScreenOff    = "\x1b[?1049l" // restore original terminal screen on exit
+	cursorHide      = "\x1b[?25l"   // hide cursor while navigating a select menu
+	cursorShow      = "\x1b[?25h"   // restore cursor visibility
+	cursorDefault   = "\x1b[0 q"    // restore default terminal cursor shape
+	cursorBlock     = "\x1b[2 q"    // steady block (Post-Human Normal)
+	cursorUnderline = "\x1b[4 q"    // steady underline (Post-Human Select)
+	cursorBar       = "\x1b[6 q"    // steady bar (Post-Human Insert)
+	cursorHome      = "\x1b[H"
+	clearLineEnd    = "\x1b[K"
+	syncStart       = "\x1b[?2026h" // draw the following as one update, where supported
+	syncEnd         = "\x1b[?2026l"
+	pasteModeOn     = "\x1b[?2004h" // mark pasted text, so a pasted line break is not Enter
+	pasteModeOf     = "\x1b[?2004l"
 	// altScrollOn asks the terminal to send the wheel as the up and down
 	// arrow keys while the alternate screen is shown. geminus never asks for
 	// mouse reports: a terminal that sends them stops selecting text on a
@@ -79,13 +79,13 @@ type live struct {
 	hx           helix
 	cursorStyled bool
 	v            view
-	menu      *selectMenu
-	lines     []transcriptLine
-	tail      string
-	curPrompt string
-	scroll    int // wrapped rows scrolled up from bottom (0 = auto-follow)
-	viewRows  int // last viewport height, for PageUp/PageDown step size
-	spin      int
+	menu         *selectMenu
+	lines        []transcriptLine
+	tail         string
+	curPrompt    string
+	scroll       int // wrapped rows scrolled up from bottom (0 = auto-follow)
+	viewRows     int // last viewport height, for PageUp/PageDown step size
+	spin         int
 
 	notice      string
 	noticeUntil time.Time
@@ -98,6 +98,9 @@ type live struct {
 	splash *splashScreen
 	// banner is the mascot at the top of the transcript; nil for none.
 	banner *banner
+	// choice replaces the screen while a list is being picked, so the list
+	// is not written into the transcript.
+	choice *choice
 }
 
 func newLive(out io.Writer, cols, rows int, pal palette, now func() time.Time) *live {
@@ -239,6 +242,10 @@ func (l *live) draw() {
 	}
 	if l.splash != nil {
 		l.drawSplash()
+		return
+	}
+	if l.choice != nil {
+		l.drawChoice()
 		return
 	}
 	if l.notice != "" && !l.now().Before(l.noticeUntil) {
@@ -407,6 +414,10 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 		return "", false, false
 	}
 	if l.splash != nil && !l.splashKey(k) {
+		return "", false, false
+	}
+	if l.choice != nil {
+		l.choiceKey(k)
 		return "", false, false
 	}
 	if l.menu != nil {

@@ -177,6 +177,16 @@ func (a *App) choose(title, what string, opts []option, preferred string) (strin
 	if match(opts, preferred) != preferred {
 		preferred = ""
 	}
+	// On a terminal the list replaces the screen (the mascot says it) and
+	// goes away when one is picked, so the lists do not pile up in what was
+	// said. One line records the answer.
+	if a.live != nil {
+		picked, ok := a.live.askChoice(a.ctx, title, what, opts, preferred)
+		if ok {
+			a.Out.line(a.Out.dim(what+" ❯ ") + sanitize(picked))
+		}
+		return picked, ok
+	}
 	a.Out.line(a.Out.bold(title))
 	a.Out.showOptions(opts)
 	if a.live != nil {
