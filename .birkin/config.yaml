@@ -1,0 +1,144 @@
+# Birkin Project Specification (.birkin/config.yaml)
+# Enforced mechanically by Birkin across CLI, git pre-commit, Claude Code, and Hermes.
+version: 1
+
+project:
+  name: geminus
+  languages:
+    - go
+    - python
+  exclude_globs:
+    - ".git/**"
+    - "**/.git/**"
+    - "**/.venv/**"
+    - "**/__pycache__/**"
+    - "**/*.pyc"
+    - "**/dist/**"
+    - "**/.birkin/ledger/**"
+
+orientation:
+  entry_docs:
+    - docs/architecture.md
+  max_entry_doc_lines: 200
+  verify_markdown_links: true
+  required_docs:
+    - README.md
+    - docs/protocol.md
+  require_committed_spec: true
+  max_review_age_days: 90
+
+architecture:
+  max_file_lines: 600
+  file_line_exemptions:
+    - "**/tests/**"
+    - "**/__tests__/**"
+    - "**/fixture/**"
+    - "**/fixtures/**"
+    - "**/generated/**"
+    - "**/*_test.go"
+    - "**/test_*.py"
+    - "**/*_test.py"
+  layers:
+    - name: foundation
+      paths:
+        - "assets/logo/**"
+        - "internal/version/**"
+        - "internal/profile/**"
+        - "internal/honcho/**"
+        - "internal/wire/**"
+        - "internal/splash/**"
+        - "internal/tui/**"
+      allowed_dependencies: []
+      remediation: "Foundation packages must remain independent of updates, chat, and entrypoints."
+    - name: updates
+      paths:
+        - "internal/updates/**"
+      allowed_dependencies:
+        - foundation
+      remediation: "Update machinery may depend only on foundation packages."
+    - name: chat
+      paths:
+        - "internal/chat/**"
+      allowed_dependencies:
+        - foundation
+        - updates
+      remediation: "Terminal chat layer may depend only on foundation and updates packages."
+    - name: entrypoints
+      paths:
+        - "cmd/**"
+        - "scripts/release-build/**"
+      allowed_dependencies:
+        - foundation
+        - updates
+        - chat
+      remediation: "CLI and release-build entrypoints compose lower layers only."
+  forbidden_imports: []
+
+verify:
+  commands:
+    - name: go-vet
+      cmd: "go vet ./..."
+      kind: lint
+      timeout_seconds: 120
+    - name: go-test
+      cmd: "go test ./..."
+      kind: test
+      timeout_seconds: 180
+  check_ci_parity: false
+
+invariants:
+  forbid_secrets: true
+  secret_exempt_globs:
+    - "test/**"
+    - "plugin/tests/**"
+    - "**/*_test.go"
+    - "**/test_*.py"
+  english_prose_only: false
+  prose_exempt_globs: []
+  forbid_debug_leftovers: true
+  custom_regex_rules: []
+
+semantic:
+  enabled: false
+  base_url: "http://127.0.0.1:3425/v1"
+  api_key_env: BIRKIN_SEMANTIC_API_KEY
+  model: "auto/gemini-3.8-flash"
+  timeout_seconds: 15.0
+  max_diff_chars: 24000
+  rules_dir: .birkin/rules
+  rules: []
+
+telemetry:
+  enabled: true
+  ledger_path: null
+  thrash_threshold: 3
+  thrash_window_minutes: 30
+  stale_rule_min_runs: 20
+
+proofs:
+  emit_path: null
+  timeout_seconds: 120
+  require_zero_sorry: true
+  require_standard_axioms_only: true
+  prove_architecture: true
+  state_machines: []
+  policies: []
+  lean_projects: []
+
+workflow:
+  enabled_contracts:
+    - plan
+    - scope
+    - authority
+    - stage
+    - sawyer
+    - review_closure
+  require_plan_receipt: false
+  toolchain_pin_files:
+    - go.mod
+  exclude_whitelist_path: null
+  test_runners:
+    - name: go-test
+      parser: go_test
+      require_nonzero: true
+  service_build_guards: []
