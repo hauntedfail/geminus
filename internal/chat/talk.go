@@ -42,7 +42,7 @@ func (a *App) humanAuth() wire.HumanAuth {
 // meta is the signed description of the conversation with the given ID.
 func (a *App) meta(id, title string, pending bool) wire.Session {
 	return wire.SealSessionWith(a.humanAuth(), id, wire.Session{V: 1, Human: a.Profile.Human, Persona: a.cur.Name,
-		Harness: a.harness.ID, CWD: a.cwd, Model: a.tuning.Model, Effort: a.tuning.Effort, Title: title,
+		Harness: a.harness.ID, CWD: a.cwd, Model: a.tuning.Model, Effort: a.tuning.Effort, Mode: a.tuning.Mode, Title: title,
 		Pending: pending, Updated: a.Now().Unix()})
 }
 
@@ -67,6 +67,9 @@ func sessionInfo(s honcho.Session) (wire.Session, bool) {
 func (a *App) say(text string) error {
 	if a.cur == nil || a.harness == nil {
 		return errors.New("nothing was sent: pick a persona first (/persona)")
+	}
+	if a.tuning.Mode != "" && (!wire.ValidSetting("mode", a.tuning.Mode) || !a.harness.Takes("mode")) {
+		return errors.New("nothing was sent: host harness does not advertise this permission mode; /mode default resets it")
 	}
 	ctx, cancel := a.call()
 	defer cancel()
@@ -93,7 +96,7 @@ func (a *App) say(text string) error {
 	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, nonce, a.cwd, a.tuning)
 	sig, sigAlg := a.humanAuth().Sign(text, label, ts)
 	prompt := wire.Message{V: 1, Role: wire.RolePrompt, TS: ts, Nonce: nonce, State: wire.StateQueued,
-		Model: a.tuning.Model, Effort: a.tuning.Effort, Sig: sig, SigAlg: sigAlg}
+		Model: a.tuning.Model, Effort: a.tuning.Effort, Mode: a.tuning.Mode, Sig: sig, SigAlg: sigAlg}
 	stored, err := a.Honcho.Post(ctx, a.session, a.Profile.Human, text, map[string]any{wire.Kind: prompt})
 	if err != nil {
 		return fmt.Errorf("nothing was sent: %w", err)
@@ -154,12 +157,14 @@ func (a *App) watch(turn string) error {
 				return nil
 			}
 			a.entered(line)
-			if choice, matched := parseAskAnswer(line); matched {
+			if strings.TrimSpace(line) == "/ask" {
+				_ = a.handle("/ask")
+			} else if choice, matched := parseAskAnswerFor(line, askChoices(a.pendingAsk)); matched {
 				if err := a.sendAnswer(choice); err != nil {
 					a.Out.line(a.Out.fail("✗ " + err.Error()))
 				}
 			} else if strings.TrimSpace(line) != "" {
-				a.Out.line(a.Out.warn("! permission question pending: type allow (y) or deny (n)"))
+				a.Out.line(a.Out.warn("! permission question pending: type an offered choice, its number, or /ask"))
 			}
 		case <-ticker.C:
 			a.publishPresence(false)
@@ -182,6 +187,7 @@ func (a *App) arrivals() bool {
 // poll reads the newest messages of the open conversation and prints what is
 // new. done reports that the answer to turn has ended.
 func (a *App) poll(turn string) (done, printed bool, err error) {
+	a.expirePendingAsk()
 	ctx, cancel := a.call()
 	defer cancel()
 	messages, err := a.Honcho.Latest(ctx, a.session, latestCount)
@@ -208,7 +214,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				finishedTurns[m.ID] = true
 			}
 		case wire.RoleAnswer:
-			if a.ownAnswer(m, meta) {
+			if a.offeredAnswer(m, meta, messages) {
 				a.markAskAnswered(meta.Request)
 			}
 		case wire.RoleOutput:
@@ -334,7 +340,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				continue
 			}
 			a.shown[m.ID] = true
-			if a.ownAnswer(m, meta) {
+			if a.offeredAnswer(m, meta, messages) {
 				a.markAskAnswered(meta.Request)
 			}
 		}
@@ -393,7 +399,7 @@ func (a *App) genuine(m honcho.Message, meta wire.Message) bool {
 // conversation, harness and directory, with the settings it carries.
 func (a *App) own(m honcho.Message, meta wire.Message) bool {
 	label := wire.PromptLabel(a.session, a.cur.Name, a.harness.ID, a.Profile.Human, meta.Nonce, a.cwd,
-		wire.Tuning{Model: meta.Model, Effort: meta.Effort})
+		wire.Tuning{Model: meta.Model, Effort: meta.Effort, Mode: meta.Mode})
 	return m.PeerID == a.Profile.Human && a.humanAuth().Verify(m.Content, label, meta.TS, meta.Sig, meta.SigAlg)
 }
 
@@ -422,11 +428,12 @@ func (a *App) showBridgeState(content string, meta wire.Message) {
 	a.Out.line(a.Out.dim(fmt.Sprintf("· %s: %s", who, text)))
 }
 
-// showBridgeAsk surfaces a bridge-emitted interactive question so the owner
-// knows immediately why the remote agent is paused and how to answer it.
+// showBridgeAsk surfaces a bridge-emitted interactive question in full
+// (preserving newlines and complete tool inputs) so the owner has complete
+// context before answering.
 func (a *App) showBridgeAsk(content string, meta wire.Message) {
-	text := oneLine(content)
-	detail := oneLine(meta.Detail)
+	text := strings.TrimSpace(sanitize(content))
+	detail := strings.TrimSpace(sanitize(meta.Detail))
 	if text == "" {
 		text = detail
 		detail = ""
@@ -443,12 +450,24 @@ func (a *App) showBridgeAsk(content string, meta wire.Message) {
 	if text == "" {
 		a.Out.line(a.Out.warn(head + ": waiting for an interactive answer"))
 	} else {
-		a.Out.line(a.Out.warn(head + ": " + text))
+		lines := strings.Split(text, "\n")
+		a.Out.line(a.Out.warn(head + ": " + lines[0]))
+		for _, ln := range lines[1:] {
+			a.Out.line(a.Out.warn("  " + ln))
+		}
 	}
-	if detail != "" && detail != text {
-		a.Out.line(a.Out.dim("  " + detail))
+	if detail != "" && detail != text && !strings.Contains(text, detail) {
+		for _, ln := range strings.Split(detail, "\n") {
+			a.Out.line(a.Out.dim("  " + ln))
+		}
 	}
-	a.Out.line(a.Out.dim("  type allow (y) or deny (n)"))
+	if a.live == nil {
+		choices := meta.Choices
+		if len(choices) == 0 {
+			choices = []string{"allow", "deny"}
+		}
+		a.Out.line(a.Out.dim("  choices: " + strings.Join(choices, " / ") + " (or 1-" + strconv.Itoa(len(choices)) + ")"))
+	}
 }
 
 // show prints one piece of an agent's output.
@@ -617,7 +636,7 @@ func (a *App) resume(want string) error {
 		}
 	}
 	a.harness, a.session, a.cwd, a.title = &harness, picked.ID, info.CWD, info.Title
-	a.tuning = wire.Tuning{Model: info.Model, Effort: info.Effort}
+	a.tuning = wire.Tuning{Model: info.Model, Effort: info.Effort, Mode: info.Mode}
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
 	a.resetAskState()
@@ -653,7 +672,7 @@ func (a *App) resume(want string) error {
 				finishedTurns[m.ID] = true
 			}
 		case wire.RoleAnswer:
-			if a.ownAnswer(m, meta) {
+			if a.offeredAnswer(m, meta, messages) {
 				a.markAskAnswered(meta.Request)
 			}
 		case wire.RoleOutput:
@@ -717,7 +736,7 @@ func (a *App) resume(want string) error {
 					Deadline: meta.Deadline,
 				})
 			}
-		case meta.Role == wire.RoleAnswer && a.ownAnswer(m, meta):
+		case meta.Role == wire.RoleAnswer && a.offeredAnswer(m, meta, messages):
 			a.Out.line(a.Out.dim("you answered: " + sanitize(m.Content)))
 		default:
 			unsigned++

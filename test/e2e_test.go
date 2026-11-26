@@ -22,13 +22,13 @@ import (
 
 const secretHex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 
-// bridgeSource finds a geminish that contains the bridge: GEMINISH_SRC, or
-// the one installed in this computer's Hermes profile.
+// bridgeSource uses the bundled bridge unless a test explicitly selects another.
+// Never discover an installed owner profile implicitly.
 func bridgeSource(t *testing.T) string {
 	t.Helper()
 	candidates := []string{os.Getenv("GEMINISH_SRC")}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".hermes", "plugins", "geminish"))
+	if _, file, _, ok := runtime.Caller(0); ok {
+		candidates = append(candidates, filepath.Join(filepath.Dir(file), "..", "plugin", "geminish"))
 	}
 	for _, dir := range candidates {
 		if dir == "" {
@@ -120,6 +120,7 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	var bridgeLog bytes.Buffer
 	bridge := exec.Command(python, filepath.Join(source, "cli.py"), "poll", "--foreground")
 	bridge.Env = append(os.Environ(), "HERMES_HOME="+there, "GEMINISE_CONFIG="+filepath.Join(there, "geminise.json"),
+		"HOME="+there, "GEMINUS_UPDATES_URL="+srv.URL,
 		"SHELL=/bin/sh", "PYTHONDONTWRITEBYTECODE=1")
 	bridge.Stdout, bridge.Stderr = &bridgeLog, &bridgeLog
 	if err := bridge.Start(); err != nil {
@@ -143,7 +144,7 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	run := func(input string, args ...string) (string, string, int) {
 		t.Helper()
 		cmd := exec.Command(geminus, args...)
-		cmd.Env = append(os.Environ(), "HERMES_HOME="+here, "HOME="+t.TempDir(), "NO_COLOR=1")
+		cmd.Env = append(os.Environ(), "HERMES_HOME="+here, "HOME="+t.TempDir(), "NO_COLOR=1", "GEMINUS_UPDATES_URL="+srv.URL)
 		cmd.Stdin = strings.NewReader(input)
 		var out, errs bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errs
@@ -289,7 +290,15 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(work, "sub", "deep"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	out, errs, code = run("!cd sub\n!cd deep\n!cd ../deep\n!pwd\nwhere\n!cd ..\n", "persona", "mirai", "--harness", "hermes")
+	// A fresh process recalls the verified successful directory, not the
+	// more recent failed attempt. Shell-path cases below explicitly choose
+	// their starting directory so recall cannot change their premise.
+	out, errs, code = run("", "persona", "mirai", "--harness", "hermes")
+	if code != 0 {
+		t.Fatalf("recall exit %d: %s", code, errs)
+	}
+	expect(out, "new conversation  in sub")
+	out, errs, code = run("!cd sub\n!cd deep\n!cd ../deep\n!pwd\nwhere\n!cd ..\n", "persona", "mirai", "--harness", "hermes", "--cwd", work)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
@@ -300,7 +309,7 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	// A directory that is not there is found out by the first prompt. Nothing
 	// ran, so geminus lets the conversation go and the next !cd is read from
 	// the bridge's own directory again.
-	out, errs, code = run("!cd projekt\nwhere\n!pwd\n!cd sub\nwhere\n", "persona", "mirai", "--harness", "hermes")
+	out, errs, code = run("!cd projekt\nwhere\n!pwd\n!cd sub\nwhere\n", "persona", "mirai", "--harness", "hermes", "--cwd", work)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
@@ -319,7 +328,7 @@ func TestGeminusAndTheRealBridgeAgreeThroughHoncho(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(work, odd), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	out, errs, code = run("!cd "+odd+"\nwhere\n/new\n!cd\n!cd x;touch PWNED;$(touch PWNED)\nwhere\n", "persona", "mirai", "--harness", "hermes")
+	out, errs, code = run("!cd "+odd+"\nwhere\n/new\n!cd\n!cd x;touch PWNED;$(touch PWNED)\nwhere\n", "persona", "mirai", "--harness", "hermes", "--cwd", work)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
@@ -391,6 +400,7 @@ func TestEd25519OnlyBridgeAcceptsHumanKeyAndRefusesGroupHMAC(t *testing.T) {
 	var bridgeLog bytes.Buffer
 	bridge := exec.Command(python, filepath.Join(source, "cli.py"), "poll", "--foreground")
 	bridge.Env = append(os.Environ(), "HERMES_HOME="+there, "GEMINISE_CONFIG="+filepath.Join(there, "geminise.json"),
+		"HOME="+there, "GEMINUS_UPDATES_URL="+srv.URL,
 		"SHELL=/bin/sh", "PYTHONDONTWRITEBYTECODE=1")
 	bridge.Stdout, bridge.Stderr = &bridgeLog, &bridgeLog
 	if err := bridge.Start(); err != nil {
@@ -414,7 +424,7 @@ func TestEd25519OnlyBridgeAcceptsHumanKeyAndRefusesGroupHMAC(t *testing.T) {
 
 	// 2. Real geminus with Ed25519 key succeeds end-to-end against real Python bridge.
 	cmd := exec.Command(geminus, "persona", "mirai", "--harness", "hermes")
-	cmd.Env = append(os.Environ(), "HERMES_HOME="+here, "HOME="+t.TempDir(), "NO_COLOR=1")
+	cmd.Env = append(os.Environ(), "HERMES_HOME="+here, "HOME="+t.TempDir(), "NO_COLOR=1", "GEMINUS_UPDATES_URL="+srv.URL)
 	cmd.Stdin = strings.NewReader("ed25519 works\n")
 	var out, errs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errs

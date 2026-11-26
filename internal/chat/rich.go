@@ -191,19 +191,24 @@ func (a *App) sync() {
 		return
 	}
 	v := view{ask: a.asking, link: a.link, cwd: oneLine(a.cwd), session: oneLine(a.session),
-		model: oneLine(a.tuning.Model), effort: oneLine(a.tuning.Effort), slow: a.SlowAfter, rang: a.rang,
+		model: oneLine(a.tuning.Model), effort: oneLine(a.tuning.Effort), mode: oneLine(a.tuning.Mode),
+		slow: a.SlowAfter, rang: a.rang,
 		update:     a.newerRelease(),
 		postHuman:  a.defaults.PostHumanEnabled(),
 		uiSet:      true,
 		showNode:   a.defaults.UI.NodeVisible(),
 		showModel:  a.defaults.UI.ModelVisible(),
-		showEffort: a.defaults.UI.EffortVisible()}
+		showEffort: a.defaults.UI.EffortVisible(),
+		showMode:   a.defaults.UI.ModeVisible()}
 	if a.cur != nil {
 		v.persona, v.local, v.reported, v.seen = oneLine(a.cur.Name), a.cur.Local, a.cur.Reported, a.cur.Seen
 		v.home = oneLine(a.cur.Home)
 	}
 	if a.harness != nil {
 		v.harness = a.harnessDisplay(*a.harness)
+		v.defaultModel = oneLine(a.harness.DefaultFor("model"))
+		v.defaultEffort = oneLine(a.harness.DefaultFor("effort"))
+		v.defaultMode = oneLine(a.harness.DefaultFor("mode"))
 	}
 	// The line above the box follows the prompt that has waited longest.
 	for id := range a.sentAt {
@@ -285,6 +290,7 @@ func (a *App) loopLive() {
 				_, _, err := a.poll("")
 				a.linked(err)
 			}
+			a.servicePendingAsk()
 			if a.Now().Sub(refreshed) >= directoryEvery {
 				refreshed = a.Now()
 				a.linked(a.refresh())
@@ -322,7 +328,7 @@ func isGeminusCommand(line string) bool {
 	switch cmd {
 	case "/help", "/status", "/persona", "/personas", "/harness", "/new", "/cwd",
 		"/sessions", "/resume", "/default", "/config", "/post-human", "/posthuman", "/helix",
-		"/ui", "/update", "/model", "/effort", "/quit", "/exit":
+		"/ui", "/update", "/model", "/effort", "/mode", "/ask", "/quit", "/exit":
 		return true
 	}
 	return false
@@ -332,7 +338,7 @@ func isGeminusCommand(line string) bool {
 // utterance boundary, and updates the sticky prompt header when it is a prompt.
 func (a *App) echoPrompt(text string) {
 	if a.pendingAsk != nil {
-		if _, ok := parseAskAnswer(text); ok {
+		if _, ok := parseAskAnswerFor(text, a.pendingAsk.Choices); ok {
 			return
 		}
 	}

@@ -24,7 +24,7 @@ func TestSignaturesAgreeWithTheBridge(t *testing.T) {
 		ts             int64
 		want           string
 	}{
-		{"hello 日本語", PromptLabel("sess", "mirai", "claude", "h1karu", "n1", "/home/me/project", Tuning{"opus", "high"}), 1795000000,
+		{"hello 日本語", PromptLabel("sess", "mirai", "claude", "h1karu", "n1", "/home/me/project", Tuning{Model: "opus", Effort: "high"}), 1795000000,
 			"5a1781f2c08ee07237079aa3deb30d7d816241fe97dac7ac0b6eb903af2ef2f1"},
 		{"hello 日本語", PromptLabel("sess", "mirai", "claude", "h1karu", "n1", "/home/me/project", Tuning{}), 1795000000,
 			"dd4d6b5ee2e6b602decc820fc986e36b87e22079f181ac4da53ae686d3eef4cc"}, // as geminish 0.5 signs it

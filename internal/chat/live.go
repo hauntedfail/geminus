@@ -421,6 +421,11 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 		return "", false, false
 	}
 	if l.menu != nil {
+		if l.menu.cfg.details != "" && (k.Kind == keyPageUp || k.Kind == keyPageDown || k.Kind == keyMouseScrollUp || k.Kind == keyMouseScrollDown) {
+			l.menu.handleKey(k)
+			l.draw()
+			return "", false, false
+		}
 		switch k.Kind {
 		case keyPageUp:
 			step := max(l.viewRows-2, 1)
@@ -621,6 +626,12 @@ func (l *live) complete() {
 	if !ok || strings.HasPrefix(word, "//") {
 		return
 	}
+	// /mo historically completed /model. Keep that shortcut now /mode
+	// shares its prefix; /mode itself remains an exact command.
+	if word == "/mo" || word == "/mod" {
+		l.ed.Set([]rune("/model "))
+		return
+	}
 	found := slashMatches(word)
 	if len(found) == 0 {
 		return
@@ -634,7 +645,7 @@ func (l *live) complete() {
 		}
 		common = common[:n]
 	}
-	if len(found) == 1 && slashCommands[found[0]].args != "" {
+	if len(found) == 1 && slashCommands[found[0]].args != "" || word == "/mode" {
 		common += " "
 	}
 	if len(common) > len(word) {

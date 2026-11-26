@@ -30,6 +30,8 @@ func (a *App) slashConfig(arg string) error {
 				return fmt.Errorf("usage: /config (interactive) or /ui %s on|off", key)
 			}
 			return a.setUI(arg)
+		case "mode":
+			return a.setDefaults(arg)
 		case "persona", "harness", "cwd", "save":
 			return a.setDefaults(arg)
 		default:
@@ -65,12 +67,14 @@ func (a *App) printConfigSummary() {
 	a.Out.line("  ui.node          " + onOff(u.NodeVisible()))
 	a.Out.line("  ui.model         " + onOff(u.ModelVisible()))
 	a.Out.line("  ui.effort        " + onOff(u.EffortVisible()))
+	a.Out.line("  ui.mode          " + onOff(u.ModeVisible()))
 	a.Out.line("  default.persona  " + show(a.defaults.Persona))
 	if a.cur != nil {
 		pd := a.defaults.Personas[a.cur.Name]
 		a.Out.line(fmt.Sprintf("  default.harness  %s (on %s)", show(pd.Harness), oneLine(a.cur.Name)))
 		a.Out.line(fmt.Sprintf("  default.model    %s (on %s)", show(pd.Model), oneLine(a.cur.Name)))
 		a.Out.line(fmt.Sprintf("  default.effort   %s (on %s)", show(pd.Effort), oneLine(a.cur.Name)))
+		a.Out.line(fmt.Sprintf("  default.mode     %s (on %s)", show(pd.Mode), oneLine(a.cur.Name)))
 		a.Out.line(fmt.Sprintf("  default.cwd      %s (on %s)", show(pd.CWD), oneLine(a.cur.Name)))
 	}
 }
@@ -176,6 +180,7 @@ func (a *App) configMenuItems() []menuItem {
 		pd := a.defaults.Personas[a.cur.Name]
 		who := oneLine(a.cur.Name)
 		items = append(items,
+			menuItem{value: "default.mode", label: "Default permission mode", desc: fmt.Sprintf("%s · on %s", show(pd.Mode), who)},
 			menuItem{
 				value: "default.harness",
 				label: "Default harness",
@@ -200,6 +205,7 @@ func (a *App) configMenuItems() []menuItem {
 	}
 
 	items = append(items,
+		menuItem{value: "ui.mode", label: "Show permission mode badge", desc: onOff(u.ModeVisible()), current: u.ModeVisible()},
 		menuItem{
 			value: "ui.reset",
 			label: "Reset UI settings",
@@ -300,6 +306,29 @@ func (a *App) applyConfigChoice(choice string) (note string, updated bool, err e
 	case "default.effort":
 		return a.configPickDefaultEffort()
 
+	case "ui.mode":
+		if err := a.setUI("mode " + onOff(!a.defaults.UI.ModeVisible())); err != nil {
+			return "", false, err
+		}
+		return "Saved: ui.mode (Honcho)", true, nil
+	case "default.mode":
+		if a.cur == nil || a.harness == nil || !a.harness.Takes("mode") {
+			return "", false, errors.New("host harness does not advertise mode support")
+		}
+		pd := a.defaults.Personas[a.cur.Name]
+		picked, ok := a.live.selectOption(a.ctx, menuConfig{title: "Default permission mode", subtitle: "Saved per persona; host-native rules still apply",
+			items: modeMenuItems(pd.Mode, pd.Mode, a.harness.Name, a.harness.DefaultFor("mode"))})
+		if !ok {
+			return "Mode unchanged", false, nil
+		}
+		value := picked
+		if value == "" {
+			value = "none"
+		}
+		if err := a.setDefaults("mode " + value); err != nil {
+			return "", false, err
+		}
+		return "Saved: default.mode (Honcho)", true, nil
 	case "default.cwd":
 		return a.configPickDefaultCWD()
 
@@ -517,7 +546,7 @@ func (a *App) configPickDefaultCWD() (string, bool, error) {
 		searchPlaceholder: "Type to search directories…",
 		customTitle:       "Custom default directory",
 		customSubtitle:    "Enter directory path on " + oneLine(a.cur.Name) + " (or \"none\" to clear)",
-		customPlaceholder: "e.g. /Users/vvx/projekt/go/geminus",
+		customPlaceholder: "a usable directory path on this persona's computer",
 		customEmptyErr:    "enter a directory path, or press Esc to go back",
 		items:             items,
 		validate:          validDir,

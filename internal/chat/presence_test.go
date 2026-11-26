@@ -72,7 +72,7 @@ func TestBridgeAskAndSignedAnswer(t *testing.T) {
 	if w.app.pendingAsk == nil || w.app.pendingAsk.Request != reqID {
 		t.Fatalf("pendingAsk = %+v, want request %q", w.app.pendingAsk, reqID)
 	}
-	w.expect("! sibyl asks [Bash]: "+question, "type allow (y) or deny (n)")
+	w.expect("! sibyl asks [Bash]: "+question, "choices: allow / deny (or 1-2)")
 	w.expectNot("Forged question?")
 
 	// Sending a non-answer text while pendingAsk is active should be blocked with guidance.

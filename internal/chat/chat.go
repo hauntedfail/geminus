@@ -64,14 +64,20 @@ const commandHelp = `geminus commands
   /model [NAME]          model for this conversation (/model alone opens a
                          selector on a terminal; /model default resets)
   /effort [LEVEL]        effort for this conversation (/effort default)
+  /mode [MODE]           permission mode for this conversation only; the host
+                         must advertise support and retains its native rules
+  /ask                   reopen the pending permission picker; Esc dismisses
+                         without answering. In line mode type an offered
+                         choice, its number, or y/s/a/n when offered
+  /cwd save              pin this directory for the selected persona
   /status                show persona, harness, bridge and conversation
   /update [auto on|off]  install the latest release of geminus and carry on
                          in this conversation, or toggle automatic updates
   /config                open interactive settings menu (auto-update, Post-Human, UI, defaults)
   /post-human [on|off]   toggle Post-Human (Helix) modal editing in the prompt box
   /default               show your defaults; /default save keeps the current
-                         persona, harness, directory, model and effort;
-                         /default persona|harness|cwd|model|effort|auto_update VALUE (or none)
+                         persona, harness, directory, model, effort and permission mode;
+                         /default persona|harness|cwd|model|effort|mode|auto_update VALUE (or none)
   /ui                    show or customize prompt box display
                          (/ui model|effort|node on|off, /ui label ID NAME, /ui reset)
   /quit                  leave geminus
@@ -157,6 +163,8 @@ type App struct {
 	// answeredAsk remembers request IDs already answered or resolved.
 	pendingAsk  *pendingAsk
 	answeredAsk map[string]bool
+	askMenu     *selectMenu
+	askResult   <-chan menuResult
 
 	// live is the prompt box at the bottom of a terminal; nil when geminus
 	// runs line by line. The rest is only used with it: the question the box
@@ -417,8 +425,8 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		if err = a.selectPersona(name); err == nil {
 			err = a.resume(req.resume)
 		}
-	} else if err = a.start(name, req.harness); err == nil && req.cwd != "" {
-		a.cwd = req.cwd
+	} else {
+		err = a.start(name, req.harness, req.cwd)
 	}
 	if err != nil {
 		if explicit {

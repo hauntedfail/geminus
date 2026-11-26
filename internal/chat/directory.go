@@ -156,6 +156,7 @@ func (a *App) selectPersona(name string) error {
 	if !ok {
 		return fmt.Errorf("no persona named %q in Honcho", name)
 	}
+	a.resetAskState()
 	a.cur, a.harness, a.session, a.title, a.tuning = &p, nil, "", "", wire.Tuning{}
 	a.cwd = a.defaults.Personas[p.Name].CWD
 	a.lastCwd, a.wasElsewhere = "", false
@@ -169,9 +170,14 @@ func (a *App) selectPersona(name string) error {
 }
 
 // start selects the persona and the harness for a new conversation.
-func (a *App) start(name, harnessID string) error {
+func (a *App) start(name, harnessID string, directory ...string) error {
 	if err := a.selectPersona(name); err != nil {
 		return err
+	}
+	if len(directory) > 0 && directory[0] != "" {
+		a.cwd = directory[0]
+	} else if a.cwd == "" {
+		a.cwd = a.preferredCWD()
 	}
 	return a.useHarness(harnessID)
 }
@@ -214,6 +220,7 @@ func (a *App) useHarness(id string) error {
 	for _, h := range p.Harnesses {
 		if h.ID == id {
 			h := h
+			a.resetAskState()
 			a.harness, a.session, a.title = &h, "", ""
 			a.tuning = a.defaultTuning(p.Name, h)
 			a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
@@ -237,6 +244,9 @@ func (a *App) defaultTuning(persona string, h wire.Harness) wire.Tuning {
 	}
 	if pd.Effort != "" && h.Takes("effort") && wire.ValidSetting("effort", pd.Effort) {
 		t.Effort = pd.Effort
+	}
+	if pd.Mode != "" && h.Takes("mode") && wire.ValidSetting("mode", pd.Mode) {
+		t.Mode = pd.Mode
 	}
 	return t
 }
@@ -269,6 +279,9 @@ func (a *App) status() string {
 	}
 	if a.tuning.Effort != "" {
 		tuned += "  effort " + oneLine(a.tuning.Effort)
+	}
+	if a.tuning.Mode != "" {
+		tuned += "  mode " + oneLine(a.tuning.Mode)
 	}
 	update := ""
 	if v := a.newerRelease(); v != "" {
@@ -308,6 +321,39 @@ func (a *App) chdir(dir string) error {
 		return errors.New("pick a persona first (/persona)")
 	}
 	name := oneLine(a.cur.Name)
+	if dir == "save" {
+		value := a.cwd
+		if value == "" {
+			value = "none"
+		}
+		return a.setDefaults("cwd " + value)
+	}
+	if dir == "" && a.live != nil && a.session == "" {
+		dirs, err := a.priorDirectories()
+		if err != nil {
+			return err
+		}
+		items := []menuItem{{value: "", label: "Host default", desc: "No explicit directory", current: a.cwd == ""}}
+		seen := map[string]bool{"": true}
+		for _, d := range append([]string{a.defaults.Personas[a.cur.Name].CWD, a.cwd}, dirs...) {
+			if seen[d] {
+				continue
+			}
+			seen[d] = true
+			items = append(items, menuItem{value: d, label: d, current: d == a.cwd})
+		}
+		items = append(items, menuItem{label: "Custom directory…", custom: true})
+		picked, ok := a.live.selectOption(a.ctx, menuConfig{title: "Project directory", subtitle: "Pinned and verified successful prior directories on " + name,
+			items: items, customTitle: "Directory on " + name, validate: validDir})
+		if !ok {
+			return nil
+		}
+		if picked == "" {
+			dir = "default"
+		} else {
+			dir = picked
+		}
+	}
 	if dir == "" {
 		a.Out.line("directory: " + a.where() + " on " + name + a.dirNote())
 		return nil

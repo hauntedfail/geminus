@@ -168,7 +168,7 @@ func (w *world) bridge(persona string) {
 				}
 				harness, _ := info["harness"].(string)
 				cwd, _ := info["cwd"].(string)
-				tuning := wire.Tuning{Model: meta.Model, Effort: meta.Effort}
+				tuning := wire.Tuning{Model: meta.Model, Effort: meta.Effort, Mode: meta.Mode}
 				label := wire.PromptLabel(s.ID, persona, harness, m.PeerID, meta.Nonce, cwd, tuning)
 				state := func(v, detail string) {
 					meta.State, meta.Detail = v, detail

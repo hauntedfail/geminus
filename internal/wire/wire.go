@@ -168,6 +168,7 @@ func digest(value string) string {
 type Tuning struct {
 	Model  string
 	Effort string
+	Mode   string
 }
 
 var (
@@ -175,10 +176,13 @@ var (
 	effortForm = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
 )
 
-// ValidSetting reports whether value can be a model or an effort (kind). The
-// bridge turns it into an argument of the agent program, so it must be a
+// ValidModes are the permission/execution modes accepted by geminus and bridges.
+var ValidModes = []string{"auto", "read-only", "accept-edits", "bypass", "manual"}
+
+// ValidSetting reports whether value can be a model, an effort, or a mode (kind).
+// The bridge turns it into an argument of the agent program, so it must be a
 // bare name that no program can read as an option or as two arguments. The
-// empty string means "not set".
+// empty string means "not set" (inherit host harness default).
 func ValidSetting(kind, value string) bool {
 	if value == "" {
 		return true
@@ -186,22 +190,34 @@ func ValidSetting(kind, value string) bool {
 	if strings.ContainsAny(value, "\r\n") {
 		return false
 	}
-	if kind == "model" {
+	switch kind {
+	case "model":
 		return modelForm.MatchString(value)
+	case "mode":
+		for _, m := range ValidModes {
+			if value == m {
+				return true
+			}
+		}
+		return false
+	default:
+		return effortForm.MatchString(value)
 	}
-	return effortForm.MatchString(value)
 }
 
 // part is how the settings appear in a label: not at all when none is set.
 // A record without settings is therefore signed the way it was before
-// settings existed, and an older bridge still accepts it. Adding a setting
-// to such a record, or taking the settings off one that has them, changes
-// the label, so neither can be done behind the signer's back.
+// settings existed, and an older bridge still accepts it. When Mode is set it
+// is appended after Model and Effort. An absent mode preserves legacy labels.
 func (t Tuning) part() string {
-	if t.Model == "" && t.Effort == "" {
+	if t.Model == "" && t.Effort == "" && t.Mode == "" {
 		return ""
 	}
-	return ":" + digest(t.Model) + ":" + digest(t.Effort)
+	s := ":" + digest(t.Model) + ":" + digest(t.Effort)
+	if t.Mode != "" {
+		s += ":" + digest(t.Mode)
+	}
+	return s
 }
 
 // PromptLabel binds a prompt to its conversation, target, author, the
@@ -283,10 +299,11 @@ type Session struct {
 	Persona string `json:"persona"`
 	Harness string `json:"harness"`
 	CWD     string `json:"cwd,omitempty"`
-	// Model and Effort are the owner's settings for this conversation; the
+	// Model, Effort, and Mode are the owner's settings for this conversation; the
 	// next prompt carries them. Empty means the agent program's default.
 	Model   string `json:"model,omitempty"`
 	Effort  string `json:"effort,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 	Title   string `json:"title,omitempty"`
 	Pending bool   `json:"pending"`
 	// Updated is when the last prompt was written, for "the latest
@@ -304,7 +321,7 @@ func SessionLabel(session, persona, harness, human, cwd string, t Tuning) string
 }
 
 func (s Session) label(id string) string {
-	return SessionLabel(id, s.Persona, s.Harness, s.Human, s.CWD, Tuning{Model: s.Model, Effort: s.Effort})
+	return SessionLabel(id, s.Persona, s.Harness, s.Human, s.CWD, Tuning{Model: s.Model, Effort: s.Effort, Mode: s.Mode})
 }
 
 // SealSession signs the description of the session with the given ID using the group HMAC secret.
@@ -342,13 +359,14 @@ type Message struct {
 	Sig    string `json:"sig"`
 	SigAlg string `json:"sig_alg,omitempty"`
 
-	// Prompt fields. Model and Effort are what the owner set for this run;
+	// Prompt fields. Model, Effort, and Mode are what the owner set for this run;
 	// empty means the agent program's default.
 	Nonce  string `json:"nonce,omitempty"`
 	State  string `json:"state,omitempty"`
 	Detail string `json:"detail,omitempty"`
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	Mode   string `json:"mode,omitempty"`
 
 	// Output / state fields.
 	Turn   string `json:"turn,omitempty"`
@@ -370,10 +388,23 @@ type Harness struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	// Options are the settings the bridge can pass to the program for one
-	// run: "model", "effort".
+	// run: "model", "effort", "mode".
 	Options []string `json:"options,omitempty"`
 	// Models is an optional list of model names advertised by the bridge.
 	Models []string `json:"models,omitempty"`
+	// Defaults is an optional map of resolved host defaults advertised by the
+	// bridge (keys: "model", "effort", "mode") so geminus can show actual
+	// values instead of hiding them behind "default".
+	Defaults map[string]string `json:"defaults,omitempty"`
+}
+
+// DefaultFor returns the bridge-advertised host default for key ("model",
+// "effort", "mode"), or "" when unknown.
+func (h Harness) DefaultFor(key string) string {
+	if h.Defaults == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.Defaults[key])
 }
 
 // Takes reports whether the program can be given the setting.
@@ -396,6 +427,23 @@ func CardText(harnesses []Harness) string {
 	return strings.Join(entries, ",")
 }
 
+// HostDefaultsText authenticates resolved defaults independently of the legacy
+// options signature. JSON uses stable struct fields and sorted map keys.
+func HostDefaultsText(harnesses []Harness) string {
+	type entry struct {
+		ID       string            `json:"id"`
+		Defaults map[string]string `json:"defaults"`
+	}
+	entries := make([]entry, 0, len(harnesses))
+	for _, h := range harnesses {
+		entries = append(entries, entry{ID: h.ID, Defaults: h.Defaults})
+	}
+	b, _ := json.Marshal(entries)
+	return string(b)
+}
+
+func HostDefaultsLabel(peer string) string { return NodeLabel(peer) + ":defaults" }
+
 // NodeCard is what a bridge published about its computer.
 type NodeCard struct {
 	V         int       `json:"v"`
@@ -404,8 +452,9 @@ type NodeCard struct {
 	// Sig signs the program IDs, as it has since before options existed, so
 	// cards and readers of different ages still agree on which programs
 	// there are. OptionsSig signs the IDs with their options.
-	Sig        string `json:"sig"`
-	OptionsSig string `json:"options_sig,omitempty"`
+	Sig         string `json:"sig"`
+	OptionsSig  string `json:"options_sig,omitempty"`
+	DefaultsSig string `json:"defaults_sig,omitempty"`
 	// CWD is the directory the bridge runs a prompt in when the conversation
 	// names none, with a signature of its own. It is only ever shown.
 	CWD    string `json:"cwd,omitempty"`
@@ -449,6 +498,13 @@ func ParseNodeCard(secret []byte, peer string, raw json.RawMessage) (NodeCard, b
 			plain[i] = Harness{ID: h.ID, Name: h.Name}
 		}
 		card.Harnesses, card.OptionsSig = plain, ""
+	}
+	// Resolved defaults are display-only and have their own optional signature.
+	if !Verify(secret, HostDefaultsText(card.Harnesses), HostDefaultsLabel(peer), card.TS, card.DefaultsSig) {
+		for i := range card.Harnesses {
+			card.Harnesses[i].Defaults = nil
+		}
+		card.DefaultsSig = ""
 	}
 	// Likewise a directory nobody signed is not shown.
 	if card.CWD == "" || !Verify(secret, card.CWD, CWDLabel(peer), card.TS, card.CWDSig) {
@@ -494,6 +550,7 @@ type PersonaDefaults struct {
 	CWD     string `json:"cwd,omitempty"`
 	Model   string `json:"model,omitempty"`
 	Effort  string `json:"effort,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 // UIDefaults are the owner's prompt-box display preferences.
@@ -502,6 +559,7 @@ type UIDefaults struct {
 	ShowNode     *bool             `json:"show_node,omitempty"`
 	ShowModel    *bool             `json:"show_model,omitempty"`
 	ShowEffort   *bool             `json:"show_effort,omitempty"`
+	ShowMode     *bool             `json:"show_mode,omitempty"`
 	HarnessNames map[string]string `json:"harness_names,omitempty"`
 }
 
@@ -518,6 +576,11 @@ func (u *UIDefaults) ModelVisible() bool {
 // EffortVisible reports whether the effort level is shown in the prompt box.
 func (u *UIDefaults) EffortVisible() bool {
 	return u == nil || u.ShowEffort == nil || *u.ShowEffort
+}
+
+// ModeVisible reports whether the permission mode is shown in the prompt box.
+func (u *UIDefaults) ModeVisible() bool {
+	return u == nil || u.ShowMode == nil || *u.ShowMode
 }
 
 // LabelFor returns the display name for a harness ID.
@@ -539,7 +602,7 @@ func (u *UIDefaults) LabelFor(id, fallback string) string {
 
 // IsZero reports whether u has no custom settings.
 func (u *UIDefaults) IsZero() bool {
-	return u == nil || (u.ShowNode == nil && u.ShowModel == nil && u.ShowEffort == nil && len(u.HarnessNames) == 0)
+	return u == nil || (u.ShowNode == nil && u.ShowModel == nil && u.ShowEffort == nil && u.ShowMode == nil && len(u.HarnessNames) == 0)
 }
 
 // sealed is how defaults are stored: the defaults as JSON text, signed.

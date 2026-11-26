@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/hauntedfail/geminus/internal/wire"
 )
@@ -25,12 +26,15 @@ type menuItem struct {
 type menuConfig struct {
 	title             string
 	subtitle          string
+	details           string // complete permission context, paged without truncation
 	searchPlaceholder string
 	customTitle       string
 	customSubtitle    string
 	customPlaceholder string
 	customEmptyErr    string
 	initialValue      string
+	noSearch          bool
+	hotkeys           map[rune]string
 	items             []menuItem
 	validate          func(string) error
 }
@@ -41,18 +45,20 @@ type menuResult struct {
 }
 
 type selectMenu struct {
-	cfg        menuConfig
-	search     editor
-	filtered   []menuItem
-	matchCount int
-	totalCount int
-	cursor     int
-	offset     int
-	customMode bool
-	input      editor
-	errMsg     string
-	done       chan menuResult
-	finished   bool
+	detailOffset int
+	detailStep   int
+	cfg          menuConfig
+	search       editor
+	filtered     []menuItem
+	matchCount   int
+	totalCount   int
+	cursor       int
+	offset       int
+	customMode   bool
+	input        editor
+	errMsg       string
+	done         chan menuResult
+	finished     bool
 }
 
 func newSelectMenu(cfg menuConfig, done chan menuResult) *selectMenu {
@@ -232,6 +238,14 @@ func (m *selectMenu) handleKey(k key) (closed bool) {
 		return m.handleCustomKey(k)
 	}
 	switch k.Kind {
+	case keyPageUp:
+		m.detailOffset = max(m.detailOffset-max(m.detailStep, 1), 0)
+	case keyPageDown:
+		m.detailOffset += max(m.detailStep, 1)
+	case keyMouseScrollUp:
+		m.detailOffset = max(m.detailOffset-1, 0)
+	case keyMouseScrollDown:
+		m.detailOffset++
 	case keyUp:
 		m.move(-1)
 	case keyDown:
@@ -284,6 +298,9 @@ func (m *selectMenu) handleKey(k key) (closed bool) {
 			m.refreshFilter(m.search.Empty())
 		}
 	case keyPaste:
+		if m.cfg.noSearch {
+			return false
+		}
 		if s := oneLine(k.Text); s != "" {
 			m.search.Insert(s)
 			m.refreshFilter(false)
@@ -308,6 +325,28 @@ func (m *selectMenu) handleKey(k key) (closed bool) {
 				m.cursor = idx
 				return m.pickIndex(idx)
 			}
+		}
+		if m.cfg.noSearch {
+			r := unicode.ToLower(k.R)
+			if target, ok := m.cfg.hotkeys[r]; ok {
+				for idx, it := range m.filtered {
+					if it.value == target {
+						m.cursor = idx
+						return m.pickIndex(idx)
+					}
+				}
+			}
+			switch r {
+			case 'j':
+				if len(m.filtered) > 0 {
+					m.cursor = (m.cursor + 1) % len(m.filtered)
+				}
+			case 'k':
+				if len(m.filtered) > 0 {
+					m.cursor = (m.cursor - 1 + len(m.filtered)) % len(m.filtered)
+				}
+			}
+			return false
 		}
 		m.search.Insert(string(k.R))
 		m.refreshFilter(false)
@@ -394,6 +433,9 @@ func (m *selectMenu) handleCustomKey(k key) (closed bool) {
 
 // renderMenu draws the rounded select option panel at the bottom of the screen.
 func renderMenu(in frameInput, m *selectMenu) frame {
+	if m.cfg.details != "" {
+		return renderPermissionMenu(in, m)
+	}
 	width := max(in.cols-1, 24)
 	inner := max(width-4, 16) // "│ " + inner + " │"
 	pal, v := in.pal, in.v
@@ -476,44 +518,46 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 		return f
 	}
 
-	// List mode: search bar + filtered scrollable window.
-	searching := !m.search.Empty()
-	searchPrefix := "Search: "
-	countPlain, countStyled, countW := "", "", 0
-	if searching {
-		countPlain = fmt.Sprintf(" %d/%d", m.matchCount, m.totalCount)
-		countStyled = pal.Dim(countPlain)
-		countW = textWidth(countPlain)
-	}
-	searchRoom := inner - len(searchPrefix) - countW
-	if searchRoom < 6 {
-		countPlain, countStyled, countW = "", "", 0
-		searchRoom = max(inner-len(searchPrefix), 4)
-	}
-	if !searching {
-		ph := m.cfg.searchPlaceholder
-		if ph == "" {
-			ph = "Type to search…"
+	// List mode: optional search bar + filtered scrollable window.
+	searching := !m.cfg.noSearch && !m.search.Empty()
+	if !m.cfg.noSearch {
+		searchPrefix := "Search: "
+		countPlain, countStyled, countW := "", "", 0
+		if searching {
+			countPlain = fmt.Sprintf(" %d/%d", m.matchCount, m.totalCount)
+			countStyled = pal.Dim(countPlain)
+			countW = textWidth(countPlain)
 		}
-		clipped := clipWidth(ph, searchRoom)
-		row := pal.SGR(accent, searchPrefix) + pal.Dim(clipped)
-		f.curRow = len(f.rows)
-		f.curCol = 2 + len(searchPrefix)
-		f.rows = append(f.rows, boxRow(row, len(searchPrefix)+textWidth(clipped)))
-	} else {
-		shown, curCol := clipSearchWindow(m.search.Text(), m.search.Pos(), searchRoom)
-		shownW := textWidth(shown)
-		pad := ""
-		if countW > 0 {
-			pad = strings.Repeat(" ", max(inner-len(searchPrefix)-shownW-countW, 0))
+		searchRoom := inner - len(searchPrefix) - countW
+		if searchRoom < 6 {
+			countPlain, countStyled, countW = "", "", 0
+			searchRoom = max(inner-len(searchPrefix), 4)
 		}
-		row := pal.SGR("1;"+accent, searchPrefix) + shown + pad + countStyled
-		f.curRow = len(f.rows)
-		f.curCol = 2 + len(searchPrefix) + curCol
-		f.rows = append(f.rows, boxRow(row, len(searchPrefix)+shownW+len(pad)+countW))
-	}
-	if in.rows >= 12 {
-		f.rows = append(f.rows, boxRow(pal.Dim(strings.Repeat("─", inner)), inner))
+		if !searching {
+			ph := m.cfg.searchPlaceholder
+			if ph == "" {
+				ph = "Type to search…"
+			}
+			clipped := clipWidth(ph, searchRoom)
+			row := pal.SGR(accent, searchPrefix) + pal.Dim(clipped)
+			f.curRow = len(f.rows)
+			f.curCol = 2 + len(searchPrefix)
+			f.rows = append(f.rows, boxRow(row, len(searchPrefix)+textWidth(clipped)))
+		} else {
+			shown, curCol := clipSearchWindow(m.search.Text(), m.search.Pos(), searchRoom)
+			shownW := textWidth(shown)
+			pad := ""
+			if countW > 0 {
+				pad = strings.Repeat(" ", max(inner-len(searchPrefix)-shownW-countW, 0))
+			}
+			row := pal.SGR("1;"+accent, searchPrefix) + shown + pad + countStyled
+			f.curRow = len(f.rows)
+			f.curCol = 2 + len(searchPrefix) + curCol
+			f.rows = append(f.rows, boxRow(row, len(searchPrefix)+shownW+len(pad)+countW))
+		}
+		if in.rows >= 12 {
+			f.rows = append(f.rows, boxRow(pal.Dim(strings.Repeat("─", inner)), inner))
+		}
 	}
 
 	if searching && m.matchCount == 0 {
@@ -626,7 +670,9 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 
 	f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
 	hintText := "↑↓ navigate · type to search · 1-9 select · Enter confirm · Esc cancel"
-	if searching {
+	if m.cfg.noSearch {
+		hintText = "↑↓/j/k navigate · 1-9 or hotkey · Enter confirm · Esc dismiss"
+	} else if searching {
 		hintText = "↑↓ navigate · Enter confirm · Esc clear search"
 	} else if n < 9 {
 		hintText = fmt.Sprintf("↑↓ navigate · type to search · 1-%d select · Enter confirm · Esc cancel", n)
@@ -711,11 +757,15 @@ func (a *App) modelMenuItemsFor(activeModel string) []menuItem {
 		savedHere = a.defaults.Personas[a.cur.Name].Model
 	}
 
+	defaultDesc := oneLine(h.Name) + "'s own default"
+	if def := h.DefaultFor("model"); def != "" {
+		defaultDesc = fmt.Sprintf("%s's host default (%s)", oneLine(h.Name), oneLine(def))
+	}
 	items := []menuItem{
 		{
 			value:   "",
 			label:   "default",
-			desc:    oneLine(h.Name) + "'s own default",
+			desc:    defaultDesc,
 			current: curModel == "",
 		},
 	}
@@ -876,5 +926,61 @@ func effortMenuItems(active, saved, harnessName string) []menuItem {
 		desc:   "Enter any effort level",
 		custom: true,
 	})
+	return items
+}
+
+// effortMenuItemsWithDefault annotates the default entry with the bridge's
+// advertised host default effort when available.
+func effortMenuItemsWithDefault(active, saved, harnessName, hostDefault string) []menuItem {
+	items := effortMenuItems(active, saved, harnessName)
+	if len(items) > 0 && hostDefault != "" {
+		if harnessName != "" {
+			items[0].desc = fmt.Sprintf("%s's host default (%s)", oneLine(harnessName), oneLine(hostDefault))
+		} else {
+			items[0].desc = fmt.Sprintf("Host default (%s)", oneLine(hostDefault))
+		}
+	}
+	return items
+}
+
+// modePresets are standard permission/execution modes offered in /mode and /config.
+var modePresets = []struct{ id, desc string }{
+	{"auto", "Host-native auto mode"},
+	{"accept-edits", "Host-native edit approval mode"},
+	{"bypass", "Request host-native bypass; host policy still applies"},
+	{"read-only", "Host-native read-only mode"},
+	{"manual", "Host-native manual approval mode"},
+}
+
+// modeMenuItems builds the option list for /mode or default mode menus.
+func modeMenuItems(active, saved, harnessName, hostDefault string) []menuItem {
+	defaultDesc := "Inherit host harness default"
+	if harnessName != "" && hostDefault != "" {
+		defaultDesc = fmt.Sprintf("%s's host default (%s)", oneLine(harnessName), oneLine(hostDefault))
+	} else if harnessName != "" {
+		defaultDesc = oneLine(harnessName) + "'s own default"
+	} else if hostDefault != "" {
+		defaultDesc = fmt.Sprintf("Host default (%s)", oneLine(hostDefault))
+	}
+	items := []menuItem{
+		{
+			value:   "",
+			label:   "default",
+			desc:    defaultDesc,
+			current: active == "",
+		},
+	}
+	for _, p := range modePresets {
+		desc := p.desc
+		if saved == p.id {
+			desc = appendTag(desc, "saved default")
+		}
+		items = append(items, menuItem{
+			value:   p.id,
+			label:   p.id,
+			desc:    desc,
+			current: active == p.id,
+		})
+	}
 	return items
 }

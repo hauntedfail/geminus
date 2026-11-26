@@ -3,6 +3,7 @@ package chat
 // Slash commands.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -13,16 +14,15 @@ import (
 )
 
 func (a *App) handle(line string) error {
+	if a.expirePendingAsk() {
+		return errors.New("permission question expired; no answer sent")
+	}
 	if a.pendingAsk != nil {
-		if choice, ok := parseAskAnswer(line); ok {
+		if choice, ok := parseAskAnswerFor(line, a.pendingAsk.Choices); ok {
 			return a.sendAnswer(choice)
 		}
 		if !isGeminusCommand(line) {
-			what := oneLine(a.pendingAsk.Tool)
-			if what != "" {
-				return fmt.Errorf("permission question pending (%s): type allow (y) or deny (n)", what)
-			}
-			return errors.New("permission question pending: type allow (y) or deny (n)")
+			return fmt.Errorf("permission question pending: choose %s, a number, or /ask", strings.Join(askChoices(a.pendingAsk), " / "))
 		}
 	}
 	if cmd, arg, ok := shellLine(line); ok {
@@ -101,6 +101,8 @@ func (a *App) handle(line string) error {
 		}
 		if arg != "" {
 			a.cwd = arg
+		} else {
+			a.cwd = a.preferredCWD()
 		}
 		a.Out.line(a.status())
 	case "/cwd":
@@ -122,8 +124,15 @@ func (a *App) handle(line string) error {
 		return a.setUI(arg)
 	case "/update":
 		return a.slashUpdateCmd(arg)
-	case "/model", "/effort":
+	case "/model", "/effort", "/mode":
 		return a.tune(cmd[1:], arg)
+	case "/ask":
+		if a.pendingAsk == nil {
+			return errors.New("no permission question is waiting for an answer")
+		}
+		a.showBridgeAsk(a.pendingAsk.Question, wire.Message{Tool: a.pendingAsk.Tool, Detail: a.pendingAsk.Detail, Choices: a.pendingAsk.Choices})
+		a.pendingAsk.Prompted = false
+		a.promptPendingAsk()
 	default:
 		// Not one of geminus's: the agent program has slash commands of its
 		// own, so the line goes to it as typed.
@@ -143,16 +152,22 @@ func (a *App) tune(kind, value string) error {
 	current := &a.tuning.Model
 	if kind == "effort" {
 		current = &a.tuning.Effort
+	} else if kind == "mode" {
+		current = &a.tuning.Mode
 	}
 	show := func() {
 		if *current == "" {
-			a.Out.line(fmt.Sprintf("%s: %s's default  (set one for this conversation with /%s NAME)", kind, oneLine(a.harness.Name), kind))
+			resolved := a.harness.DefaultFor(kind)
+			if resolved == "" {
+				resolved = "unknown; host has not reported a value"
+			}
+			a.Out.line(fmt.Sprintf("%s: %s's default (%s)  (set one for this conversation with /%s NAME)", kind, oneLine(a.harness.Name), oneLine(resolved), kind))
 			return
 		}
 		a.Out.line(fmt.Sprintf("%s: %s  (this conversation only; /%s default goes back to %s's own)", kind, oneLine(*current), kind, oneLine(a.harness.Name)))
 	}
 	if value == "" {
-		if (kind == "model" || kind == "effort") && a.live != nil {
+		if a.live != nil {
 			if len(a.harness.Options) == 0 {
 				return fmt.Errorf("the bridge on %s's computer is too old to pass a %s: geminish 0.6 or later must be running there. Prompts without one still work", a.cur.Name, kind)
 			}
@@ -161,7 +176,10 @@ func (a *App) tune(kind, value string) error {
 			}
 			disp := a.harnessDisplay(*a.harness)
 			var cfg menuConfig
-			if kind == "model" {
+			if kind == "mode" {
+				cfg = menuConfig{title: "Permission mode", subtitle: "This conversation only; host-native rules still apply",
+					items: modeMenuItems(a.tuning.Mode, a.defaults.Personas[a.cur.Name].Mode, a.harness.Name, a.harness.DefaultFor("mode"))}
+			} else if kind == "model" {
 				cfg = menuConfig{
 					title:             "Select model",
 					subtitle:          fmt.Sprintf("Model for this conversation · %s", disp),
@@ -191,7 +209,7 @@ func (a *App) tune(kind, value string) error {
 					customSubtitle:    fmt.Sprintf("Enter any effort level for %s (or \"default\" to reset)", disp),
 					customPlaceholder: "e.g. low, medium, high, max",
 					customEmptyErr:    "enter an effort level, or press Esc to go back",
-					items:             effortMenuItems(a.tuning.Effort, saved, a.harness.Name),
+					items:             effortMenuItemsWithDefault(a.tuning.Effort, saved, a.harness.Name, a.harness.DefaultFor("effort")),
 					validate: func(v string) error {
 						if !wire.ValidSetting("effort", v) {
 							return fmt.Errorf("%q is not a usable effort level (letters, digits and . _ -)", oneLine(v))
@@ -280,6 +298,16 @@ func (a *App) refresh() error {
 		return fmt.Errorf("%s is no longer listed in Honcho", a.cur.Name)
 	}
 	a.cur = &p
+	if a.harness != nil {
+		current := wire.Harness{ID: a.harness.ID, Name: a.harness.Name}
+		for _, h := range p.Harnesses {
+			if h.ID == current.ID {
+				current = h
+				break
+			}
+		}
+		a.harness = &current
+	}
 	return nil
 }
 
@@ -325,6 +353,9 @@ func (a *App) setDefaults(arg string) error {
 			if d.Effort != "" {
 				line += "  effort " + oneLine(d.Effort)
 			}
+			if d.Mode != "" {
+				line += "  mode " + oneLine(d.Mode)
+			}
 			a.Out.line(line)
 		}
 		return nil
@@ -353,6 +384,7 @@ func (a *App) setDefaults(arg string) error {
 			CWD:     a.cwd,
 			Model:   a.tuning.Model,
 			Effort:  a.tuning.Effort,
+			Mode:    a.tuning.Mode,
 		}
 		said = fmt.Sprintf("geminus now starts with %s · %s", who(*a.cur), oneLine(a.harness.Name))
 	case "persona":
@@ -394,6 +426,19 @@ func (a *App) setDefaults(arg string) error {
 		}
 		pd.Effort = value
 		d.Personas[a.cur.Name] = pd
+	case "mode":
+		if !wire.ValidSetting("mode", value) {
+			return fmt.Errorf("unknown permission mode %q", value)
+		}
+		if value != "" && (a.harness == nil || !a.harness.Takes("mode")) {
+			return errors.New("host harness does not advertise mode support")
+		}
+		pd, err := current()
+		if err != nil {
+			return err
+		}
+		pd.Mode = value
+		d.Personas[a.cur.Name] = pd
 	case "auto_update", "autoupdate":
 		if value == "" {
 			d.AutoUpdate = nil
@@ -411,7 +456,7 @@ func (a *App) setDefaults(arg string) error {
 			}
 		}
 	default:
-		return errors.New("usage: /default [save | persona NAME | harness ID | cwd DIR | model NAME | effort LEVEL | auto_update on|off]")
+		return errors.New("usage: /default [save | persona NAME | harness ID | cwd DIR | model NAME | effort LEVEL | mode MODE | auto_update on|off]")
 	}
 	if err := a.saveDefaults(d); err != nil {
 		return err
@@ -446,6 +491,10 @@ func (a *App) cloneDefaults() wire.Defaults {
 		if u.ShowEffort != nil {
 			v := *u.ShowEffort
 			u.ShowEffort = &v
+		}
+		if u.ShowMode != nil {
+			v := *u.ShowMode
+			u.ShowMode = &v
 		}
 		if len(a.defaults.UI.HarnessNames) > 0 {
 			u.HarnessNames = map[string]string{}
@@ -521,6 +570,23 @@ func (a *App) saveDefaults(d wire.Defaults) error {
 	if err := a.Honcho.SetPeerMetadata(ctx, a.Profile.Human, wire.DefaultsKey, stored); err != nil {
 		return fmt.Errorf("the default was not saved: %w", err)
 	}
+	peers, err := a.Honcho.Peers(ctx)
+	if err != nil {
+		return fmt.Errorf("default write not confirmed: %w", err)
+	}
+	confirmed := false
+	want, _ := json.Marshal(d)
+	for _, peer := range peers {
+		if peer.ID != a.Profile.Human {
+			continue
+		}
+		got, _, ok := wire.OpenDefaultsWith(a.humanAuth(), a.Profile.Human, peer.Metadata[wire.DefaultsKey])
+		encoded, _ := json.Marshal(got)
+		confirmed = ok && string(encoded) == string(want)
+	}
+	if !confirmed {
+		return errors.New("default write not confirmed by Honcho readback")
+	}
 	a.defaults, a.defaultsSaved = d, a.Now().Unix()
 	return nil
 }
@@ -540,6 +606,7 @@ func (a *App) setUI(arg string) error {
 		a.Out.line("  node    " + onOff(u.NodeVisible()))
 		a.Out.line("  model   " + onOff(u.ModelVisible()))
 		a.Out.line("  effort  " + onOff(u.EffortVisible()))
+		a.Out.line("  mode    " + onOff(u.ModeVisible()))
 		if u != nil && len(u.HarnessNames) > 0 {
 			ids := make([]string, 0, len(u.HarnessNames))
 			for id := range u.HarnessNames {
@@ -593,6 +660,13 @@ func (a *App) setUI(arg string) error {
 		}
 		d.UI.ShowEffort = &v
 		said = "ui effort: " + onOff(v)
+	case "mode":
+		v, err := parseToggle(rest)
+		if err != nil {
+			return err
+		}
+		d.UI.ShowMode = &v
+		said = "ui mode: " + onOff(v)
 	case "label":
 		id, label, _ := strings.Cut(rest, " ")
 		id, label = strings.TrimSpace(id), strings.TrimSpace(label)

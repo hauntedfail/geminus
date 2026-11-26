@@ -25,14 +25,18 @@ type view struct {
 	// bridge there uses when none is; home is that one, when the bridge said.
 	cwd, home, session string
 	model, effort      string
+	mode               string
+	defaultModel       string
+	defaultEffort      string
+	defaultMode        string
 
 	// UI display preferences for the prompt box. When uiSet is false (for
-	// example in unit tests constructing view directly), all three default
-	// to true.
+	// example in unit tests constructing view directly), all default to true.
 	uiSet      bool
 	showNode   bool
 	showModel  bool
 	showEffort bool
+	showMode   bool
 
 	// link says why Honcho could not be read; "" when it can.
 	link string
@@ -93,10 +97,12 @@ var slashCommands = []struct{ name, args, what string }{
 	{"/harness", "[ID]", "pick the agent program there"},
 	{"/model", "[NAME]", "model for this conversation"},
 	{"/effort", "[LEVEL]", "effort for this conversation"},
-	{"/cwd", "[DIR]", "directory there, until the conversation starts"},
+	{"/mode", "[MODE]", "permission mode (auto, accept-edits, bypass, read-only, manual)"},
+	{"/cwd", "[DIR|save]", "directory there, or save current dir as default"},
 	{"/new", "[DIR]", "start a new conversation"},
 	{"/sessions", "", "list your conversations"},
 	{"/resume", "[ID|N]", "reopen a conversation"},
+	{"/ask", "", "reopen the pending permission question"},
 	{"/status", "", "show where things stand"},
 	{"/update", "[auto on|off]", "install the latest geminus, or toggle auto-update"},
 	{"/config", "", "interactive settings menu"},
@@ -274,6 +280,7 @@ func renderHeader(in headerInput) string {
 func (v view) nodeShown() bool   { return !v.uiSet || v.showNode }
 func (v view) modelShown() bool  { return !v.uiSet || v.showModel }
 func (v view) effortShown() bool { return !v.uiSet || v.showEffort }
+func (v view) modeShown() bool   { return !v.uiSet || v.showMode }
 
 // render lays out the bottom of the screen for one moment.
 func render(in frameInput) frame {
@@ -326,17 +333,31 @@ func render(in frameInput) frame {
 		}
 		if v.harness != "" {
 			if v.modelShown() {
-				if v.model != "" {
+				switch {
+				case v.model != "":
 					appendSegment(v.model, v.model)
-				} else {
+				case v.defaultModel != "":
+					appendSegment(v.defaultModel, pal.Dim(v.defaultModel))
+				default:
 					appendSegment("model:default", pal.Dim("model:default"))
 				}
 			}
 			if v.effortShown() {
-				if v.effort != "" {
+				switch {
+				case v.effort != "":
 					appendSegment(v.effort, v.effort)
-				} else {
+				case v.defaultEffort != "":
+					appendSegment(v.defaultEffort, pal.Dim(v.defaultEffort))
+				default:
 					appendSegment("effort:default", pal.Dim("effort:default"))
+				}
+			}
+			if v.modeShown() {
+				switch {
+				case v.mode != "":
+					appendSegment(v.mode, v.mode)
+				case v.defaultMode != "":
+					appendSegment(v.defaultMode, pal.Dim(v.defaultMode))
 				}
 			}
 		}
