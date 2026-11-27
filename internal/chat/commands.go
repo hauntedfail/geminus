@@ -60,6 +60,8 @@ func (a *App) handle(line string) error {
 		if err := a.start(arg, ""); err != nil {
 			return err
 		}
+		a.notifyResetTurnState()
+		a.notifyBoundary()
 		a.printTransitionStatus("Ready")
 	case "/harness":
 		if a.cur == nil {
@@ -83,6 +85,8 @@ func (a *App) handle(line string) error {
 		if err := a.useHarness(arg); err != nil {
 			return err
 		}
+		a.notifyResetTurnState()
+		a.notifyBoundary()
 		a.printTransitionStatus("Ready")
 	case "/new":
 		if a.cur == nil || a.harness == nil {
@@ -96,6 +100,7 @@ func (a *App) handle(line string) error {
 		a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 		a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
 		a.resetAskState()
+		a.notifyResetTurnState()
 		if a.live != nil {
 			a.live.setPrompt("")
 		}
@@ -104,6 +109,7 @@ func (a *App) handle(line string) error {
 		} else {
 			a.cwd = a.preferredCWD()
 		}
+		a.notifyBoundary()
 		a.printTransitionStatus("New session")
 	case "/cwd":
 		return a.chdir(arg)
@@ -113,6 +119,7 @@ func (a *App) handle(line string) error {
 		if err := a.resume(arg); err != nil {
 			return err
 		}
+		a.notifySyncState()
 		a.printTransitionStatus("Resumed session")
 	case "/default":
 		return a.setDefaults(arg)
@@ -122,6 +129,8 @@ func (a *App) handle(line string) error {
 		return a.slashPostHuman(arg)
 	case "/clawd":
 		return a.slashClawd(arg)
+	case "/notify":
+		return a.slashNotify(arg)
 	case "/ui":
 		return a.setUI(arg)
 	case "/update":

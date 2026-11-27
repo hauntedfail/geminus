@@ -167,12 +167,14 @@ func (l *live) feed(keys []key, lines chan<- string) (stop bool) {
 // lines come from it.
 func (a *App) attach(lv *live, lines <-chan string) {
 	a.live, a.lines = lv, lines
+	lv.onClose = a.notifyResetSequence
 	a.Out.mu.Lock()
 	a.Out.w = lv
 	a.Out.mu.Unlock()
 	a.sentAt = map[string]time.Time{}
 	a.shownTurn = map[string]bool{}
 	a.turnPrompt = map[string]string{}
+	a.notifyResetTurnState()
 	who, where := oneLine(a.Profile.Human), "Honcho workspace "+oneLine(a.Profile.Workspace)
 	if lv.banner != nil {
 		// The mascot stands for the mark; the same facts beside it.
@@ -342,7 +344,7 @@ func isGeminusCommand(line string) bool {
 	switch cmd {
 	case "/help", "/status", "/persona", "/personas", "/harness", "/new", "/cwd",
 		"/sessions", "/resume", "/default", "/config", "/post-human", "/posthuman", "/helix",
-		"/clawd", "/ui", "/update", "/model", "/effort", "/mode", "/ask", "/quit", "/exit":
+		"/clawd", "/notify", "/ui", "/update", "/model", "/effort", "/mode", "/ask", "/quit", "/exit":
 		return true
 	}
 	return false

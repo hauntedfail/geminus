@@ -250,8 +250,13 @@ func (a *App) handleStreamEvent(ev e2ee.StreamEvent) bool {
 		if ev.Text == "" {
 			return false
 		}
+		hadTool := st.toolActivity != ""
 		st.toolActivity = ""
 		st.streamedRaw += ev.Text
+		a.recordTurnOutput(ev.Turn, ev.Text)
+		if hadTool {
+			a.notifyWorking(ev.Turn, "", "")
+		}
 		a.emitStreamDelta(ev.Turn, ev.Text, st)
 		return false
 
@@ -265,10 +270,12 @@ func (a *App) handleStreamEvent(ev e2ee.StreamEvent) bool {
 		}
 		st.toolActivity = label
 		a.showStreamTool(ev.Turn, label)
+		a.notifyWorking(ev.Turn, ev.Tool, ev.Detail)
 		return false
 
 	case e2ee.StreamKindToolResult:
 		st.toolActivity = ""
+		a.notifyWorking(ev.Turn, "", "")
 		return false
 
 	case e2ee.StreamKindDone:

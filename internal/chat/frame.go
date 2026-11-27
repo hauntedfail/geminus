@@ -112,6 +112,7 @@ var slashCommands = []struct{ name, args, what string }{
 	{"/config", "", "interactive settings menu"},
 	{"/post-human", "[on|off]", "toggle Post-Human (Helix) modal editing"},
 	{"/clawd", "[on|off]", "toggle Clawd mode (Claude Code look)"},
+	{"/notify", "[MODE]", "terminal notifications (auto, ghostty, orca, bell, off)"},
 	{"/default", "…", "show or change your defaults"},
 	{"/ui", "…", "customize prompt box display"},
 	{"/help", "", "list geminus commands"},

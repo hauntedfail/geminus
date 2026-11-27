@@ -27,6 +27,8 @@ func (a *App) slashConfig(arg string) error {
 			return a.slashPostHuman(rest)
 		case "clawd":
 			return a.slashClawd(rest)
+		case "notify", "notifications":
+			return a.slashNotify(rest)
 		case "node", "model", "effort", "label", "reset":
 			if rest == "" && key != "reset" {
 				return fmt.Errorf("usage: /config (interactive) or /ui %s on|off", key)
@@ -67,6 +69,7 @@ func (a *App) printConfigSummary() {
 	a.Out.line(fmt.Sprintf("  auto_update      %s (%s)", onOff(a.autoUpdateEnabled()), a.autoUpdateSource()))
 	a.Out.line("  post_human       " + onOff(a.defaults.PostHumanEnabled()))
 	a.Out.line(fmt.Sprintf("  clawd            %s (%s)", onOff(a.clawdEnabled()), a.clawdSource()))
+	a.Out.line(fmt.Sprintf("  notify           %s (%s)", a.notifyMode(), a.notifySource()))
 	a.Out.line("  ui.node          " + onOff(u.NodeVisible()))
 	a.Out.line("  ui.model         " + onOff(u.ModelVisible()))
 	a.Out.line("  ui.effort        " + onOff(u.EffortVisible()))
@@ -174,6 +177,7 @@ func (a *App) configMenuItems() []menuItem {
 			current: postHumanOn,
 		},
 		{value: "clawd", label: "Clawd mode", desc: fmt.Sprintf("%s (%s) · Claude Code interface", onOff(clawdOn), a.clawdSource()), current: clawdOn},
+		{value: "notify", label: "Terminal notifications", desc: fmt.Sprintf("%s (%s) · Ghostty OSC 777, Orca OSC 9999, BEL", a.notifyMode(), a.notifySource())},
 		{
 			value: "default.persona",
 			label: "Default persona",
@@ -264,6 +268,9 @@ func (a *App) applyConfigChoice(choice string) (note string, updated bool, err e
 		}
 		a.clawdOverride, a.clawdFlag, a.clawdEnvSet = nil, "", false
 		return fmt.Sprintf("Saved: clawd = %s", onOff(next)), true, nil
+
+	case "notify":
+		return a.configPickNotify()
 
 	case "ui.node":
 		d := a.cloneDefaults()

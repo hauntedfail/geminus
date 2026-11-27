@@ -277,8 +277,14 @@ func (a *App) closeAskMenu() {
 
 func (a *App) expirePendingAsk() bool {
 	if a.pendingAsk != nil && a.pendingAsk.Deadline > 0 && a.Now().Unix() >= a.pendingAsk.Deadline {
+		turn := a.pendingAsk.Turn
 		a.clearPendingAsk()
 		a.Out.line(a.Out.warn("permission question expired; no answer sent"))
+		if len(a.waiting) > 0 {
+			a.notifyWorking(turn, "", "")
+		} else {
+			a.notifyBoundary()
+		}
 		return true
 	}
 	return false
@@ -352,6 +358,9 @@ func (a *App) sendAnswer(choice string) error {
 	}
 	a.shown[stored.ID] = true
 	a.markAskAnswered(ask.Request)
+	if len(a.waiting) > 0 {
+		a.notifyWorking(ask.Turn, "", "")
+	}
 	if a.cur.endpoint != "" {
 		_ = wire.Ring(a.ctx, a.Honcho.HTTP(), a.cur.endpoint)
 	}

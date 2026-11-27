@@ -75,6 +75,34 @@ func (t *vt) Write(p []byte) (int, error) {
 		case c == '\n':
 			t.feedLine()
 			i++
+		case c == 0x07:
+			i++
+		case c == 0x1b && i+1 < len(s) && s[i+1] == ']':
+			// OSC sequence: ESC ] ... (BEL | ESC \)
+			j := i + 2
+			for j < len(s) {
+				if s[j] == 0x07 {
+					j++
+					break
+				}
+				if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
+					j += 2
+					break
+				}
+				j++
+			}
+			i = j
+		case c == 0x1b && i+1 < len(s) && s[i+1] == 'P':
+			// DCS sequence (e.g. tmux/screen passthrough): ESC P ... ESC \
+			j := i + 2
+			for j < len(s) {
+				if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
+					j += 2
+					break
+				}
+				j++
+			}
+			i = j
 		case c == 0x1b && i+1 < len(s) && s[i+1] == '[':
 			j := i + 2
 			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {

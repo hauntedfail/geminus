@@ -22,6 +22,7 @@ import (
 
 	"github.com/hauntedfail/geminus/internal/honcho"
 	"github.com/hauntedfail/geminus/internal/profile"
+	"github.com/hauntedfail/geminus/internal/tui"
 	"github.com/hauntedfail/geminus/internal/updates"
 	"github.com/hauntedfail/geminus/internal/version"
 	"github.com/hauntedfail/geminus/internal/wire"
@@ -44,6 +45,8 @@ Options:
   --continue, -c           reopen the latest conversation
   --resume ID              reopen a conversation by ID
   --clawd, --no-clawd      enable or disable Clawd mode (Claude Code look)
+  --notify MODE            terminal notifications (auto, ghostty, orca, osc9, osc99, bell, all, off)
+  --no-notify              disable terminal notifications
 
 Everything else is chosen inside geminus (type /help there). geminus keeps
 no files: personas, conversations and your defaults live in Honcho.
@@ -77,6 +80,7 @@ const commandHelp = `geminus commands
   /config                open interactive settings menu (auto-update, Post-Human, Clawd, UI, defaults)
   /post-human [on|off]   toggle Post-Human (Helix) modal editing in the prompt box
   /clawd [on|off|status] toggle Clawd mode (Claude Code visual interface)
+  /notify [MODE|status]  terminal notifications (auto, ghostty, orca, osc9, osc99, bell, all, off)
   /default               show your defaults; /default save keeps the current
                          persona, harness, directory, model, effort and permission mode;
                          /default persona|harness|cwd|model|effort|mode|auto_update VALUE (or none)
@@ -206,6 +210,15 @@ type App struct {
 	clawdOverride *bool
 	clawdFlag     string
 	clawdEnvSet   bool
+	// Terminal notification / agent-status relay state.
+	notifyOverride *tui.NotifyMode
+	notifyFlag     string
+	notifyEnvSet   bool
+	notifyEnvFn    func(string) string
+	notifiedTurn   map[string]bool
+	notifiedAsk    map[string]bool
+	turnLastOut    map[string]string
+	lastNotifySig  string
 }
 
 // Run is the geminus command. It returns the process exit code.
@@ -262,6 +275,8 @@ type request struct {
 	release       string
 	releaseOut    string
 	clawd, noClawd bool
+	notify        string
+	noNotify      bool
 }
 
 func parseArgs(args []string) request {
@@ -338,6 +353,19 @@ func parseArgs(args []string) request {
 			r.clawd = true
 		case arg == "--no-clawd":
 			r.noClawd = true
+		case arg == "--notify":
+			if r.notify != "" {
+				r.badUsage = true
+			} else {
+				v := value()
+				if _, ok := tui.ParseNotifyMode(v); !ok {
+					r.badUsage = true
+				} else {
+					r.notify = v
+				}
+			}
+		case arg == "--no-notify":
+			r.noNotify = true
 		case arg != "" && !strings.HasPrefix(arg, "-") && !r.list && r.persona == "":
 			r.persona = arg
 		case arg != "" && !strings.HasPrefix(arg, "-") && !r.list && !usedPersonaCmd && r.harness == "":
@@ -348,7 +376,7 @@ func parseArgs(args []string) request {
 	}
 	reopen := r.resume != "" || r.latest
 	if r.list && (r.harness != "" || reopen || r.cwd != "") || r.resume != "" && r.latest ||
-		reopen && (r.harness != "" || r.cwd != "") || r.clawd && r.noClawd {
+		reopen && (r.harness != "" || r.cwd != "") || r.clawd && r.noClawd || r.notify != "" && r.noNotify {
 		r.badUsage = true
 	}
 	return r
@@ -406,6 +434,7 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 	}
 	updatedFrom := consumeUpdatedFrom()
 	a.initClawd(req)
+	a.initNotify(req)
 	// On a terminal: the prompt box. Otherwise line by line.
 	stop := func() {}
 	if a.live == nil {
@@ -464,6 +493,7 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 	}
 	if a.live != nil {
 		// The box and the line under it say where things stand.
+		a.notifySyncState()
 		a.loopLive()
 		if a.restarting {
 			// The new program draws its own box. Print the notice after leaving

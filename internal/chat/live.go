@@ -104,6 +104,9 @@ type live struct {
 	// choice replaces the screen while a list is being picked, so the list
 	// is not written into the transcript.
 	choice *choice
+	// onClose, when set, returns terminal cleanup sequences (e.g. clearing
+	// OSC 9;4 progress and reporting an Orca session boundary) before exit.
+	onClose func() string
 }
 
 func newLive(out io.Writer, cols, rows int, pal palette, now func() time.Time) *live {
@@ -741,6 +744,20 @@ func (l *live) selectOption(ctx context.Context, cfg menuConfig) (string, bool) 
 	}
 }
 
+// emit writes a non-printing terminal control sequence (OSC / BEL) directly
+// to the underlying terminal under l.mu so it never interleaves with a redraw.
+func (l *live) emit(seq string) {
+	if seq == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
+	io.WriteString(l.out, seq)
+}
+
 // close leaves the alternate screen buffer and switches paste marking off.
 func (l *live) close() {
 	l.mu.Lock()
@@ -757,6 +774,10 @@ func (l *live) close() {
 		reset = cursorDefault
 		l.cursorStyled = false
 	}
-	io.WriteString(l.out, reset+cursorShow+altScreenOff+pasteModeOf)
+	cleanup := ""
+	if l.onClose != nil {
+		cleanup = l.onClose()
+	}
+	io.WriteString(l.out, cleanup+reset+cursorShow+altScreenOff+pasteModeOf)
 	l.closed = true
 }

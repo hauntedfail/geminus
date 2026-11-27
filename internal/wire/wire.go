@@ -535,6 +535,17 @@ type Defaults struct {
 	// Clawd enables Clawd mode (a visual interface mimicking Claude Code);
 	// nil means unset (default off).
 	Clawd *bool `json:"clawd,omitempty"`
+	// Notify selects how geminus relays remote agent events to the terminal
+	// (auto, ghostty, orca, osc9, osc99, bell, all, off); empty means "auto".
+	Notify string `json:"notify,omitempty"`
+}
+
+// NotifyMode returns the configured notification mode, defaulting to "auto".
+func (d Defaults) NotifyMode() string {
+	if s := strings.TrimSpace(d.Notify); s != "" {
+		return s
+	}
+	return "auto"
 }
 
 // AutoUpdateEnabled reports whether automatic updates are enabled in defaults.

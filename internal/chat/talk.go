@@ -124,6 +124,7 @@ func (a *App) say(text string) error {
 		// The line above the box says how far the prompt got, and the box
 		// takes the next one meanwhile: the answer shows when it arrives.
 		a.sentAt[stored.ID], a.rang = a.Now(), rang
+		a.notifyWorking(stored.ID, "", "")
 		return nil
 	}
 	a.Out.line(a.Out.dim(note))
@@ -271,6 +272,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 						a.Out.line(a.Out.dim("── ") + a.Out.accent("you (another geminus)") + a.Out.dim(" ──────────"))
 						a.Out.line(a.Out.accent("❯ ") + a.Out.bold(sanitize(m.Content)))
 					}
+					a.notifyWorking(m.ID, "", "")
 				} else {
 					a.Out.line(a.Out.dim("you, from another geminus: ") + sanitize(m.Content))
 				}
@@ -284,6 +286,8 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				if a.live == nil { // with the box, the line above it says so
 					a.Out.line(a.Out.dim(fmt.Sprintf("%s · %s is working…", a.cur.Name, a.harness.Name)))
 					printed = true
+				} else {
+					a.notifyWorking(m.ID, "", "")
 				}
 			case wire.StateRefused:
 				a.Out.line(a.Out.fail(fmt.Sprintf("✗ %s refused the prompt: %s", a.cur.Name, oneLine(meta.Detail))))
@@ -291,6 +295,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 					a.Out.line(a.Out.warn("! " + hint))
 				}
 				delete(a.waiting, m.ID)
+				a.notifyError(m.ID, "refused: "+oneLine(meta.Detail))
 				printed = true
 				done = done || m.ID == turn
 			case wire.StateFailed:
@@ -309,6 +314,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				continue
 			}
 			printed = true
+			a.recordTurnOutput(meta.Turn, m.Content)
 			if !a.reconcileHonchoOutput(m.Content, meta) {
 				a.show(m.Content, meta)
 			}
@@ -319,6 +325,11 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				delete(a.waiting, meta.Turn)
 				if a.pendingAsk != nil && a.pendingAsk.Turn == meta.Turn {
 					a.clearPendingAsk()
+				}
+				if meta.OK {
+					a.notifyDone(meta.Turn, "")
+				} else {
+					a.notifyError(meta.Turn, m.Content)
 				}
 				done = done || meta.Turn == turn
 				lost = lost || !meta.OK && noDir[meta.Turn]
@@ -333,6 +344,18 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				if (meta.Phase == "answered" || meta.Phase == "timeout") && a.pendingAsk != nil && a.pendingAsk.Turn == meta.Turn {
 					a.clearPendingAsk()
 				}
+				switch meta.Phase {
+				case "waiting":
+					if a.pendingAsk == nil {
+						a.notifyWaiting(meta.Turn, m.Content)
+					}
+				case "timeout":
+					a.notifyError(meta.Turn, m.Content)
+				case "answered":
+					if len(a.waiting) > 0 {
+						a.notifyWorking(meta.Turn, "", "")
+					}
+				}
 				printed = true
 			}
 		case wire.RoleAsk:
@@ -344,7 +367,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				a.showBridgeAsk(m.Content, meta)
 				if !a.answeredAsk[meta.Request] && !finishedTurns[meta.Turn] &&
 					(meta.Deadline == 0 || a.Now().Unix() < meta.Deadline) {
-					a.setPendingAsk(&pendingAsk{
+					ask := &pendingAsk{
 						Turn:     meta.Turn,
 						Request:  meta.Request,
 						Tool:     meta.Tool,
@@ -352,7 +375,9 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 						Detail:   meta.Detail,
 						Choices:  meta.Choices,
 						Deadline: meta.Deadline,
-					})
+					}
+					a.setPendingAsk(ask)
+					a.notifyBlocked(ask)
 				}
 				printed = true
 			}
@@ -376,6 +401,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 		}
 		a.Out.line(a.Out.fail(fmt.Sprintf("✗ %s: %s", a.cur.Name, msg)))
 		delete(a.waiting, id)
+		a.notifyError(id, msg)
 		printed = true
 		done = done || id == turn
 		lost = lost || noDir[id]
@@ -385,6 +411,7 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 			continue
 		}
 		delete(a.waiting, id)
+		a.notifyDone(id, "")
 		done = done || id == turn
 	}
 	if lost && a.ranIn != a.session {
@@ -404,6 +431,8 @@ func (a *App) letGo() {
 	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
 	a.resetAskState()
 	a.resetStreamTurns()
+	a.notifyResetTurnState()
+	a.notifyBoundary()
 	a.lastCwd, a.wasElsewhere = a.cwd, true
 	a.cwd = ""
 	a.Out.line(a.Out.warn("! nothing ran on " + name + ", and no conversation was started. Back in " + a.where() +
@@ -711,6 +740,7 @@ func (a *App) resume(want string) error {
 	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
 	a.resetAskState()
 	a.resetStreamTurns()
+	a.notifyResetTurnState()
 
 	// The description was verified when the conversations were listed. As a
 	// second check, the prompts were signed for the same harness and
