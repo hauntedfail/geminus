@@ -26,8 +26,8 @@ geminus is the client for that and nothing else. It is deliberately a thin wrapp
 | `internal/chat` | The terminal interface: picking persona and harness, sending, showing answers as they arrive, slash commands, and the prompt box with the status around it. |
 | `internal/wire` | The protocol: record shapes, signatures, the node card, the doorbell. |
 | `internal/honcho` | The Honcho HTTP calls geminus makes (direct or tunneled over `GE2E` v1); `honchotest` is an in-memory Honcho for tests. |
-| `internal/e2ee` | Zero-dependency RFC 8439 ChaCha20-Poly1305 + HKDF-SHA256 `GE2E` v1 HTTP envelope and loopback terminating proxy handler. |
-| `cmd/geminus-e2ee-proxy` | Loopback terminating proxy that decrypts `GE2E` v1 frames and forwards raw HTTP requests to local Honcho. |
+| `internal/e2ee` | Zero-dependency RFC 8439 ChaCha20-Poly1305 + HKDF-SHA256 `GE2E` v1 HTTP envelope, loopback terminating proxy handler, and ephemeral encrypted SSE stream hub/client (`/_stream/*`). |
+| `cmd/geminus-e2ee-proxy` | Loopback terminating proxy that decrypts `GE2E` v1 frames, forwards raw HTTP requests to local Honcho, and relays ephemeral live token/tool streams. |
 | `internal/profile` | Reads the two existing files that say who and where this computer is. |
 | `internal/version` | The version string. |
 | `internal/updates` | Updating geminus itself: versions, the signed manifest of a release, the release key, signed requests, the client, and replacing the program on disk. |

@@ -45,11 +45,12 @@ type view struct {
 	// reports that the oldest has been picked up, since is when it was
 	// sent, rang that the doorbell was rung for it, and slow after how long
 	// "not picked up" is spelled out.
-	waiting int
-	running bool
-	since   time.Time
-	rang    bool
-	slow    time.Duration
+	waiting      int
+	running      bool
+	toolActivity string
+	since        time.Time
+	rang         bool
+	slow         time.Duration
 
 	// ask is the question the box is answering instead of taking a prompt.
 	ask string
@@ -446,7 +447,11 @@ func activity(in frameInput, width int) string {
 	var plain, mark string
 	if v.running {
 		mark = pal.SGR(colorCyan, string(spinner[in.spin%len(spinner)]))
-		plain = v.target() + " is working… " + elapsed(took)
+		if v.toolActivity != "" {
+			plain = v.target() + " · " + v.toolActivity + "… " + elapsed(took)
+		} else {
+			plain = v.target() + " is working… " + elapsed(took)
+		}
 	} else {
 		mark = pal.Dim("◌")
 		plain = "in Honcho"

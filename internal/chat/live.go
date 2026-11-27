@@ -82,6 +82,7 @@ type live struct {
 	menu         *selectMenu
 	lines        []transcriptLine
 	tail         string
+	preview      string
 	curPrompt    string
 	scroll       int // wrapped rows scrolled up from bottom (0 = auto-follow)
 	viewRows     int // last viewport height, for PageUp/PageDown step size
@@ -158,8 +159,8 @@ func (l *live) wrappedCount(w int) int {
 	for _, entry := range l.lines {
 		n += len(wrapText(entry.text, w))
 	}
-	if l.tail != "" {
-		n += len(wrapText(l.tail, w))
+	if tail := l.combinedTail(); tail != "" {
+		n += len(wrapText(tail, w))
 	}
 	return n
 }
@@ -183,8 +184,8 @@ func (l *live) wrapAll(w int) []wrappedLine {
 			out = append(out, wrappedLine{text: row, prompt: entry.prompt})
 		}
 	}
-	if l.tail != "" {
-		for _, row := range wrapText(l.tail, w) {
+	if tail := l.combinedTail(); tail != "" {
+		for _, row := range wrapText(tail, w) {
 			out = append(out, wrappedLine{text: row, prompt: l.curPrompt})
 		}
 	}

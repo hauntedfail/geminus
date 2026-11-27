@@ -85,6 +85,9 @@ func (a *App) say(text string) error {
 		}
 		a.session = id
 	}
+	// Ensure live GE2E stream subscription is open before posting so early tokens
+	// arrive immediately without waiting for the first Honcho poll.
+	a.ensureStream()
 	// Publish presence before posting the prompt so a resident bridge sees us
 	// attached immediately if the turn asks a permission question.
 	a.publishPresence(a.presenceSession != a.session)
@@ -130,28 +133,38 @@ func (a *App) say(text string) error {
 // watch shows the answer to one prompt until it ends or the person stops
 // watching. Stopping does not stop the agent.
 func (a *App) watch(turn string) error {
+	a.ensureStream()
+	defer a.stopStream()
 	started := a.Now()
 	hinted := false
 	ticker := time.NewTicker(a.Watch)
 	defer ticker.Stop()
+	shouldPoll := true
 	for {
-		done, _, err := a.poll(turn)
-		if err != nil {
-			return fmt.Errorf("the prompt was sent, but its answer cannot be read right now: %w", err)
-		}
-		if done {
-			return nil
-		}
-		if !hinted && a.state[turn] == wire.StateQueued && a.Now().Sub(started) > a.SlowAfter {
-			hinted = true
-			a.Out.line(a.Out.dim(fmt.Sprintf("%s has not picked it up yet (bridge seen %s). It stays in Honcho and runs when the bridge reads it.",
-				a.cur.Name, a.ago(a.cur.Seen))))
+		if shouldPoll {
+			done, _, err := a.poll(turn)
+			if err != nil {
+				return fmt.Errorf("the prompt was sent, but its answer cannot be read right now: %w", err)
+			}
+			if done {
+				return nil
+			}
+			if !hinted && a.state[turn] == wire.StateQueued && a.Now().Sub(started) > a.SlowAfter {
+				hinted = true
+				a.Out.line(a.Out.dim(fmt.Sprintf("%s has not picked it up yet (bridge seen %s). It stays in Honcho and runs when the bridge reads it.",
+					a.cur.Name, a.ago(a.cur.Seen))))
+			}
+			shouldPoll = false
 		}
 		var lines <-chan string
 		if a.pendingAsk != nil {
 			lines = a.lines
 		}
 		select {
+		case ev := <-a.streamEvents():
+			if a.handleStreamEvent(ev) {
+				shouldPoll = true
+			}
 		case line, ok := <-lines:
 			if !ok {
 				return nil
@@ -166,8 +179,10 @@ func (a *App) watch(turn string) error {
 			} else if strings.TrimSpace(line) != "" {
 				a.Out.line(a.Out.warn("! permission question pending: type an offered choice, its number, or /ask"))
 			}
+			shouldPoll = true
 		case <-ticker.C:
 			a.publishPresence(false)
+			shouldPoll = true
 		case <-a.interrupt:
 			a.Out.line(a.Out.dim("(not watching any more; the agent keeps working and the answer appears when it arrives)"))
 			return nil
@@ -294,7 +309,9 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				continue
 			}
 			printed = true
-			a.show(m.Content, meta)
+			if !a.reconcileHonchoOutput(m.Content, meta) {
+				a.show(m.Content, meta)
+			}
 			if meta.OK && meta.Final {
 				a.ranIn = a.session
 			}
@@ -386,6 +403,7 @@ func (a *App) letGo() {
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
 	a.resetAskState()
+	a.resetStreamTurns()
 	a.lastCwd, a.wasElsewhere = a.cwd, true
 	a.cwd = ""
 	a.Out.line(a.Out.warn("! nothing ran on " + name + ", and no conversation was started. Back in " + a.where() +
@@ -692,6 +710,7 @@ func (a *App) resume(want string) error {
 	a.shown, a.waiting, a.state = map[string]bool{}, map[string]bool{}, map[string]string{}
 	a.shownTurn, a.turnPrompt = map[string]bool{}, map[string]string{}
 	a.resetAskState()
+	a.resetStreamTurns()
 
 	// The description was verified when the conversations were listed. As a
 	// second check, the prompts were signed for the same harness and

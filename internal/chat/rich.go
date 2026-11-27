@@ -232,6 +232,7 @@ func (a *App) sync() {
 		}
 		v.waiting++
 	}
+	v.toolActivity = a.streamActivity()
 	a.live.set(v)
 }
 
@@ -244,6 +245,8 @@ func (a *App) ask(question string) {
 // loopLive is the main loop on a terminal: lines from the box, and Honcho
 // read on a timer for the answers that are awaited.
 func (a *App) loopLive() {
+	defer a.stopStream()
+	a.ensureStream()
 	ticker := time.NewTicker(a.Watch)
 	defer ticker.Stop()
 	refreshed := a.Now()
@@ -272,10 +275,16 @@ func (a *App) loopLive() {
 			if a.restarting {
 				return
 			}
+			a.ensureStream()
 			a.goOnReading(line)
 			a.maybeAutoUpdate()
 			if a.restarting {
 				return
+			}
+		case ev := <-a.streamEvents():
+			if a.handleStreamEvent(ev) && a.session != "" {
+				_, _, err := a.poll("")
+				a.linked(err)
 			}
 		case v := <-a.newerFound:
 			a.newer = v

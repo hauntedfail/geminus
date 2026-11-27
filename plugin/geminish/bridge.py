@@ -29,6 +29,14 @@ import uuid
 
 from .ed25519_verify import verify_human_ed25519
 from .mailbox import MailboxError, sign, verify
+from .stream_decode import (
+    StreamPiece,
+    decode_claude_stream,
+    decode_codex_stream,
+    decode_hermes_stream,
+    probe_stream_json,
+)
+from .stream_pub import StreamPublisher
 
 log = logging.getLogger("geminish.bridge")
 
@@ -175,17 +183,24 @@ class Harness:
                 args += [part.replace("{}", value) for part in how]
         return args
 
-    def command(self, session: str, native: str | None, prompt: str, tune=()) -> tuple[list[str], str | None]:
+    def command(self, session: str, native: str | None, prompt: str, tune=(),
+                stream_json: bool = False) -> tuple[list[str], str | None]:
         """(arguments after the program, text for stdin or None). ``native`` is the program's own
         session id from an earlier turn of this conversation, if there was one. ``tune`` is what
         ``tuning`` returned; it goes before anything positional."""
         if self.id == "hermes":
+            if stream_json:
+                return ["chat", *tune, "--format", "stream-json", "--continue", session,
+                        "--create-if-missing", "--source", "tool", "--query-file", "-"], prompt
             return ["chat", *tune, "-Q", "--continue", session, "--create-if-missing", "--source", "tool",
                     "--query-file", "-"], prompt
         if self.id == "claude":
             # Claude Code takes the id of a new session from the caller, so it is derived from the
             # Honcho session and is the same on every turn without being stored anywhere.
             own = str(uuid.uuid5(uuid.NAMESPACE_URL, "geminus:" + session))
+            if stream_json:
+                return ["-p", *tune, "--output-format", "stream-json", "--verbose",
+                        "--include-partial-messages", "--resume" if native else "--session-id", own], prompt
             return ["-p", *tune, "--resume" if native else "--session-id", own], prompt
         if self.id == "codex":
             head = ["exec", "resume", native] if native else ["exec"]
@@ -729,9 +744,9 @@ def _kill_tree(proc) -> None:
 
 def run_prompt(harness: Harness, binary: str, session: str, native: str | None, prompt: str, *,
                cwd: str, emit, extra_args=(), timeout: float = DEFAULT_TIMEOUT, popen=subprocess.Popen,
-               environ: dict | None = None, tune=()) -> Result:
+               environ: dict | None = None, tune=(), on_event=None, stream_json: bool = False) -> Result:
     """Run one prompt and pass what the program prints to ``emit(text)`` as it arrives."""
-    args, stdin_text = harness.command(session, native, prompt, tune)
+    args, stdin_text = harness.command(session, native, prompt, tune, stream_json=stream_json)
     command = [binary, *args, *extra_args]
     kwargs: dict = {}
     if sys.platform == "win32":
@@ -773,9 +788,30 @@ def run_prompt(harness: Harness, binary: str, session: str, native: str | None, 
     for thread in threads:
         thread.start()
 
+    mode = harness.output
+    if stream_json and harness.id == "hermes":
+        mode = "hermes_stream"
+    elif stream_json and harness.id == "claude":
+        mode = "claude_stream"
+
+    def dispatch_line(raw_line: bytes) -> None:
+        line_str = raw_line.decode("utf-8", "replace")
+        if mode == "hermes_stream":
+            pieces = decode_hermes_stream(line_str, state)
+        elif mode == "claude_stream":
+            pieces = decode_claude_stream(line_str, state)
+        else:
+            pieces = decode_codex_stream(line_str, state)
+        for piece in pieces:
+            if piece.kind == "delta":
+                if piece.text:
+                    emit(piece.text)
+            elif on_event is not None:
+                on_event(piece)
+
     state: dict = {}
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-    pending = b""       # codex: an unfinished line; grok: everything printed so far
+    pending = b""       # jsonl modes: an unfinished line; grok: everything printed so far
     deadline = time.monotonic() + timeout
     timed_out = False
     while True:
@@ -789,33 +825,29 @@ def run_prompt(harness: Harness, binary: str, session: str, native: str | None, 
             continue
         if data is None:
             break
-        if harness.output == "text":
+        if mode == "text":
             # A multi-byte character may be split across two reads; the decoder holds the start.
             text = decoder.decode(data)
             if text:
                 emit(text)
-        elif harness.output == "codex":
+        elif mode in ("codex", "hermes_stream", "claude_stream"):
             pending += data
             *lines, pending = pending.split(b"\n")
             for line in lines:
-                text = _decode_codex(line.decode("utf-8", "replace"), state)
-                if text:
-                    emit(text)
+                dispatch_line(line)
         else:
             pending += data
     for thread in threads:
         thread.join(5.0)
     code = proc.wait()
 
-    if harness.output == "text":
+    if mode == "text":
         text = decoder.decode(b"", final=True)
         if text:
             emit(text)
-    elif harness.output == "codex" and pending:
-        text = _decode_codex(pending.decode("utf-8", "replace"), state)
-        if text:
-            emit(text)
-    elif harness.output == "grok" and pending:
+    elif mode in ("codex", "hermes_stream", "claude_stream") and pending:
+        dispatch_line(pending)
+    elif mode == "grok" and pending:
         text = _decode_grok(pending.decode("utf-8", "replace"), state)
         if text:
             emit(text)
@@ -1103,21 +1135,35 @@ class Bridge:
                 post(piece, final=False)
             flushed_at = time.monotonic()
 
+        e2ee_url = str(getattr(getattr(self.api, "_mailbox", None), "_e2ee_url", "") or "").strip()
+        publisher: StreamPublisher | None = None
+
         def emit(text: str) -> None:
             buffer.append(text)
+            if publisher is not None and not publisher.disabled:
+                publisher.emit_delta(text)
+                return
             flush()
+
+        def on_event(piece: StreamPiece) -> None:
+            if publisher is None or publisher.disabled:
+                return
+            if piece.kind == "tool_use":
+                publisher.emit_tool_use(piece.tool, piece.detail)
+            elif piece.kind == "tool_result":
+                publisher.emit_tool_result(piece.tool, piece.detail, ok=piece.ok)
 
         if harness is None or not binary:
             name = harness.name if harness else str(info.get("harness"))
-            self._state(sid, message, "failed", f"{name} is not installed on {self.cfg.me}")
             post(f"{name} is not installed on {self.cfg.me}.", final=True, ok=False)
+            self._state(sid, message, "failed", f"{name} is not installed on {self.cfg.me}")
             return
         asked_cwd = str(info.get("cwd") or "")
         cwd = self.directory(asked_cwd)
         if not os.path.isdir(cwd):
             named = cwd if cwd == asked_cwd else f"{asked_cwd} ({cwd})"
-            self._state(sid, message, "failed", "the working directory does not exist")
             post(f"The working directory {named} does not exist on {self.cfg.me}.", final=True, ok=False)
+            self._state(sid, message, "failed", "the working directory does not exist")
             return
 
         # The owner's model and effort for this prompt; _runnable checked their form and signature.
@@ -1126,8 +1172,8 @@ class Bridge:
             if value and name not in harness.options:
                 # Running it anyway would be a different run from the one the owner asked for.
                 why = f"{harness.name} has no {name} setting that geminus can pass"
-                self._state(sid, message, "failed", why)
                 post(f"{why}. Clear it with /{name} default and send the prompt again.", final=True, ok=False)
+                self._state(sid, message, "failed", why)
                 return
 
         # What the conversation's earlier prompts carried, for a program that is told its settings
@@ -1148,17 +1194,28 @@ class Bridge:
         except CannotGoBack as exc:
             why = (f"{harness.name} cannot go back to its own {exc} inside a conversation that has had one set; "
                    f"set a {exc} again or start a new conversation")
-            self._state(sid, message, "failed", why)
             post(why + ".", final=True, ok=False)
+            self._state(sid, message, "failed", why)
             return
 
         self._state(sid, message, "running")
+        if e2ee_url:
+            publisher = StreamPublisher(e2ee_url, self.cfg.secret, sid, turn, clock=self._clock)
         log.info("geminus: running prompt %s of %s on %s", turn, sid, harness.id)
         extra = tuple(str(a) for a in self.extra_args.get(harness.id) or ())
         tune = tuple(harness.tuning(asked["model"], asked["effort"]))
         native = self._native(sid, messages)
 
-        def run(known, text=message["content"], sink=emit):
+        use_stream_json = (self._run is run_prompt) and probe_stream_json(harness.id, binary, env=shell_env())
+
+        def run(known, text=message["content"], sink=emit, *, allow_stream: bool = True):
+            if self._run is run_prompt:
+                return self._run(
+                    harness, binary, sid, known, text, cwd=cwd, emit=sink, extra_args=extra,
+                    timeout=self.timeout, tune=tune,
+                    on_event=on_event if allow_stream else None,
+                    stream_json=bool(use_stream_json and allow_stream),
+                )
             return self._run(harness, binary, sid, known, text, cwd=cwd, emit=sink, extra_args=extra,
                              timeout=self.timeout, tune=tune)
 
@@ -1167,7 +1224,7 @@ class Bridge:
             for name, line in preludes:
                 # What the program says to a setting is shown when the owner has just changed it.
                 changed = asked[name] != (last.get(name) or "")
-                took = run(native, line, emit if changed else (lambda _text: None))
+                took = run(native, line, emit if changed else (lambda _text: None), allow_stream=False)
                 if not took.ok:
                     result = Result(False, took.native, f"{harness.name} did not take the {name} setting: {took.detail}")
                     break
@@ -1180,6 +1237,8 @@ class Bridge:
         except Exception as exc:
             log.exception("geminus: unexpected error running prompt %s of %s", turn, sid)
             result = Result(False, native or "", f"{harness.name} runner failed: {exc.__class__.__name__}: {exc}")
+        if publisher is not None:
+            publisher.close(ok=bool(result and result.ok))
         if result.native:
             native_box.append(result.native)
         rest = "".join(buffer)

@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "intent": "implement",
+  "checkout_root": "/home/hermes/workspace/geminus",
+  "outcome": "Implement native-agent-grade real-time token and tool progress streaming in geminus and geminish over an ephemeral GE2E v1 encrypted stream hub in geminus-e2ee-proxy, using stream-json harness modes (Hermes, Claude Code, Codex) and live incremental TUI rendering while keeping Honcho clean with final authoritative signed outputs.",
+  "non_goals": [
+    "Adding third-party Go modules or Python packages",
+    "Opening new network ports or adding new Cloudflare Tunnel routes beyond the existing e2ee_url endpoint",
+    "Storing raw per-token stream deltas in Honcho",
+    "Deploying or restarting live BTCVPS production services without explicit owner A3 approval"
+  ],
+  "constraints": [
+    "Zero third-party dependencies in Go (go.mod unchanged) and Python (stdlib only)",
+    "Keep all newly created source files <= 600 lines and keep internal/chat/chat.go <= 600 lines (Birkin max_file_lines invariant)",
+    "Respect Birkin 4-layer architecture DAG in .birkin/config.yaml and pass Lean 4 architecture proof (birkin prove)",
+    "Every streamed event must be AEAD-encrypted on the wire and HMAC-signed by the bridge",
+    "Preserve full backward compatibility when e2ee_url is unset or when talking to older proxies/harnesses"
+  ],
+  "evidence": [
+    "Branch feat/e2ee-streaming created cleanly from feat/app-layer-e2ee (cf2f8dc)",
+    "birkin prove PASS (architecture DAG acyclic, 2 theorems, 0 findings)",
+    "Hermes CLI natively supports --format stream-json with --query-file - (verified in hermes_cli/stream_json.py and gateway_chat.py)",
+    "internal/chat/live.go already separates committed l.lines from redrawable l.tail, enabling flicker-free partial line streaming"
+  ],
+  "questions": [],
+  "tasks": [
+    {
+      "id": "stream-001",
+      "title": "Go GE2E v1 stream chunk crypto, in-memory ephemeral StreamHub, proxy handler, and SSE client",
+      "context": "Add DirStreamChunk (dir=3) AEAD framing and StreamEvent HMAC signing/verification in internal/e2ee/stream_frame.go, bounded in-memory pub/sub hub in internal/e2ee/stream_hub.go, SSE subscribe client in internal/e2ee/stream_client.go, and intercept /_stream/publish and /_stream/subscribe in internal/e2ee/proxy.go (clearing write deadline via ResponseController for SSE). Add thorough unit and race tests in internal/e2ee/stream_test.go.",
+      "expected_behavior": "geminus-e2ee-proxy accepts encrypted GE2E v1 /_stream/publish batches (validating event HMAC and timestamp) and streams encrypted DirStreamChunk SSE frames to /_stream/subscribe clients with sub-100ms latency, replay from cursor, keepalives, and zero leakage to upstream Honcho.",
+      "status": "done",
+      "depends_on": [],
+      "allowed_paths": [
+        "internal/e2ee/",
+        "cmd/geminus-e2ee-proxy/"
+      ],
+      "forbidden_paths": [
+        "internal/chat/",
+        "internal/honcho/",
+        "internal/wire/",
+        "internal/profile/",
+        "internal/updates/",
+        "plugin/",
+        "test/"
+      ],
+      "acceptance": [
+        "DirStreamChunk AEAD framing rejects tampered bytes, wrong ts/salt, or reordered/replayed chunk_seq",
+        "StreamHub validates bridge HMAC signatures, replays backlog after cursor, and bounds memory",
+        "Proxy serves SSE encrypted streams on the existing GE2E POST path without forwarding /_stream/* to Honcho",
+        "All new files in internal/e2ee/ are <= 600 lines and go test -race ./internal/e2ee/... passes"
+      ],
+      "verification": [
+        {
+          "method": "go test -v -race ./internal/e2ee/... ./cmd/geminus-e2ee-proxy/...",
+          "expected": "All tests PASS with race detector"
+        },
+        {
+          "method": "GIT_CONFIG_GLOBAL=/dev/null birkin check --files internal/e2ee/stream_frame.go internal/e2ee/stream_hub.go internal/e2ee/stream_client.go internal/e2ee/proxy.go internal/e2ee/stream_test.go",
+          "expected": "status=PASS with 0 errors"
+        }
+      ],
+      "stop_conditions": [
+        "Data race under go test -race",
+        "Birkin architecture DAG or file-size violation"
+      ],
+      "owner": "implementation",
+      "completion_evidence": [
+        "go test -v -race ./internal/e2ee/... ./cmd/geminus-e2ee-proxy/... PASS (9/9)",
+        "birkin check --files (5 files) PASS (0 findings, receipt 655b8dcb94e321be)"
+      ]
+    },
+    {
+      "id": "stream-002",
+      "title": "Python stream-json decoders (Hermes, Claude, Codex) and micro-batching GE2E StreamPublisher",
+      "context": "Create stdlib-only plugin/geminish/stream_decode.py to decode Hermes (--format stream-json), Claude Code (--output-format stream-json --verbose --include-partial-messages), and Codex (exec --json) JSONL events into text deltas and tool_use/tool_result progress without duplication. Create plugin/geminish/stream_pub.py implementing Go-compatible HMAC signing and async micro-batching GE2E v1 /_stream/publish delivery. Wire capability-probed streaming and StreamPublisher cleanly into plugin/geminish/bridge.py so active E2EE streams emit real-time deltas and keep Honcho clean with final signed output. Add unit and live Go proxy interop tests in plugin/geminish/tests/test_streaming.py.",
+      "expected_behavior": "geminish streams live token deltas and tool events over GE2E v1 when e2ee_url is configured and harness supports stream-json, while falling back cleanly to existing behavior on unsupported harnesses or non-E2EE hosts.",
+      "status": "done",
+      "depends_on": [
+        "stream-001"
+      ],
+      "allowed_paths": [
+        "plugin/geminish/"
+      ],
+      "forbidden_paths": [
+        "internal/",
+        "cmd/",
+        "test/",
+        "docs/"
+      ],
+      "acceptance": [
+        "Hermes, Claude Code, and Codex stream-json decoders handle deltas, tool_use, tool_result, and final fallback without duplicating text",
+        "Python sign_stream_event matches Go e2ee.SignStreamEvent byte-for-byte and interops live with Go geminus-e2ee-proxy",
+        "Existing fake-hermes / non-streaming bridge tests continue passing without regressions",
+        "New Python modules are stdlib-only and <= 600 lines"
+      ],
+      "verification": [
+        {
+          "method": "python3 -m unittest discover -s plugin/geminish/tests -v",
+          "expected": "All Python unit and live Go proxy interop tests PASS"
+        },
+        {
+          "method": "GIT_CONFIG_GLOBAL=/dev/null birkin check --files plugin/geminish/stream_decode.py plugin/geminish/stream_pub.py plugin/geminish/tests/test_streaming.py",
+          "expected": "status=PASS with 0 errors"
+        }
+      ],
+      "stop_conditions": [
+        "Any third-party Python dependency required",
+        "HMAC or GE2E wire divergence between Python and Go"
+      ],
+      "owner": "implementation",
+      "completion_evidence": [
+        "python3 -m unittest discover -s plugin/geminish/tests -v PASS (25/25 incl. live Go proxy interop)",
+        "birkin check --files (3 new Python files) PASS (0 findings, receipt e5a730d3acbc1852)"
+      ]
+    },
+    {
+      "id": "stream-003",
+      "title": "Go geminus client live stream subscription, incremental preview tail rendering, tool status, and Honcho reconciliation",
+      "context": "Create internal/chat/stream.go and internal/chat/live_stream.go to subscribe to the ephemeral GE2E stream when e2ee_url is configured, render token deltas immediately (committing completed lines via Markdown while updating the unfinished line in-place via live preview tail), surface live tool_use/tool_result activity in normal and Clawd modes, and reconcile cleanly against Honcho's authoritative final RoleOutput with zero duplicated text. Add minimal hooks in chat.go/rich.go/talk.go/live.go/frame.go while keeping chat.go <= 600 lines. Add comprehensive tests in internal/chat/stream_test.go.",
+      "expected_behavior": "As remote agents emit tokens and tool calls, geminus updates the terminal immediately token-by-token without raw markdown corruption or duplicate output when Honcho finalizes the turn, and gracefully degrades if streaming is unavailable.",
+      "status": "done",
+      "depends_on": [
+        "stream-001"
+      ],
+      "allowed_paths": [
+        "internal/chat/"
+      ],
+      "forbidden_paths": [
+        "internal/e2ee/",
+        "internal/honcho/",
+        "internal/wire/",
+        "cmd/",
+        "plugin/",
+        "test/"
+      ],
+      "acceptance": [
+        "Partial lines without trailing newline appear immediately in live mode and commit formatted Markdown on newline",
+        "Tool progress displays in both normal and Clawd modes",
+        "Honcho authoritative final RoleOutput reconciles cleanly with zero duplicate text",
+        "All existing internal/chat tests and new internal/chat/stream_test.go pass with -race; internal/chat/chat.go stays <= 600 lines"
+      ],
+      "verification": [
+        {
+          "method": "go test -v -race ./internal/chat/...",
+          "expected": "All internal/chat tests PASS with race detector"
+        },
+        {
+          "method": "GIT_CONFIG_GLOBAL=/dev/null birkin check --files internal/chat/stream.go internal/chat/live_stream.go internal/chat/stream_test.go internal/chat/chat.go",
+          "expected": "status=PASS with 0 errors"
+        }
+      ],
+      "stop_conditions": [
+        "Duplicate reply text on turn completion",
+        "internal/chat/chat.go exceeding 600 lines"
+      ],
+      "owner": "implementation",
+      "completion_evidence": [
+        "go test -v -race ./internal/chat -run TestLivePreviewTail|TestStreamToolProgress|TestStreamSubscription PASS (3/3)",
+        "go test ./internal/chat/... PASS",
+        "birkin check --files (4 files incl. chat.go <= 600 lines) PASS (0 findings, receipt 152569f15d73dc2c)"
+      ]
+    },
+    {
+      "id": "stream-004",
+      "title": "End-to-end real-time streaming test, protocol/architecture docs, and full Birkin verification",
+      "context": "Add test/streaming_test.go exercising the built geminus binary, real e2ee.Proxy with StreamHub, real Python geminish bridge, a delayed stream-json fake hermes binary, and honchotest to prove real-time pre-completion token delivery, 100% encrypted wire traffic, clean single-final Honcho storage, and zero duplicate output. Update docs/protocol.md and docs/architecture.md (staying <= 200 lines). Run full Birkin check, Lean prove, Python tests, and receipt verification.",
+      "expected_behavior": "Full E2E streaming works across Go geminus <-> Go proxy <-> Python bridge with verified pre-completion delivery, clean Honcho storage, updated docs, and green Birkin check + prove + receipt gates.",
+      "status": "done",
+      "depends_on": [
+        "stream-002",
+        "stream-003"
+      ],
+      "allowed_paths": [
+        "test/",
+        "docs/",
+        "plans/streaming/"
+      ],
+      "forbidden_paths": [
+        "internal/",
+        "cmd/",
+        "plugin/"
+      ],
+      "acceptance": [
+        "test/streaming_test.go proves early tokens arrive before agent exit, wire has zero plaintext leaks, Honcho stores final output only, and no text is duplicated",
+        "docs/architecture.md stays <= 200 lines and docs/protocol.md documents DirStreamChunk and /_stream/* endpoints",
+        "birkin check --run-verify, birkin prove, python unittest, and birkin receipt verify all PASS"
+      ],
+      "verification": [
+        {
+          "method": "go test -v ./test -run TestGeminusRealTimeStreamingOverE2EE",
+          "expected": "E2E streaming test PASS"
+        },
+        {
+          "method": "GIT_CONFIG_GLOBAL=/dev/null birkin check --run-verify && GIT_CONFIG_GLOBAL=/dev/null birkin prove && python3 -m unittest discover -s plugin/geminish/tests -v",
+          "expected": "All Go, Python, Birkin, and Lean proof gates PASS"
+        }
+      ],
+      "stop_conditions": [
+        "E2E streaming test fails or tokens only appear after agent exits",
+        "Any Birkin gate or Lean proof fails"
+      ],
+      "owner": "implementation",
+      "completion_evidence": [
+        "go test -v ./test -run TestGeminusRealTimeStreamingOverE2EE PASS (5.03s) + TestGeminusAndBridgeCommunicateEndToEndOverE2EE PASS (3.72s)",
+        "docs/protocol.md and docs/architecture.md (126 lines <= 200) updated"
+      ]
+    }
+  ]
+}

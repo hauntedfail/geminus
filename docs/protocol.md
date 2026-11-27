@@ -269,3 +269,15 @@ body[38:]     = ChaCha20-Poly1305(key, nonce, plaintext_json, aad=header[0:38])
 - Inner JSON: requests carry `m` (method), `p` (path), optional `q` (query), `h` (headers), `b` (base64 body), and `pad`; responses carry `s` (status), `h`, `b`, and `pad`. `pad` rounds inner JSON length up to coarse buckets (powers of two 512B..32KiB, 4KiB steps above 32KiB).
 - Proxy defenses: rejects `|now - ts| > 300s`, rejects replayed `salt` values within a 600s window, allows only `/v3/...` and `/health` without traversal, strips hop-by-hop headers, and forwards the decrypted raw HTTP request to loopback Honcho. Clients verify that the decrypted response's `(ts, salt)` match the originating request.
 
+### Ephemeral real-time streaming (`GE2E` v1)
+
+When `e2ee_url` is configured, `geminus-e2ee-proxy` also serves an in-memory, ephemeral pub/sub broker on the same `POST <e2ee_url>` endpoint so bridges can stream token deltas and tool progress in real time without storing intermediate chunks in Honcho:
+
+- `POST /_stream/publish` (inner `DirRequest = 1`): accepts `{"events": [StreamEvent, ...]}`. Every `StreamEvent` carries a bridge HMAC-SHA256 signature (`HMAC-SHA256(secret, SHA256(text) || SHA256(label) || decimal(ts))`, `label = geminus-stream:<session>:<turn>:<seq>:<kind>:<H(tool)>:<H(detail)>:<int(ok)>`), which the proxy and client both verify.
+- `GET /_stream/subscribe?session=<sid>&after=<id>` (inner `DirRequest = 1`): returns `Content-Type: text/event-stream` with periodic `: ping` keepalives and encrypted `data: <base64(chunk)>` lines using `DirStreamChunk = 3`:
+  - `header[0:38]` = standard GE2E header (`dir = 0x03`, `ts` and `salt` copied from the subscribe request)
+  - `header[38:46]` = `uint64` big-endian monotonic `chunk_seq` (starting at 1)
+  - Key/nonce derived via HKDF-SHA256 (`"geminus-e2ee-v1:stream"` / `"geminus-e2ee-v1:stream-nonce"` with `chunk_seq` XORed into the last 8 bytes of the 12-byte nonce); AAD = `header[0:46]`.
+- `/_stream/*` traffic is strictly ephemeral (bounded in-memory ring buffer, never written to Honcho or disk). At turn end, the bridge still writes the authoritative signed `output` (`final=true`) message to Honcho, and `geminus` reconciles against already-streamed tokens without duplicating text. Older proxies or hosts without `e2ee_url` fall back seamlessly to Honcho polling.
+
+

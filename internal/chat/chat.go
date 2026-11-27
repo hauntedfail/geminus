@@ -178,15 +178,14 @@ type App struct {
 	shownTurn  map[string]bool
 	turnPrompt map[string]string
 	// md buffers an agent's reply while its markdown is still split across
-	// the pieces the bridge posts.
-	md   map[string]*mdState
-	rang bool
-	link string
+	// the pieces the bridge posts; stream holds optional GE2E live streaming.
+	md     map[string]*mdState
+	stream *streamRunner
+	rang   bool
+	link   string
 
-	// Updates is the server geminus releases come from, Exe this program's
-	// own file, and Restart what starts it again in this process's place
-	// (it returns the exit code to leave with where it has to wait). Without
-	// Updates nothing about updates is done or shown.
+	// Updates is the server geminus releases come from; Exe is this program's
+	// own file; Restart replaces it in-process. Without Updates nothing runs.
 	Updates *updates.Client
 	Exe     string
 	Restart func(exe string, args []string) (int, error)
