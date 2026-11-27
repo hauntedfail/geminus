@@ -54,36 +54,40 @@ func (s Source) Build(ctx context.Context, version, dir string) error {
 	if err := s.valid(); err != nil {
 		return err
 	}
-	// The source goes beside the programs, so that whoever removes dir after
-	// a build that was cut off removes it too. It is gone when Build returns.
-	src, err := os.MkdirTemp(dir, ".source-*")
+	// Keep temporary files with the output so removing an interrupted build
+	// also removes its checkout and module cache. Go needs an absolute cache path.
+	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
+	work, err := os.MkdirTemp(dir, ".build-*")
+	if err != nil {
+		return err
+	}
+	src := filepath.Join(work, "source")
+	modcache := filepath.Join(work, "modcache")
+	if err := os.Mkdir(modcache, 0o700); err != nil {
+		return errors.Join(err, os.RemoveAll(work))
+	}
 	if err := s.checkout(ctx, version, src); err != nil {
-		return errors.Join(err, os.RemoveAll(src))
+		return errors.Join(err, os.RemoveAll(work))
 	}
-	if err := s.compile(ctx, version, src, dir); err != nil {
-		return errors.Join(err, os.RemoveAll(src))
-	}
-	return os.RemoveAll(src)
+	err = s.compile(ctx, version, src, dir, modcache)
+	return errors.Join(err, os.RemoveAll(work))
 }
 
 // compile builds every target from the source in src into dir.
-func (s Source) compile(ctx context.Context, version, src, dir string) error {
+func (s Source) compile(ctx context.Context, version, src, dir, modcache string) error {
 	ldflags := fmt.Sprintf("-s -w -X %s/internal/version.Version=%s -X %s/internal/updates.releaseKey=%s", module, version, module, s.Key)
 	for _, target := range s.Targets {
 		goos, goarch, _ := strings.Cut(target, "-")
 		// The source decides nothing about how it is built: no toolchain it
 		// names is fetched, and no module comes from the network.
-		// Nor does a setting left on this computer: no go env file, no
-		// program standing in for the build cache.
+		// Use a fresh module cache because even offline builds can reuse a
+		// cached pseudo-version for a commit that has since been tagged.
 		env := []string{"GOOS=" + goos, "GOARCH=" + goarch, "CGO_ENABLED=0", "GOTOOLCHAIN=local",
-			"GOFLAGS=-mod=readonly", "GOPROXY=off", "GOWORK=off", "GOENV=off", "GOCACHEPROG="}
-		out, err := filepath.Abs(filepath.Join(dir, target))
-		if err != nil {
-			return err
-		}
+			"GOFLAGS=-mod=readonly", "GOPROXY=off", "GOMODCACHE=" + modcache, "GOWORK=off", "GOENV=off", "GOCACHEPROG="}
+		out := filepath.Join(dir, target)
 		if err := s.run(ctx, src, env, s.Go, "build", "-trimpath", "-ldflags", ldflags, "-o", out, "./cmd/geminus"); err != nil {
 			return fmt.Errorf("build %s: %w", target, err)
 		}

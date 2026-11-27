@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"debug/buildinfo"
 	"errors"
 	"os"
 	"os/exec"
@@ -131,6 +132,43 @@ func TestTheTagOfAVersionIsBuiltWithItsVersionAndTheReleaseKey(t *testing.T) {
 	}
 	if got := run(t, filepath.Join(out, host)); got != "later 0.6.0 "+keyText {
 		t.Errorf("the program of the later tag says %q", got)
+	}
+}
+
+func TestTaggedBuildIgnoresCachedPseudoVersion(t *testing.T) {
+	// The caller built this commit before it was tagged. Its module cache
+	// still maps the revision to that pre-release pseudo-version.
+	t.Setenv("GIT_COMMITTER_DATE", "2025-01-02T03:04:05Z")
+	s := newSource(t)
+	s.git("tag", "v0.5.0")
+	out, err := exec.Command("git", "-C", s.dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.TrimSpace(string(out))
+	pseudo := "v0.0.0-20250102030405-" + hash[:12]
+	cache := t.TempDir()
+	versions := filepath.Join(cache, "cache", "download", module, "@v")
+	if err := os.MkdirAll(versions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	info := `{"Version":"` + pseudo + `","Time":"2025-01-02T03:04:05Z","Origin":{"VCS":"git","Hash":"` + hash + `"}}`
+	if err := os.WriteFile(filepath.Join(versions, pseudo+".info"), []byte(info), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOMODCACHE", cache)
+
+	dir := t.TempDir()
+	builder := s.builder()
+	if err := builder.Build(ctx, "0.5.0", dir); err != nil {
+		t.Fatal(err)
+	}
+	built, err := buildinfo.ReadFile(filepath.Join(dir, builder.Targets[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := built.Main.Version; got != "v0.5.0" {
+		t.Errorf("built module version = %q, want v0.5.0", got)
 	}
 }
 
