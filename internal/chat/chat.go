@@ -225,6 +225,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errw io.Writer) 
 			return 1
 		}
 		client, err := honcho.New(prof.BaseURL, prof.Workspace, prof.APIKey)
+		if err == nil && prof.E2EEURL != "" {
+			client, err = client.WithE2EE(prof.E2EEURL, prof.Secret)
+		}
 		if err != nil {
 			fmt.Fprintln(errw, "geminus:", sanitize(err.Error()))
 			return 1

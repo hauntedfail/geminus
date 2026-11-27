@@ -445,7 +445,8 @@ def deliver(cfg: Config, store: Store, wakes: list[Wake], runner=run_turn, *,
         if wake.delegated and mailbox is not None:
             def _run_delegate(w=wake, mid=msg_id) -> tuple[bool, str]:
                 w_store = Store(cfg.store_path) if background else store
-                w_mailbox = (Mailbox(cfg.base_url, cfg.api_key, cfg.workspace, cfg.session, timeout=cfg.http_timeout)
+                w_mailbox = (Mailbox(cfg.base_url, cfg.api_key, cfg.workspace, cfg.session,
+                                     timeout=cfg.http_timeout, e2ee_url=cfg.e2ee_url, e2ee_secret=cfg.secret)
                              if background else mailbox)
                 try:
                     ok, detail = run_delegated_turn(cfg, w_store, w_mailbox, w)

@@ -1,0 +1,18 @@
+# systemd user unit for the geminus-e2ee-proxy loopback terminator.
+# Terminates GE2E v1 app-layer encrypted tunnels behind cloudflared and forwards
+# raw HTTP requests to local Honcho (127.0.0.1:8000).
+#   cp deploy/geminus-e2ee-proxy.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now geminus-e2ee-proxy.service
+[Unit]
+Description=geminus app-layer E2EE (GE2E v1) terminating proxy for Honcho
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/geminus-e2ee-proxy -listen 127.0.0.1:8653 -path /geminise/e2ee -upstream http://127.0.0.1:8000
+Environment=HERMES_HOME=%h/.hermes
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

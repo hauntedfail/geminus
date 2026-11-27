@@ -49,6 +49,8 @@ class Config:
     human_pubkeys: dict[str, tuple[bytes, ...]] = field(default_factory=dict)
     # Settings of automatic OTA updates (see ota.py): enabled, base_url, interval_seconds, update_geminus.
     ota: object = None
+    # Optional GE2E v1 terminating proxy URL for encrypted Honcho transport.
+    e2ee_url: str = ""
 
     @property
     def store_path(self) -> Path:
@@ -154,6 +156,8 @@ def load(path: Path | None = None) -> Config:
     if not workspace:
         raise ConfigError("Honcho workspace is not set")
 
+    geminus_cfg = _geminus(raw.get("geminus"))
+    e2ee_url = _e2ee_url(raw.get("e2ee_url"), geminus_cfg.get("e2ee_url") if isinstance(geminus_cfg, dict) else None)
     state_dir = Path(raw.get("state_dir") or home / "geminise")
     return Config(
         me=me,
@@ -173,10 +177,27 @@ def load(path: Path | None = None) -> Config:
         max_hops=min(HOP_CEILING, max(0, int(raw.get("max_hops", 1)))),
         http_timeout=float(raw.get("http_timeout") or 20),
         push=raw.get("push", True) is not False,
-        geminus=_geminus(raw.get("geminus")),
+        geminus=geminus_cfg,
         human_pubkeys=_human_pubkeys(raw.get("human_pubkeys")),
         ota=_ota(raw.get("ota")),
+        e2ee_url=e2ee_url,
     )
+
+
+def _e2ee_url(top_level: object, nested: object) -> str:
+    chosen = str(top_level or "").strip()
+    if nested is not None and str(nested).strip():
+        chosen = str(nested).strip()
+    env_val = str(os.environ.get("GEMINUS_E2EE_URL") or "").strip()
+    if env_val:
+        chosen = env_val
+    if not chosen:
+        return ""
+    parsed = urllib.parse.urlsplit(chosen)
+    loopback = parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost", "::1")
+    if not parsed.hostname or parsed.username or not (parsed.scheme == "https" or loopback):
+        raise ConfigError("e2ee_url must be https, or http on loopback")
+    return chosen
 
 
 def _ota(value: object) -> object:

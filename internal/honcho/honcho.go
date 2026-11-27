@@ -11,7 +11,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+
+	"github.com/hauntedfail/geminus/internal/e2ee"
 )
 
 const (
@@ -25,9 +28,12 @@ var ErrNotFound = errors.New("not found in Honcho")
 
 // Client talks to one Honcho workspace.
 type Client struct {
-	base *url.URL
-	key  string
-	http *http.Client
+	base       *url.URL
+	key        string
+	http       *http.Client
+	e2eeURL    string
+	e2eeSecret []byte
+	now        func() time.Time
 }
 
 // Peer is a participant of the workspace.
@@ -71,39 +77,61 @@ func New(baseURL, workspace, apiKey string) (*Client, error) {
 // HTTP returns the client's HTTP client, for the doorbell.
 func (c *Client) HTTP() *http.Client { return c.http }
 
+// WithE2EE enables app-layer E2EE tunneling for all Honcho API calls through
+// the GE2E v1 terminating proxy at e2eeURL. Only https or loopback http URLs
+// are accepted.
+func (c *Client) WithE2EE(e2eeURL string, secret []byte) (*Client, error) {
+	u, err := url.Parse(strings.TrimSpace(e2eeURL))
+	if err != nil || u.Host == "" || u.User != nil {
+		return nil, fmt.Errorf("invalid E2EE proxy address %q", e2eeURL)
+	}
+	host := u.Hostname()
+	loopback := u.Scheme == "http" && (host == "127.0.0.1" || host == "localhost" || host == "::1")
+	if u.Scheme != "https" && !loopback {
+		return nil, fmt.Errorf("E2EE proxy address must be https or loopback http: %q", e2eeURL)
+	}
+	if len(secret) < e2ee.MinSecretBytes {
+		return nil, e2ee.ErrInvalidSecret
+	}
+	c.e2eeURL = u.String()
+	c.e2eeSecret = append([]byte(nil), secret...)
+	if c.now == nil {
+		c.now = time.Now
+	}
+	return c, nil
+}
+
 func (c *Client) call(ctx context.Context, method string, path []string, query url.Values, body, out any) error {
 	u := c.base.JoinPath(path...)
 	u.RawQuery = query.Encode()
-	var payload io.Reader
+	var rawBody []byte
 	if body != nil {
-		data, err := json.Marshal(body)
+		var err error
+		rawBody, err = json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		payload = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), payload)
+	var status int
+	var data []byte
+	var err error
+	if c.e2eeURL != "" {
+		reqPath := u.Path
+		if !strings.HasPrefix(reqPath, "/") {
+			reqPath = "/" + reqPath
+		}
+		status, data, err = c.doE2EE(ctx, method, reqPath, u.RawQuery, rawBody)
+	} else {
+		status, data, err = c.doDirect(ctx, method, u.String(), rawBody)
+	}
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.key)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "geminus")
-	res, err := c.http.Do(req)
-	if err != nil {
-		// The error names the address but never the token.
-		return fmt.Errorf("Honcho is not reachable: %w", err)
-	}
-	defer res.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
-	if err != nil {
-		return fmt.Errorf("Honcho's answer was cut off: %w", err)
-	}
 	switch {
-	case res.StatusCode == http.StatusNotFound:
+	case status == http.StatusNotFound:
 		return ErrNotFound
-	case res.StatusCode < 200 || res.StatusCode > 299:
-		return fmt.Errorf("Honcho answered HTTP %d", res.StatusCode)
+	case status < 200 || status > 299:
+		return fmt.Errorf("Honcho answered HTTP %d", status)
 	}
 	if out == nil || len(data) == 0 {
 		return nil
@@ -112,6 +140,77 @@ func (c *Client) call(ctx context.Context, method string, path []string, query u
 		return fmt.Errorf("unreadable answer from Honcho: %w", err)
 	}
 	return nil
+}
+
+func (c *Client) doDirect(ctx context.Context, method, rawURL string, rawBody []byte) (int, []byte, error) {
+	var payload io.Reader
+	if len(rawBody) > 0 {
+		payload = bytes.NewReader(rawBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, payload)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "geminus")
+	res, err := c.http.Do(req)
+	if err != nil {
+		// The error names the address but never the token.
+		return 0, nil, fmt.Errorf("Honcho is not reachable: %w", err)
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
+	if err != nil {
+		return 0, nil, fmt.Errorf("Honcho's answer was cut off: %w", err)
+	}
+	return res.StatusCode, data, nil
+}
+
+func (c *Client) doE2EE(ctx context.Context, method, reqPath, rawQuery string, rawBody []byte) (int, []byte, error) {
+	inner := e2ee.Request{
+		Method: method,
+		Path:   reqPath,
+		Query:  rawQuery,
+		Headers: map[string]string{
+			"Authorization": "Bearer " + c.key,
+			"Content-Type":  "application/json",
+			"User-Agent":    "geminus",
+		},
+	}
+	inner.SetBody(rawBody)
+	ts := c.now().Unix()
+	frame, salt, err := e2ee.SealRequest(c.e2eeSecret, inner, ts, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("Honcho E2EE seal failed: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.e2eeURL, bytes.NewReader(frame))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", e2ee.ContentType)
+	req.Header.Set("User-Agent", "geminus")
+	res, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("Honcho E2EE proxy is not reachable: %w", err)
+	}
+	defer res.Body.Close()
+	outFrame, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
+	if err != nil {
+		return 0, nil, fmt.Errorf("Honcho E2EE answer was cut off: %w", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		return 0, nil, fmt.Errorf("Honcho E2EE proxy answered HTTP %d", res.StatusCode)
+	}
+	innerRes, err := e2ee.OpenResponse(c.e2eeSecret, outFrame, ts, salt)
+	if err != nil {
+		return 0, nil, fmt.Errorf("Honcho E2EE response failed verification: %w", err)
+	}
+	body, err := innerRes.BodyBytes()
+	if err != nil {
+		return 0, nil, fmt.Errorf("Honcho E2EE response body invalid: %w", err)
+	}
+	return innerRes.Status, body, nil
 }
 
 // list reads every page of a list endpoint into out, a pointer to a slice.

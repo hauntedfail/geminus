@@ -241,3 +241,31 @@ Rules geminus keeps:
 
 - It believes a manifest only if the signature verifies with the release key it was built with, and installs a file only if its size and SHA-256 are the ones the manifest names.
 - It moves only to a version greater than its own. A program whose version is not a plain `X.Y.Z` counts as older than the release `X.Y.Z`; one that has no version at all takes any release.
+
+## App-layer E2EE transport (`GE2E` v1)
+
+When clients reach Honcho across an HTTPS reverse proxy or tunnel (such as Cloudflare Tunnel), TLS terminates at the edge. To conceal Honcho API paths, workspace/session/peer identifiers, Bearer tokens, prompts, and outputs from intermediate hops while keeping Honcho storage raw, clients may tunnel all Honcho HTTP calls through the loopback terminating proxy (`cmd/geminus-e2ee-proxy`).
+
+Configuration (optional; when unset, clients speak directly to Honcho):
+
+- `e2ee_url` at the top level of `geminise.json`, or `geminus.e2ee_url` (overrides top level), or `GEMINUS_E2EE_URL` (overrides both). Must be `https://` or loopback `http://`.
+
+Wire format (`POST <e2ee_url>`, `Content-Type: application/octet-stream`, no outer `Authorization` header):
+
+```
+header[0:4]   = "GE2E"
+header[4]     = 0x01                       (version)
+header[5]     = 0x01 (request) | 0x02 (response)
+header[6:14]  = int64 big-endian Unix seconds (ts)
+header[14:38] = 24-byte random salt
+body[38:]     = ChaCha20-Poly1305(key, nonce, plaintext_json, aad=header[0:38])
+```
+
+- Key derivation (HKDF-SHA256, RFC 5869) from the `geminise.json` group secret and per-request 24-byte `salt`:
+  - `prk = HKDF-Extract(salt, secret)`
+  - Request key/nonce: `HKDF-Expand(prk, "geminus-e2ee-v1:req", 32)` and `"geminus-e2ee-v1:req-nonce"` (12 bytes)
+  - Response key/nonce: `HKDF-Expand(prk, "geminus-e2ee-v1:res", 32)` and `"geminus-e2ee-v1:res-nonce"` (12 bytes)
+- AEAD: RFC 8439 ChaCha20-Poly1305, implemented with zero external dependencies in both Go (`internal/e2ee`) and Python (`plugin/geminish/e2ee.py`).
+- Inner JSON: requests carry `m` (method), `p` (path), optional `q` (query), `h` (headers), `b` (base64 body), and `pad`; responses carry `s` (status), `h`, `b`, and `pad`. `pad` rounds inner JSON length up to coarse buckets (powers of two 512B..32KiB, 4KiB steps above 32KiB).
+- Proxy defenses: rejects `|now - ts| > 300s`, rejects replayed `salt` values within a 600s window, allows only `/v3/...` and `/health` without traversal, strips hop-by-hop headers, and forwards the decrypted raw HTTP request to loopback Honcho. Clients verify that the decrypted response's `(ts, salt)` match the originating request.
+

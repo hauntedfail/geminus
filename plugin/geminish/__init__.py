@@ -97,7 +97,7 @@ def _open():
     cfg = load()
     prepare_state_dir(cfg)
     return cfg, Store(cfg.store_path), Mailbox(cfg.base_url, cfg.api_key, cfg.workspace, cfg.session,
-                                               timeout=cfg.http_timeout)
+                                               timeout=cfg.http_timeout, e2ee_url=cfg.e2ee_url, e2ee_secret=cfg.secret)
 
 
 def _json(payload: dict) -> str:
@@ -172,7 +172,8 @@ def on_pre_llm_call(**kwargs: Any):
         if time.time() - store.last_sync() > max(60.0, 3 * cfg.poll_seconds):
             try:
                 client.sync(cfg, store, Mailbox(cfg.base_url, cfg.api_key, cfg.workspace, cfg.session,
-                                                timeout=HOOK_READ_TIMEOUT), inline=True)
+                                                timeout=HOOK_READ_TIMEOUT, e2ee_url=cfg.e2ee_url,
+                                                e2ee_secret=cfg.secret), inline=True)
             except MailboxError:
                 store.touch_sync()  # do not make every turn wait while Honcho is unreachable
         items = store.take_inbox(limit=5)

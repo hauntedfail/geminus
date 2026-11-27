@@ -14,6 +14,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import e2ee
+
 USER_AGENT = "geminish/0.5"
 CHAR_CAP = 25_000
 BYTE_CAP = 25_000
@@ -52,16 +54,20 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class Mailbox:
     def __init__(self, base_url: str, api_key: str, workspace: str, session: str, *,
-                 timeout: float = 20.0, opener=None):
+                 timeout: float = 20.0, opener=None, e2ee_url: str = "", e2ee_secret: bytes = b""):
         self._base = base_url.rstrip("/")
         self._key = api_key
         self._root = f"/v3/workspaces/{urllib.parse.quote(workspace, safe='')}"
         self._session = urllib.parse.quote(session, safe="")
         self._timeout = timeout
         self._opener = opener or urllib.request.build_opener(_NoRedirect)
+        self._e2ee_url = e2ee_url.strip()
+        self._e2ee_secret = bytes(e2ee_secret)
 
     def _call(self, method: str, path: str, body: object = None, *, write: bool = False,
               timeout: float | None = None):
+        if self._e2ee_url:
+            return self._call_e2ee(method, path, body, write=write, timeout=timeout)
         headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
@@ -75,6 +81,42 @@ class Mailbox:
             raise MailboxError(f"Honcho {method} answered HTTP {exc.code}") from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise MailboxError(f"Honcho {method} failed: {exc.__class__.__name__}", ambiguous=write) from None
+        try:
+            return json.loads(payload) if payload else None
+        except ValueError:
+            raise MailboxError(f"Honcho {method} returned non-JSON", ambiguous=write) from None
+
+    def _call_e2ee(self, method: str, path: str, body: object = None, *, write: bool = False,
+                   timeout: float | None = None):
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+        if self._key:
+            headers["Authorization"] = f"Bearer {self._key}"
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        parts = urllib.parse.urlsplit(path)
+        req_path = parts.path if parts.path.startswith("/") else "/" + parts.path
+        try:
+            frame, ts, salt = e2ee.seal_request(
+                self._e2ee_secret, method, req_path, parts.query, headers, data,
+            )
+        except e2ee.E2EEError as exc:
+            raise MailboxError(f"Honcho E2EE seal failed: {exc}") from None
+        outer = urllib.request.Request(
+            self._e2ee_url, data=frame, method="POST",
+            headers={"Content-Type": e2ee.CONTENT_TYPE, "User-Agent": USER_AGENT},
+        )
+        try:
+            with self._opener.open(outer, timeout=timeout or self._timeout) as response:
+                out_frame = response.read()
+        except urllib.error.HTTPError as exc:
+            raise MailboxError(f"Honcho E2EE proxy answered HTTP {exc.code}") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise MailboxError(f"Honcho E2EE {method} failed: {exc.__class__.__name__}", ambiguous=write) from None
+        try:
+            status, _res_headers, payload = e2ee.open_response(self._e2ee_secret, out_frame, ts, salt)
+        except e2ee.E2EEError:
+            raise MailboxError(f"Honcho E2EE {method} response failed verification", ambiguous=write) from None
+        if status < 200 or status > 299:
+            raise MailboxError(f"Honcho {method} answered HTTP {status}")
         try:
             return json.loads(payload) if payload else None
         except ValueError:

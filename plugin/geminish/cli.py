@@ -38,7 +38,8 @@ RING_FLOOR = 1.0  # seconds between two reads caused by rings, however many ring
 def _open():
     cfg = load()
     prepare_state_dir(cfg)
-    mailbox = Mailbox(cfg.base_url, cfg.api_key, cfg.workspace, cfg.session, timeout=cfg.http_timeout)
+    mailbox = Mailbox(cfg.base_url, cfg.api_key, cfg.workspace, cfg.session,
+                      timeout=cfg.http_timeout, e2ee_url=cfg.e2ee_url, e2ee_secret=cfg.secret)
     return cfg, Store(cfg.store_path), mailbox
 
 
@@ -101,7 +102,8 @@ def _start_listener(cfg, stop: threading.Event, ring: threading.Event) -> None:
     """The doorbell runs beside the timer and only ever makes the next read happen sooner."""
     listener = push.Listener(
         me=cfg.me, secret=cfg.secret, store=Store(cfg.store_path), on_ring=ring.set,
-        directory=Mailbox(cfg.base_url, cfg.api_key, cfg.workspace, cfg.session, timeout=cfg.http_timeout))
+        directory=Mailbox(cfg.base_url, cfg.api_key, cfg.workspace, cfg.session,
+                          timeout=cfg.http_timeout, e2ee_url=cfg.e2ee_url, e2ee_secret=cfg.secret))
     threading.Thread(target=listener.run, args=(stop,), name="geminish-push", daemon=True).start()
 
 

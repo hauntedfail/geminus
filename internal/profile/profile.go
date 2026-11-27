@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,9 @@ import (
 // EnvHermesHome overrides where the Hermes profile is read from (default
 // ~/.hermes; on Windows %LOCALAPPDATA%\hermes, then %USERPROFILE%\.hermes).
 const EnvHermesHome = "HERMES_HOME"
+
+// EnvE2EEURL overrides the optional GE2E v1 terminating proxy URL.
+const EnvE2EEURL = "GEMINUS_E2EE_URL"
 
 // HumanKeyFile is the optional Ed25519 seed file kept only on the owner's
 // signing computer(s), inside HERMES_HOME (mode 0600, 64 hex characters).
@@ -58,6 +62,8 @@ type Profile struct {
 	RequireEd25519 bool
 	// AutoUpdate holds the optional local geminise.json geminus.auto_update setting.
 	AutoUpdate *bool
+	// E2EEURL is the optional GE2E v1 terminating proxy URL for Honcho traffic.
+	E2EEURL string
 }
 
 // IsAgent reports whether name is an agent of the group.
@@ -147,6 +153,7 @@ func loadFrom(home string) (Profile, error) {
 		From         string                     `json:"from"`
 		Members      map[string]string          `json:"members"`
 		Secret       string                     `json:"secret"`
+		E2EEURL      string                     `json:"e2ee_url"`
 		HumanPubKeys map[string]json.RawMessage `json:"human_pubkeys"`
 		Geminus      json.RawMessage            `json:"geminus"`
 	}
@@ -191,10 +198,12 @@ func loadFrom(home string) (Profile, error) {
 			p.HumanPubKey = p.HumanPubKeys[0]
 		}
 	}
+	e2eeURL := strings.TrimSpace(group.E2EEURL)
 	if len(group.Geminus) > 0 {
 		var gOpts struct {
 			HumanAuth  string `json:"human_auth"`
 			AutoUpdate *bool  `json:"auto_update"`
+			E2EEURL    string `json:"e2ee_url"`
 		}
 		if json.Unmarshal(group.Geminus, &gOpts) == nil {
 			if strings.EqualFold(strings.TrimSpace(gOpts.HumanAuth), "ed25519_only") {
@@ -204,7 +213,25 @@ func loadFrom(home string) (Profile, error) {
 				v := *gOpts.AutoUpdate
 				p.AutoUpdate = &v
 			}
+			if s := strings.TrimSpace(gOpts.E2EEURL); s != "" {
+				e2eeURL = s
+			}
 		}
+	}
+	if envURL := strings.TrimSpace(os.Getenv(EnvE2EEURL)); envURL != "" {
+		e2eeURL = envURL
+	}
+	if e2eeURL != "" {
+		u, err := url.Parse(e2eeURL)
+		host := ""
+		if u != nil {
+			host = u.Hostname()
+		}
+		loopback := u != nil && u.Scheme == "http" && (host == "127.0.0.1" || host == "localhost" || host == "::1")
+		if err != nil || u == nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !loopback) {
+			return Profile{}, fmt.Errorf("invalid e2ee_url %q: must be https or loopback http", e2eeURL)
+		}
+		p.E2EEURL = u.String()
 	}
 	keyPath := filepath.Join(home, HumanKeyFile)
 	if info, err := os.Stat(keyPath); err == nil {

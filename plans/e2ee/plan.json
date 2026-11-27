@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "intent": "implement",
+  "checkout_root": "/home/hermes/workspace/geminus",
+  "outcome": "Add zero-dependency app-layer E2EE transport (RFC 8439 ChaCha20-Poly1305 + HKDF-SHA256 GE2E v1) for geminus (Go) and geminish (Python) with a BTCVPS loopback terminating proxy (cmd/geminus-e2ee-proxy) so Honcho traffic is encrypted end-to-end across Cloudflare while Honcho continues storing raw records.",
+  "non_goals": [
+    "Encrypting Honcho database records at rest (Honcho stays raw)",
+    "Adding external Go modules or third-party Python packages",
+    "Replacing Mozilla AutoPush doorbell or Transport v2 QUIC",
+    "Deploying or restarting live BTCVPS systemd/cloudflared services without owner A3 approval"
+  ],
+  "constraints": [
+    "Zero third-party dependencies in Go (go.mod unchanged) and Python (stdlib only)",
+    "Keep all new source files under 600 lines (Birkin max_file_lines invariant)",
+    "Respect Birkin architecture layer DAG in .birkin/config.yaml",
+    "Verify RFC 8439 ChaCha20-Poly1305 test vectors and Go<->Python wire interoperability",
+    "Preserve backward compatibility when e2ee_url is unset"
+  ],
+  "evidence": [
+    "birkin check PASS on main (69f3f6e)",
+    "internal/honcho/honcho.go funnels all Honcho HTTP requests through Client.call()",
+    "plugin/geminish/mailbox.py funnels all Honcho HTTP requests through Mailbox._call()",
+    "plans/e2ee/plan.md specifies the GE2E v1 frame, HKDF derivation, AAD binding, replay defense, and padding buckets"
+  ],
+  "questions": [],
+  "tasks": [
+    {
+      "id": "e2ee-001",
+      "title": "Pure Go GE2E v1 crypto, envelope, and terminating proxy handler",
+      "context": "Implement zero-dependency RFC 8439 ChaCha20-Poly1305, HKDF-SHA256 one-time key derivation, padded GE2E v1 binary HTTP request/response envelope, and the loopback Honcho terminating proxy http.Handler in internal/e2ee. Register internal/e2ee/** in .birkin/config.yaml foundation layer.",
+      "expected_behavior": "internal/e2ee seals and opens HTTP request/response envelopes with RFC 8439 ChaCha20-Poly1305, rejects tampered frames/direction swaps/stale timestamps/replayed salts/disallowed paths, and forwards validated raw HTTP requests to an upstream Honcho server.",
+      "status": "done",
+      "depends_on": [],
+      "allowed_paths": [
+        "internal/e2ee/",
+        ".birkin/config.yaml"
+      ],
+      "forbidden_paths": [
+        "internal/chat/",
+        "internal/honcho/",
+        "internal/profile/",
+        "internal/updates/",
+        "cmd/",
+        "plugin/",
+        "test/"
+      ],
+      "acceptance": [
+        "RFC 8439 section 2.8.2 test vector passes in Go unit tests",
+        "Tampered ciphertext, AAD, direction byte, timestamp, or replayed salt are rejected",
+        "Proxy enforces /v3/ or /health allowlist and rejects path traversal",
+        "All new files are <= 600 lines and go.mod has zero external dependencies"
+      ],
+      "verification": [
+        {
+          "method": "go test -v ./internal/e2ee/...",
+          "expected": "All internal/e2ee tests PASS"
+        },
+        {
+          "method": "birkin check --files internal/e2ee/ .birkin/config.yaml",
+          "expected": "status=PASS with zero new errors"
+        }
+      ],
+      "stop_conditions": [
+        "RFC 8439 test vector mismatch",
+        "Birkin architecture DAG violation"
+      ],
+      "owner": "implementation",
+      "completion_evidence": [
+        "go test -v -race ./internal/e2ee/... PASS (5/5 incl. RFC 8439 2.5.2 and 2.8.2)",
+        "birkin check --files internal/e2ee/* .birkin/config.yaml PASS (0 findings)",
+        "birkin unit verify-scope --task e2ee-001 PASS"
+      ]
+    },
+    {
+      "id": "e2ee-002",
+      "title": "Wire Go Honcho client, profile config, chat app, and geminus-e2ee-proxy binary",
+      "context": "Add optional E2EE transport mode to internal/honcho.Client, load optional e2ee_url from geminise.json / GEMINUS_E2EE_URL in internal/profile, enable it in internal/chat when configured, and add cmd/geminus-e2ee-proxy CLI entrypoint.",
+      "expected_behavior": "When e2ee_url is configured, internal/honcho.Client tunnels all Honcho API calls through the GE2E v1 proxy so wire traffic is opaque encrypted binary while Honcho receives and stores raw HTTP records. Unconfigured clients keep existing direct behavior.",
+      "status": "done",
+      "depends_on": [
+        "e2ee-001"
+      ],
+      "allowed_paths": [
+        "internal/honcho/",
+        "internal/profile/",
+        "internal/chat/",
+        "cmd/geminus-e2ee-proxy/"
+      ],
+      "forbidden_paths": [
+        "internal/e2ee/",
+        "internal/updates/",
+        "plugin/",
+        "test/"
+      ],
+      "acceptance": [
+        "internal/honcho tests verify Peers/Sessions/Messages round-trip through E2EE proxy and confirm Honcho stores raw plaintext while wire body is encrypted GE2E frame",
+        "internal/profile tests verify geminus.e2ee_url, top-level e2ee_url, and GEMINUS_E2EE_URL parsing and https/loopback validation",
+        "cmd/geminus-e2ee-proxy builds cleanly with CGO_ENABLED=0"
+      ],
+      "verification": [
+        {
+          "method": "go test ./internal/honcho/... ./internal/profile/... ./internal/chat/... && CGO_ENABLED=0 go build ./cmd/geminus-e2ee-proxy",
+          "expected": "All tests PASS and binary compiles cleanly"
+        }
+      ],
+      "stop_conditions": [
+        "Breaking existing honcho/profile/chat tests"
+      ],
+      "owner": "implementation",
+      "completion_evidence": [
+        "go test -v -race ./internal/honcho/... ./internal/profile/... PASS",
+        "go test ./internal/chat/... PASS",
+        "CGO_ENABLED=0 go build ./cmd/geminus-e2ee-proxy PASS",
+        "birkin check --files (6 files) PASS (0 findings)",
+        "birkin unit verify-scope --task e2ee-002 PASS"
+      ]
+    },
+    {
+      "id": "e2ee-003",
+      "title": "Pure Python GE2E v1 client in plugin/geminish and cross-language tests",
+      "context": "Implement stdlib-only RFC 8439 ChaCha20-Poly1305 and GE2E v1 client in plugin/geminish/e2ee.py, wire e2ee_url in config.py / mailbox.py / cli.py / client.py / __init__.py, and add unit tests plus live Go proxy interop tests in plugin/geminish/tests/test_e2ee.py.",
+      "expected_behavior": "geminish poller and mailbox tools transparently encrypt Honcho API calls over GE2E v1 when e2ee_url is configured, interoperating byte-for-byte with Go internal/e2ee and cmd/geminus-e2ee-proxy.",
+      "status": "done",
+      "depends_on": [
+        "e2ee-002"
+      ],
+      "allowed_paths": [
+        "plugin/geminish/"
+      ],
+      "forbidden_paths": [
+        "internal/",
+        "cmd/",
+        "test/"
+      ],
+      "acceptance": [
+        "Pure Python RFC 8439 test vector passes with stdlib only",
+        "Python Mailbox round-trips against Go geminus-e2ee-proxy + mock Honcho",
+        "All existing geminish tests continue passing"
+      ],
+      "verification": [
+        {
+          "method": "python3 -m unittest discover -s plugin/geminish/tests -v",
+          "expected": "All Python unit and interop tests PASS"
+        }
+      ],
+      "stop_conditions": [
+        "Any external Python dependency required",
+        "Wire format divergence between Go and Python"
+      ],
+      "owner": "implementation",
+      "completion_evidence": [
+        "python3 -m unittest discover -s plugin/geminish/tests -v PASS (19/19 incl. live Go geminus-e2ee-proxy interop)",
+        "birkin check --files (7 files) PASS (0 findings)",
+        "birkin unit verify-scope --task e2ee-003 PASS"
+      ]
+    },
+    {
+      "id": "e2ee-004",
+      "title": "End-to-end integration tests, systemd unit template, and docs",
+      "context": "Add Go+Python end-to-end integration test in test/e2ee_test.go exercising the real geminus binary, real geminus-e2ee-proxy, real Python geminish bridge, and honchotest; add deploy/systemd/geminus-e2ee-proxy.service template; document the E2EE transport in docs/protocol.md and docs/architecture.md.",
+      "expected_behavior": "Full E2E conversation succeeds with both geminus and geminish communicating exclusively through GE2E v1 encrypted frames while Honcho stores raw messages and docs stay within Birkin limits.",
+      "status": "done",
+      "depends_on": [
+        "e2ee-003"
+      ],
+      "allowed_paths": [
+        "test/",
+        "docs/",
+        "deploy/",
+        "plans/e2ee/"
+      ],
+      "forbidden_paths": [
+        "internal/",
+        "cmd/",
+        "plugin/"
+      ],
+      "acceptance": [
+        "test/e2ee_test.go proves raw storage in Honcho and 100% encrypted wire traffic between clients and proxy",
+        "docs/architecture.md stays <= 200 lines (Birkin max_entry_doc_lines)",
+        "birkin check --run-verify and Python unittest pass cleanly"
+      ],
+      "verification": [
+        {
+          "method": "GIT_CONFIG_GLOBAL=/dev/null birkin check --run-verify",
+          "expected": "status=PASS"
+        },
+        {
+          "method": "python3 -m unittest discover -s plugin/geminish/tests -v",
+          "expected": "All tests PASS"
+        }
+      ],
+      "stop_conditions": [
+        "E2E test failure or Birkin gate failure"
+      ],
+      "owner": "implementation",
+      "completion_evidence": [
+        "go test -v ./test -run TestGeminusAndBridgeCommunicateEndToEndOverE2EE PASS (7.33s)",
+        "birkin unit verify-scope --task e2ee-004 PASS",
+        "docs/architecture.md updated within 200-line entry doc cap"
+      ]
+    }
+  ]
+}
