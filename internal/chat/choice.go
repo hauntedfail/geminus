@@ -180,15 +180,24 @@ func (l *live) drawChoice() {
 		screen[y] = strings.Repeat(" ", x) + s
 	}
 
-	mascot := c.mascot.Rows(l.now().Sub(c.start).Seconds(), c.mode)
-	mascotW := splash.MascotCols + 1
+	var mascot []string
+	mascotCols := splash.MascotCols
+	if l.v.clawd {
+		clawd := splash.ClawdRowsStrings(c.mode)
+		mascot = clawd[:]
+		mascotCols = splash.ClawdCols
+	} else {
+		m := c.mascot.Rows(l.now().Sub(c.start).Seconds(), c.mode)
+		mascot = m[:]
+	}
+	mascotW := mascotCols + 1
 	beside := cols - mascotW - 2
 	stack := beside < 24
 	speechW := cols
 	if !stack {
 		speechW = beside
 	}
-	speech := c.speech(l.pal, max(speechW, 8))
+	speech := c.speech(l.pal, max(speechW, 8), l.v.clawd)
 	pad := func(line string, w int) string {
 		if d := w - textWidth(line); d > 0 {
 			return line + strings.Repeat(" ", d)
@@ -198,7 +207,7 @@ func (l *live) drawChoice() {
 	if stack {
 		top := max((rows-len(mascot)-1-len(speech))/2, 0)
 		for i, row := range mascot {
-			put(max((cols-splash.MascotCols)/2, 0), top+i, row)
+			put(max((cols-mascotCols)/2, 0), top+i, row)
 		}
 		for i, row := range speech {
 			put(0, top+len(mascot)+1+i, row)
@@ -244,13 +253,17 @@ func (l *live) drawChoice() {
 
 // speech is what the mascot says: the question, the options, and what has
 // been typed.
-func (c *choice) speech(pal palette, width int) []string {
+func (c *choice) speech(pal palette, width int, clawd bool) []string {
 	out := []string{pal.Bold(clipWidth(c.title, width)), ""}
 	n := 0
 	for i, o := range c.opts {
 		mark := "  "
 		if i == c.cursor {
-			mark = pal.SGR("1;36", "> ")
+			if clawd {
+				mark = pal.SGR("1;"+colorCoral, "❯ ")
+			} else {
+				mark = pal.SGR("1;36", "> ")
+			}
 		}
 		num := "  "
 		if !o.disabled {

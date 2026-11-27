@@ -11,9 +11,17 @@ func renderPermissionMenu(in frameInput, m *selectMenu) frame {
 	width := max(in.cols-1, 24)
 	inner := width - 4
 	pal := in.pal
-	border := func(s string) string { return pal.SGR(in.v.accent(), s) }
+	border := func(s string) string {
+		if in.v.clawd {
+			return pal.Dim(s)
+		}
+		return pal.SGR(in.v.accent(), s)
+	}
 	row := func(text string) string {
 		text = clipWidth(text, inner)
+		if in.v.clawd {
+			return "  " + text
+		}
 		return border("│") + " " + text + strings.Repeat(" ", max(inner-textWidth(text), 0)) + " " + border("│")
 	}
 	budget := max(in.rows-2, 6)
@@ -27,7 +35,12 @@ func renderPermissionMenu(in frameInput, m *selectMenu) frame {
 	m.detailOffset = min(m.detailOffset, max(len(details)-detailRows, 0))
 	end := min(m.detailOffset+detailRows, len(details))
 	title := clipWidth(m.cfg.title, width-6)
-	f := frame{rows: []string{border("╭─ ") + title + " " + border(strings.Repeat("─", max(width-5-textWidth(title), 0))+"╮")}}
+	var f frame
+	if in.v.clawd {
+		f.rows = []string{border(strings.Repeat("─", width)), "  " + pal.Bold(title)}
+	} else {
+		f.rows = []string{border("╭─ ") + title + " " + border(strings.Repeat("─", max(width-5-textWidth(title), 0))+"╮")}
+	}
 	for _, line := range details[m.detailOffset:end] {
 		f.rows = append(f.rows, row(line))
 	}
@@ -41,6 +54,10 @@ func renderPermissionMenu(in frameInput, m *selectMenu) frame {
 		}
 		f.rows = append(f.rows, row(fmt.Sprintf("%s%d. %s · %s", prefix, i+1, oneLine(item.label), oneLine(item.desc))))
 	}
-	f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"), pal.Dim(clipWidth("↑↓/j/k · number/hotkey · Enter · Esc dismiss", width)))
+	bottomRule := border("╰" + strings.Repeat("─", width-2) + "╯")
+	if in.v.clawd {
+		bottomRule = border(strings.Repeat("─", width))
+	}
+	f.rows = append(f.rows, bottomRule, pal.Dim(clipWidth("↑↓/j/k · number/hotkey · Enter · Esc dismiss", width)))
 	return f
 }

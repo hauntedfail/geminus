@@ -49,10 +49,10 @@ func (a *App) startLive(in io.Reader, withSplash bool) (stop func(), ok bool) {
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.ctx = ctx
 	screen, mascot := opening(os.Getenv, a.Out.color, a.Now(), rand.Uint32())
-	if !withSplash {
+	if !withSplash || a.clawdEnabled() {
 		screen = nil
 	}
-	lv := newLiveBehind(outFile, cols, rows, palette{On: a.Out.color}, a.Now, screen)
+	lv := newLiveWith(outFile, cols, rows, palette{On: a.Out.color}, a.Now, screen, a.clawdEnabled())
 	lv.banner = mascot
 	lv.size = func() (int, int) { return termSize(outFile) }
 	lines := make(chan string, 256)
@@ -182,6 +182,10 @@ func (a *App) attach(lv *live, lines <-chan string) {
 		lv.mu.Unlock()
 		return
 	}
+	if a.clawdEnabled() {
+		a.Out.line(a.Out.bold(clawdAppName) + a.Out.dim(" "+clawdDisplayVersion))
+		return
+	}
 	a.Out.line(a.Out.accent("◆ geminus") + a.Out.dim(" "+version.Version+" · "+who+" · "+where))
 }
 
@@ -195,6 +199,7 @@ func (a *App) sync() {
 		slow: a.SlowAfter, rang: a.rang,
 		update:     a.newerRelease(),
 		postHuman:  a.defaults.PostHumanEnabled(),
+		clawd:      a.clawdEnabled(),
 		uiSet:      true,
 		showNode:   a.defaults.UI.NodeVisible(),
 		showModel:  a.defaults.UI.ModelVisible(),
@@ -328,7 +333,7 @@ func isGeminusCommand(line string) bool {
 	switch cmd {
 	case "/help", "/status", "/persona", "/personas", "/harness", "/new", "/cwd",
 		"/sessions", "/resume", "/default", "/config", "/post-human", "/posthuman", "/helix",
-		"/ui", "/update", "/model", "/effort", "/mode", "/ask", "/quit", "/exit":
+		"/clawd", "/ui", "/update", "/model", "/effort", "/mode", "/ask", "/quit", "/exit":
 		return true
 	}
 	return false
@@ -350,6 +355,16 @@ func (a *App) echoPrompt(text string) {
 		a.live.setPrompt(prompt)
 	}
 	a.Out.line("")
+	if a.clawdEnabled() {
+		for i, line := range strings.Split(text, "\n") {
+			mark := "  "
+			if i == 0 {
+				mark = a.Out.bold("❯") + " "
+			}
+			a.Out.line(mark + sanitize(line))
+		}
+		return
+	}
 	if !isGeminusCommand(text) {
 		a.Out.line(a.Out.dim("── ") + a.Out.accent("you") + a.Out.dim(" ────────────────────────────"))
 	}

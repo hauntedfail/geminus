@@ -250,8 +250,12 @@ func (a *App) poll(turn string) (done, printed bool, err error) {
 				if a.live != nil {
 					a.live.setPrompt(m.Content)
 					a.Out.line("")
-					a.Out.line(a.Out.dim("── ") + a.Out.accent("you (another geminus)") + a.Out.dim(" ──────────"))
-					a.Out.line(a.Out.accent("❯ ") + a.Out.bold(sanitize(m.Content)))
+					if a.clawdEnabled() {
+						a.Out.line(a.Out.bold("❯") + " " + sanitize(m.Content))
+					} else {
+						a.Out.line(a.Out.dim("── ") + a.Out.accent("you (another geminus)") + a.Out.dim(" ──────────"))
+						a.Out.line(a.Out.accent("❯ ") + a.Out.bold(sanitize(m.Content)))
+					}
 				} else {
 					a.Out.line(a.Out.dim("you, from another geminus: ") + sanitize(m.Content))
 				}
@@ -417,6 +421,14 @@ func (a *App) showBridgeState(content string, meta wire.Message) {
 	if text == "" {
 		return
 	}
+	if a.clawdEnabled() {
+		if meta.Phase == "waiting" || meta.Phase == "timeout" {
+			a.Out.line(a.Out.warn("  ⎿  " + text))
+			return
+		}
+		a.Out.line(a.Out.dim("  ⎿  " + text))
+		return
+	}
 	who := "bridge"
 	if a.cur != nil {
 		who = oneLine(a.cur.Name)
@@ -438,11 +450,43 @@ func (a *App) showBridgeAsk(content string, meta wire.Message) {
 		text = detail
 		detail = ""
 	}
+	tool := oneLine(meta.Tool)
+	if a.clawdEnabled() {
+		head := "Permission required"
+		if tool != "" {
+			head = tool
+		}
+		a.Out.line("")
+		a.Out.line(a.Out.bold("● " + head))
+		if text == "" {
+			a.Out.line(a.Out.dim("  ⎿  Waiting for confirmation"))
+		} else {
+			for i, ln := range strings.Split(text, "\n") {
+				prefix := "     "
+				if i == 0 {
+					prefix = "  ⎿  "
+				}
+				a.Out.line(a.Out.dim(prefix) + ln)
+			}
+		}
+		if detail != "" && detail != text && !strings.Contains(text, detail) {
+			for _, ln := range strings.Split(detail, "\n") {
+				a.Out.line(a.Out.dim("     " + ln))
+			}
+		}
+		if a.live == nil {
+			choices := meta.Choices
+			if len(choices) == 0 {
+				choices = []string{"allow", "deny"}
+			}
+			a.Out.line(a.Out.dim("  choices: " + strings.Join(choices, " / ") + " (or 1-" + strconv.Itoa(len(choices)) + ")"))
+		}
+		return
+	}
 	who := "bridge"
 	if a.cur != nil {
 		who = oneLine(a.cur.Name)
 	}
-	tool := oneLine(meta.Tool)
 	head := fmt.Sprintf("! %s asks", who)
 	if tool != "" {
 		head += fmt.Sprintf(" [%s]", tool)
@@ -479,7 +523,7 @@ func (a *App) show(content string, meta wire.Message) {
 		if a.shownTurn == nil {
 			a.shownTurn = map[string]bool{}
 		}
-		if !a.shownTurn[meta.Turn] {
+		if !a.clawdEnabled() && !a.shownTurn[meta.Turn] {
 			a.shownTurn[meta.Turn] = true
 			speaker := "agent"
 			if a.cur != nil {
@@ -495,6 +539,13 @@ func (a *App) show(content string, meta wire.Message) {
 	text := a.takeMarkdown(meta.Turn, sanitize(content), meta.Final, !meta.OK)
 	if !meta.OK {
 		a.Out.line(a.Out.fail("✗ " + strings.TrimRight(text, "\n")))
+		return
+	}
+	if a.clawdEnabled() {
+		if a.shownTurn == nil {
+			a.shownTurn = map[string]bool{}
+		}
+		a.writeClawdReply(meta.Turn, text, meta.Final)
 		return
 	}
 	a.Out.write(text)

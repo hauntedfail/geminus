@@ -9,7 +9,7 @@ import (
 )
 
 // The only escape sequences geminus writes itself; see Printer.style.
-var ownStyles = []string{"\x1b[0m", "\x1b[1m", "\x1b[2m", "\x1b[31m", "\x1b[33m", "\x1b[1;36m"}
+var ownStyles = []string{"\x1b[0m", "\x1b[1m", "\x1b[2m", "\x1b[31m", "\x1b[33m", "\x1b[1;36m", "\x1b[38;5;173m", "\x1b[1;38;5;173m"}
 
 // Printer writes to the screen and remembers whether the cursor is at the
 // start of a line, so status lines never land in the middle of a reply.
@@ -183,7 +183,11 @@ func (a *App) choose(title, what string, opts []option, preferred string) (strin
 	if a.live != nil {
 		picked, ok := a.live.askChoice(a.ctx, title, what, opts, preferred)
 		if ok {
-			a.Out.line(a.Out.dim(what+" ❯ ") + sanitize(picked))
+			if a.clawdEnabled() {
+				a.Out.line(a.Out.dim("  ⎿  ") + sanitize(picked))
+			} else {
+				a.Out.line(a.Out.dim(what+" ❯ ") + sanitize(picked))
+			}
 		}
 		return picked, ok
 	}

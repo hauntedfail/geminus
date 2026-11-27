@@ -59,6 +59,8 @@ type view struct {
 
 	// postHuman enables Helix-style modal editing in the prompt box.
 	postHuman bool
+	// clawd enables Clawd mode (Claude Code visual interface).
+	clawd bool
 }
 
 // frameInput is one moment of the screen's bottom.
@@ -108,6 +110,7 @@ var slashCommands = []struct{ name, args, what string }{
 	{"/update", "[auto on|off]", "install the latest geminus, or toggle auto-update"},
 	{"/config", "", "interactive settings menu"},
 	{"/post-human", "[on|off]", "toggle Post-Human (Helix) modal editing"},
+	{"/clawd", "[on|off]", "toggle Clawd mode (Claude Code look)"},
 	{"/default", "…", "show or change your defaults"},
 	{"/ui", "…", "customize prompt box display"},
 	{"/help", "", "list geminus commands"},
@@ -204,6 +207,9 @@ func (v view) target() string {
 // accent is the color of the box: it tells a remote computer from this one
 // at a glance, and shows when nothing can be sent.
 func (v view) accent() string {
+	if v.clawd {
+		return colorCoral
+	}
 	switch {
 	case v.ask != "":
 		return colorCyan
@@ -285,6 +291,9 @@ func (v view) modeShown() bool   { return !v.uiSet || v.showMode }
 
 // render lays out the bottom of the screen for one moment.
 func render(in frameInput) frame {
+	if in.v.clawd {
+		return renderClawd(in)
+	}
 	width := max(in.cols-1, 24) // the last column is left free: writing there wraps on some terminals
 	pal, v := in.pal, in.v
 	border := func(s string) string { return pal.SGR(v.accent(), s) }

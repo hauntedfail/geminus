@@ -532,6 +532,9 @@ type Defaults struct {
 	// PostHuman enables Helix-style modal editing (Normal/Insert/Select) in
 	// the prompt box; nil means unset (default off).
 	PostHuman *bool `json:"post_human,omitempty"`
+	// Clawd enables Clawd mode (a visual interface mimicking Claude Code);
+	// nil means unset (default off).
+	Clawd *bool `json:"clawd,omitempty"`
 }
 
 // AutoUpdateEnabled reports whether automatic updates are enabled in defaults.
@@ -542,6 +545,11 @@ func (d Defaults) AutoUpdateEnabled() bool {
 // PostHumanEnabled reports whether Post-Human (Helix) modal editing is enabled.
 func (d Defaults) PostHumanEnabled() bool {
 	return d.PostHuman != nil && *d.PostHuman
+}
+
+// ClawdEnabled reports whether Clawd mode (Claude Code appearance) is enabled.
+func (d Defaults) ClawdEnabled() bool {
+	return d.Clawd != nil && *d.Clawd
 }
 
 // PersonaDefaults are the preselected harness, directory and tuning on one persona.

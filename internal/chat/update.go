@@ -281,6 +281,9 @@ func (a *App) reopenArgs() (args []string, ok bool) {
 			return nil, false
 		}
 	}
+	if a.clawdFlag != "" {
+		args = append(args, a.clawdFlag)
+	}
 	return args, true
 }
 

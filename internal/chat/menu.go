@@ -440,8 +440,16 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	inner := max(width-4, 16) // "│ " + inner + " │"
 	pal, v := in.pal, in.v
 	accent := v.accent()
-	border := func(s string) string { return pal.SGR(accent, s) }
+	border := func(s string) string {
+		if v.clawd {
+			return pal.Dim(s)
+		}
+		return pal.SGR(accent, s)
+	}
 	boxRow := func(styled string, plainW int) string {
+		if v.clawd {
+			return "  " + styled
+		}
 		return border("│") + " " + styled + strings.Repeat(" ", max(inner-plainW, 0)) + " " + border("│")
 	}
 
@@ -451,9 +459,9 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	}
 	f.rows = append(f.rows, "")
 
-	// Top border: title on the left, node badge on the right.
+	// Top border: title on the left, node badge on the right (hidden in Clawd mode).
 	right, tagWidth := "", 0
-	if v.persona != "" && v.nodeShown() {
+	if v.persona != "" && v.nodeShown() && !v.clawd {
 		tag := v.persona
 		right, tagWidth = " "+pal.SGR("1;"+accent, tag)+" ", textWidth(tag)+2
 	}
@@ -461,11 +469,16 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 	if m.customMode && m.cfg.customTitle != "" {
 		titleText = m.cfg.customTitle
 	}
-	room := max(width-6-tagWidth, 2)
-	plainTitle := clipWidth(titleText, room)
-	styledTitle := pal.SGR("1;"+accent, plainTitle)
-	fill := max(width-6-textWidth(plainTitle)-tagWidth, 0)
-	f.rows = append(f.rows, border("╭─")+" "+styledTitle+" "+border(strings.Repeat("─", fill))+right+border("─╮"))
+	if v.clawd {
+		f.rows = append(f.rows, border(strings.Repeat("─", width)))
+		f.rows = append(f.rows, "  "+pal.Bold(clipWidth(titleText, inner)))
+	} else {
+		room := max(width-6-tagWidth, 2)
+		plainTitle := clipWidth(titleText, room)
+		styledTitle := pal.SGR("1;"+accent, plainTitle)
+		fill := max(width-6-textWidth(plainTitle)-tagWidth, 0)
+		f.rows = append(f.rows, border("╭─")+" "+styledTitle+" "+border(strings.Repeat("─", fill))+right+border("─╮"))
+	}
 
 	// Subtitle.
 	sub := m.cfg.subtitle
@@ -512,7 +525,11 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 			errText := clipWidth("✗ "+oneLine(m.errMsg), inner)
 			f.rows = append(f.rows, boxRow(pal.SGR(colorRed, errText), textWidth(errText)))
 		}
-		f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
+		if v.clawd {
+			f.rows = append(f.rows, border(strings.Repeat("─", width)))
+		} else {
+			f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
+		}
 		hint := clipWidth("Enter apply · Esc back to list · Ctrl-C cancel", width-2)
 		f.rows = append(f.rows, "  "+pal.Dim(hint))
 		return f
@@ -668,7 +685,11 @@ func renderMenu(in frameInput, m *selectMenu) frame {
 		f.rows = append(f.rows, boxRow(pal.Dim(more), textWidth(more)))
 	}
 
-	f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
+	if v.clawd {
+		f.rows = append(f.rows, border(strings.Repeat("─", width)))
+	} else {
+		f.rows = append(f.rows, border("╰"+strings.Repeat("─", width-2)+"╯"))
+	}
 	hintText := "↑↓ navigate · type to search · 1-9 select · Enter confirm · Esc cancel"
 	if m.cfg.noSearch {
 		hintText = "↑↓/j/k navigate · 1-9 or hotkey · Enter confirm · Esc dismiss"

@@ -111,7 +111,11 @@ func newLive(out io.Writer, cols, rows int, pal palette, now func() time.Time) *
 
 // newLiveBehind is newLive with an opening screen over it; nil for none.
 func newLiveBehind(out io.Writer, cols, rows int, pal palette, now func() time.Time, sp *splashScreen) *live {
-	l := &live{out: out, cols: cols, rows: rows, pal: pal, now: now, splash: sp}
+	return newLiveWith(out, cols, rows, pal, now, sp, false)
+}
+
+func newLiveWith(out io.Writer, cols, rows int, pal palette, now func() time.Time, sp *splashScreen, clawd bool) *live {
+	l := &live{out: out, cols: cols, rows: rows, pal: pal, now: now, splash: sp, v: view{clawd: clawd}}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	io.WriteString(out, altScreenOn+pasteModeOn+altScrollOn)
@@ -136,13 +140,21 @@ func (l *live) hasDraft() bool {
 	return len(l.ed.Text()) > 0
 }
 
+// bannerRowCount returns how many transcript rows the banner occupies.
+func (l *live) bannerRowCount() int {
+	if l.banner == nil {
+		return 0
+	}
+	if l.v.clawd {
+		return clawdBannerRowCount
+	}
+	return bannerRows
+}
+
 // wrappedCount returns the total number of wrapped rows for the current
 // transcript and unfinished tail at width w.
 func (l *live) wrappedCount(w int) int {
-	n := 0
-	if l.banner != nil {
-		n = bannerRows
-	}
+	n := l.bannerRowCount()
 	for _, entry := range l.lines {
 		n += len(wrapText(entry.text, w))
 	}
@@ -153,10 +165,16 @@ func (l *live) wrappedCount(w int) int {
 }
 
 func (l *live) wrapAll(w int) []wrappedLine {
-	out := make([]wrappedLine, 0, len(l.lines)+1+bannerRows)
+	out := make([]wrappedLine, 0, len(l.lines)+1+l.bannerRowCount())
 	if l.banner != nil {
-		// Drawn anew each time: the mascot moves.
-		for _, row := range l.banner.rows(l.now(), w) {
+		var rows []string
+		if l.v.clawd {
+			rows = clawdBannerRows(l.v, l.banner.mode, l.pal, w)
+		} else {
+			// Drawn anew each time: the mascot moves.
+			rows = l.banner.rows(l.now(), w)
+		}
+		for _, row := range rows {
 			out = append(out, wrappedLine{text: row})
 		}
 	}
@@ -284,12 +302,18 @@ func (l *live) draw() {
 	} else {
 		f = render(in)
 	}
-	// Reserve at least row 0 for the sticky header and keep total height <= l.rows.
-	maxBottom := max(l.rows-2, 1)
+	// Reserve row 0 for the sticky header unless Clawd mode is at the bottom
+	// (real Claude Code shows no sticky bar above the transcript at rest).
+	showHeader := !l.v.clawd || l.scroll > 0
+	topRows := 0
+	if showHeader {
+		topRows = 1
+	}
+	maxBottom := max(l.rows-topRows-1, 1)
 	if over := len(f.rows) - maxBottom; over > 0 {
 		f.rows, f.curRow = f.rows[over:], max(f.curRow-over, 0)
 	}
-	viewHeight := max(l.rows-1-len(f.rows), 0)
+	viewHeight := max(l.rows-topRows-len(f.rows), 0)
 	l.viewRows = viewHeight
 
 	wrapped := l.wrapAll(l.width())
@@ -300,24 +324,34 @@ func (l *live) draw() {
 	if l.scroll < 0 {
 		l.scroll = 0
 	}
+	// If clamping scroll dropped it back to 0 in Clawd mode, drop the header row.
+	if l.v.clawd && showHeader && l.scroll == 0 {
+		showHeader, topRows = false, 0
+		viewHeight = max(l.rows-len(f.rows), 0)
+		l.viewRows = viewHeight
+	}
 	end := len(wrapped) - l.scroll
 	start := max(end-viewHeight, 0)
 	visible := wrapped[start:end]
 
-	headerPrompt := l.activeHeaderPrompt(wrapped, start, end)
-	header := renderHeader(headerInput{
-		v:      l.v,
-		prompt: headerPrompt,
-		scroll: l.scroll,
-		atTop:  maxScroll > 0 && l.scroll == maxScroll,
-		cols:   l.cols,
-		pal:    l.pal,
-	})
-
 	var body strings.Builder
-	body.WriteString(header)
-	body.WriteString(clearLineEnd)
-	body.WriteString("\r\n")
+	if showHeader {
+		hin := headerInput{
+			v:      l.v,
+			prompt: l.activeHeaderPrompt(wrapped, start, end),
+			scroll: l.scroll,
+			atTop:  maxScroll > 0 && l.scroll == maxScroll,
+			cols:   l.cols,
+			pal:    l.pal,
+		}
+		header := renderHeader(hin)
+		if l.v.clawd {
+			header = renderClawdHeader(hin)
+		}
+		body.WriteString(header)
+		body.WriteString(clearLineEnd)
+		body.WriteString("\r\n")
+	}
 
 	for i := 0; i < viewHeight; i++ {
 		if i < len(visible) {
@@ -335,7 +369,7 @@ func (l *live) draw() {
 		}
 	}
 
-	curRow := 1 + viewHeight + f.curRow
+	curRow := topRows + viewHeight + f.curRow
 	body.WriteString(fmt.Sprintf("\x1b[%d;%dH", curRow+1, f.curCol+1))
 	if hideCursor {
 		body.WriteString(cursorHide)
@@ -468,6 +502,7 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 	e := &l.ed
 	asking := l.v.ask != ""
 	if k.Kind == keyRune && k.R == '?' && !asking && e.Empty() {
+		l.notice = ""
 		l.shortcuts = !l.shortcuts
 		l.draw()
 		return "", false, false
@@ -539,7 +574,11 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 				quit = true
 			default:
 				l.interrupted = l.now()
-				l.say("Press Ctrl-C again to quit geminus (agents keep working; answers stay in Honcho)")
+				if l.v.clawd {
+					l.say("Press Ctrl-C again to exit")
+				} else {
+					l.say("Press Ctrl-C again to quit geminus (agents keep working; answers stay in Honcho)")
+				}
 			}
 		}
 		l.draw()
@@ -628,7 +667,11 @@ func (l *live) key(k key) (line string, entered, quit bool) {
 			quit = true
 		default:
 			l.interrupted = l.now()
-			l.say("Press Ctrl-C again to quit geminus (agents keep working; answers stay in Honcho)")
+			if l.v.clawd {
+				l.say("Press Ctrl-C again to exit")
+			} else {
+				l.say("Press Ctrl-C again to quit geminus (agents keep working; answers stay in Honcho)")
+			}
 		}
 	}
 	l.draw()

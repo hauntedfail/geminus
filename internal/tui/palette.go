@@ -20,4 +20,5 @@ const (
 	ColorYellow  = "33"
 	ColorMagenta = "35"
 	ColorCyan    = "36"
+	ColorCoral   = "38;5;173"
 )

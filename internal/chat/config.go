@@ -25,6 +25,8 @@ func (a *App) slashConfig(arg string) error {
 			return a.slashUpdateCmd("auto " + rest)
 		case "post_human", "post-human", "posthuman", "helix":
 			return a.slashPostHuman(rest)
+		case "clawd":
+			return a.slashClawd(rest)
 		case "node", "model", "effort", "label", "reset":
 			if rest == "" && key != "reset" {
 				return fmt.Errorf("usage: /config (interactive) or /ui %s on|off", key)
@@ -64,6 +66,7 @@ func (a *App) printConfigSummary() {
 	a.Out.line("geminus config (saved in Honcho)")
 	a.Out.line(fmt.Sprintf("  auto_update      %s (%s)", onOff(a.autoUpdateEnabled()), a.autoUpdateSource()))
 	a.Out.line("  post_human       " + onOff(a.defaults.PostHumanEnabled()))
+	a.Out.line(fmt.Sprintf("  clawd            %s (%s)", onOff(a.clawdEnabled()), a.clawdSource()))
 	a.Out.line("  ui.node          " + onOff(u.NodeVisible()))
 	a.Out.line("  ui.model         " + onOff(u.ModelVisible()))
 	a.Out.line("  ui.effort        " + onOff(u.EffortVisible()))
@@ -138,6 +141,7 @@ func (a *App) configMenuItems() []menuItem {
 	u := a.defaults.UI
 	autoOn := a.autoUpdateEnabled()
 	postHumanOn := a.defaults.PostHumanEnabled()
+	clawdOn := a.clawdEnabled()
 	items := []menuItem{
 		{
 			value:   "auto_update",
@@ -169,6 +173,7 @@ func (a *App) configMenuItems() []menuItem {
 			desc:    fmt.Sprintf("%s · Helix modal editing (Normal/Insert/Select)", onOff(postHumanOn)),
 			current: postHumanOn,
 		},
+		{value: "clawd", label: "Clawd mode", desc: fmt.Sprintf("%s (%s) · Claude Code interface", onOff(clawdOn), a.clawdSource()), current: clawdOn},
 		{
 			value: "default.persona",
 			label: "Default persona",
@@ -249,6 +254,16 @@ func (a *App) applyConfigChoice(choice string) (note string, updated bool, err e
 			return "", false, err
 		}
 		return fmt.Sprintf("Saved: post_human = %s (Honcho)", onOff(next)), true, nil
+
+	case "clawd":
+		d := a.cloneDefaults()
+		next := !a.clawdEnabled()
+		d.Clawd = &next
+		if err := a.saveDefaults(d); err != nil {
+			return "", false, err
+		}
+		a.clawdOverride, a.clawdFlag, a.clawdEnvSet = nil, "", false
+		return fmt.Sprintf("Saved: clawd = %s", onOff(next)), true, nil
 
 	case "ui.node":
 		d := a.cloneDefaults()

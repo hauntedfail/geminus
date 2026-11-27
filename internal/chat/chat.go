@@ -43,6 +43,7 @@ Options:
   --cwd DIR                directory on that computer for a new conversation
   --continue, -c           reopen the latest conversation
   --resume ID              reopen a conversation by ID
+  --clawd, --no-clawd      enable or disable Clawd mode (Claude Code look)
 
 Everything else is chosen inside geminus (type /help there). geminus keeps
 no files: personas, conversations and your defaults live in Honcho.
@@ -73,8 +74,9 @@ const commandHelp = `geminus commands
   /status                show persona, harness, bridge and conversation
   /update [auto on|off]  install the latest release of geminus and carry on
                          in this conversation, or toggle automatic updates
-  /config                open interactive settings menu (auto-update, Post-Human, UI, defaults)
+  /config                open interactive settings menu (auto-update, Post-Human, Clawd, UI, defaults)
   /post-human [on|off]   toggle Post-Human (Helix) modal editing in the prompt box
+  /clawd [on|off|status] toggle Clawd mode (Claude Code visual interface)
   /default               show your defaults; /default save keeps the current
                          persona, harness, directory, model, effort and permission mode;
                          /default persona|harness|cwd|model|effort|mode|auto_update VALUE (or none)
@@ -201,6 +203,10 @@ type App struct {
 	// readOn tells the keyboard reader, which stops after an /update line,
 	// to read on.
 	readOn chan<- struct{}
+	// Per-run Clawd mode override (from CLI flag or GEMINUS_CLAWD).
+	clawdOverride *bool
+	clawdFlag     string
+	clawdEnvSet   bool
 }
 
 // Run is the geminus command. It returns the process exit code.
@@ -249,10 +255,11 @@ type request struct {
 	version, help, badUsage bool
 	// update is `geminus update`; release is the version of
 	// `geminus release VERSION [--download DIR]`; keygen is `geminus keygen`.
-	update     bool
-	keygen     bool
-	release    string
-	releaseOut string
+	update        bool
+	keygen        bool
+	release       string
+	releaseOut    string
+	clawd, noClawd bool
 }
 
 func parseArgs(args []string) request {
@@ -325,6 +332,10 @@ func parseArgs(args []string) request {
 			r.resume = value()
 		case arg == "--continue" || arg == "-c":
 			r.latest = true
+		case arg == "--clawd":
+			r.clawd = true
+		case arg == "--no-clawd":
+			r.noClawd = true
 		case arg != "" && !strings.HasPrefix(arg, "-") && !r.list && r.persona == "":
 			r.persona = arg
 		case arg != "" && !strings.HasPrefix(arg, "-") && !r.list && !usedPersonaCmd && r.harness == "":
@@ -335,7 +346,7 @@ func parseArgs(args []string) request {
 	}
 	reopen := r.resume != "" || r.latest
 	if r.list && (r.harness != "" || reopen || r.cwd != "") || r.resume != "" && r.latest ||
-		reopen && (r.harness != "" || r.cwd != "") {
+		reopen && (r.harness != "" || r.cwd != "") || r.clawd && r.noClawd {
 		r.badUsage = true
 	}
 	return r
@@ -392,6 +403,7 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		return 0
 	}
 	updatedFrom := consumeUpdatedFrom()
+	a.initClawd(req)
 	// On a terminal: the prompt box. Otherwise line by line.
 	stop := func() {}
 	if a.live == nil {
@@ -442,7 +454,11 @@ func (a *App) main(req request, in io.Reader, errw io.Writer) int {
 		a.Out.line(a.Out.fail("✗ " + err.Error()))
 	}
 	if updatedFrom != "" && updatedFrom != version.Version {
-		a.Out.line(a.Out.accent("◆ ") + fmt.Sprintf("geminus %s → %s", updatedFrom, version.Version))
+		if a.clawdEnabled() {
+			a.Out.line(a.Out.dim("Updated"))
+		} else {
+			a.Out.line(a.Out.accent("◆ ") + fmt.Sprintf("geminus %s → %s", updatedFrom, version.Version))
+		}
 	}
 	if a.live != nil {
 		// The box and the line under it say where things stand.
@@ -514,6 +530,9 @@ func (a *App) entered(line string) {
 }
 
 func (a *App) prompt() string {
+	if a.clawdEnabled() {
+		return "❯ "
+	}
 	switch {
 	case a.cur == nil:
 		return a.Out.dim("geminus") + " ❯ "

@@ -53,6 +53,7 @@ const (
 	colorYellow  = tui.ColorYellow
 	colorMagenta = tui.ColorMagenta
 	colorCyan    = tui.ColorCyan
+	colorCoral   = tui.ColorCoral
 
 	helixInsert = tui.HelixInsert
 	helixNormal = tui.HelixNormal

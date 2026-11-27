@@ -191,6 +191,7 @@ Inside geminus, a line starting with `/` is a command.
 | `/model [NAME]` | Model for this conversation. Running `/model` alone opens an interactive searchable model selector on a terminal; `/model default` goes back to the agent program's own. |
 | `/effort [LEVEL]` | Effort for this conversation. `/effort default` goes back. |
 | `/status` | Show persona, harness, bridge and conversation. |
+| `/clawd [on\|off\|status]` | Toggle Clawd mode, a visual skin mimicking Claude Code's interface (also via `--clawd`, `--no-clawd`, `GEMINUS_CLAWD=1\|0`, or `/config`). |
 | `/update` | Install the latest release of geminus and carry on in this conversation with it. |
 | `/default …` | Show or change your defaults (below). |
 | `/help`, `/quit` | |
@@ -226,6 +227,7 @@ geminus persona NAME     talk to NAME
   --cwd DIR              directory there for the new conversation
   --continue, -c         reopen the latest conversation
   --resume ID            reopen a conversation by ID
+  --clawd, --no-clawd    enable or disable Clawd mode (Claude Code look)
 geminus update           install the latest release of geminus
 geminus version | help
 ```

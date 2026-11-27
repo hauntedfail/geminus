@@ -60,7 +60,7 @@ func (a *App) handle(line string) error {
 		if err := a.start(arg, ""); err != nil {
 			return err
 		}
-		a.Out.line(a.status())
+		a.printTransitionStatus("Ready")
 	case "/harness":
 		if a.cur == nil {
 			return errors.New("pick a persona first (/persona)")
@@ -83,7 +83,7 @@ func (a *App) handle(line string) error {
 		if err := a.useHarness(arg); err != nil {
 			return err
 		}
-		a.Out.line(a.status())
+		a.printTransitionStatus("Ready")
 	case "/new":
 		if a.cur == nil || a.harness == nil {
 			return errors.New("pick a persona first (/persona)")
@@ -104,7 +104,7 @@ func (a *App) handle(line string) error {
 		} else {
 			a.cwd = a.preferredCWD()
 		}
-		a.Out.line(a.status())
+		a.printTransitionStatus("New session")
 	case "/cwd":
 		return a.chdir(arg)
 	case "/sessions":
@@ -113,13 +113,15 @@ func (a *App) handle(line string) error {
 		if err := a.resume(arg); err != nil {
 			return err
 		}
-		a.Out.line(a.status())
+		a.printTransitionStatus("Resumed session")
 	case "/default":
 		return a.setDefaults(arg)
 	case "/config":
 		return a.slashConfig(arg)
 	case "/post-human", "/posthuman", "/helix":
 		return a.slashPostHuman(arg)
+	case "/clawd":
+		return a.slashClawd(arg)
 	case "/ui":
 		return a.setUI(arg)
 	case "/update":
@@ -511,6 +513,10 @@ func (a *App) cloneDefaults() wire.Defaults {
 	if a.defaults.PostHuman != nil {
 		v := *a.defaults.PostHuman
 		d.PostHuman = &v
+	}
+	if a.defaults.Clawd != nil {
+		v := *a.defaults.Clawd
+		d.Clawd = &v
 	}
 	return d
 }
